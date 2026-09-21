@@ -10,6 +10,8 @@ local CONFIG = {
 	DiagnosticMaxAttributes = 12,
 	DiagnosticMaxSelections = 24,
 	DiagnosticMaxText = 24000,
+	DiagnosticPageCharacters = 4000, -- Display pages only; never truncates the inventory.
+	DiagnosticPageLines = 40,
 	Normal = { Initial = 8, Min = 2, Max = 24, MaxPerProvince = 2, Rate = 160, Burst = 8, Batch = 16 },
 	Fast = { Initial = 16, Min = 4, Max = 64, MaxPerProvince = 6, Rate = 360, Burst = 16, Batch = 32 },
 	Safe = { Initial = 1, Min = 1, Max = 1, MaxPerProvince = 1, Rate = 4, Burst = 1, Batch = 1 },
@@ -46,8 +48,8 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 1 then
-			error("Close the older AutoPainter panel before loading diagnostics; it cannot guarantee zero traffic.")
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 2 then
+			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
 		if diagnosticOnly then running.SetDiagnostic(true, diagnosticLocked) end
@@ -532,7 +534,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 1)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 2)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -604,12 +606,50 @@ local keepButton = option("Keep Territory Color", "OFF")
 local randomButton = option("Randomize Color  [R]", "Change")
 local diagnosticButton = option("Diagnostics · no requests", "ON")
 local inspectButton = option("Local state report", "Inspect")
+local reportNav = make("Frame", scroll, { Name = "DiagnosticPages", Visible = false,
+	LayoutOrder = rowOrder + 1, Size = UDim2.new(1, -6, 0, 32), BackgroundTransparency = 1 })
+local reportPrevious = make("TextButton", reportNav, { Text = "Prev", Size = UDim2.fromOffset(70, 28),
+	BackgroundColor3 = Color3.fromRGB(85, 85, 100), TextColor3 = Color3.new(1, 1, 1), TextSize = 16 })
+local reportNext = make("TextButton", reportNav, { Text = "Next", Position = UDim2.new(1, -70, 0, 0),
+	Size = UDim2.fromOffset(70, 28), BackgroundColor3 = Color3.fromRGB(85, 85, 100),
+	TextColor3 = Color3.new(1, 1, 1), TextSize = 16 })
+local reportPageLabel = make("TextLabel", reportNav, { Name = "PageLabel", Text = "", BackgroundTransparency = 1,
+	Position = UDim2.fromOffset(74, 0), Size = UDim2.new(1, -148, 1, 0),
+	TextColor3 = Color3.new(1, 1, 1), TextSize = 14 })
 local reportBox = make("TextBox", scroll, { Name = "DiagnosticReport", Text = "", Visible = false,
-	LayoutOrder = rowOrder + 1, Size = UDim2.new(1, -6, 0, 120), AutomaticSize = Enum.AutomaticSize.Y,
+	LayoutOrder = rowOrder + 2, Size = UDim2.new(1, -6, 0, 120), AutomaticSize = Enum.AutomaticSize.Y,
 	BackgroundColor3 = Color3.fromRGB(25, 25, 32), TextColor3 = Color3.new(1, 1, 1),
 	Font = Enum.Font.Code, TextSize = 13, TextWrapped = true, RichText = false,
 	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
 	TextEditable = false, ClearTextOnFocus = false, MultiLine = true })
+local reportText, reportPage, reportOffsets = "", 1, {}
+local function displayReportPage()
+	local first = reportOffsets[reportPage] or 1
+	local last = reportOffsets[reportPage + 1] and reportOffsets[reportPage + 1] - 1 or #reportText
+	reportBox.Text = string.sub(reportText, first, last)
+	reportPageLabel.Text = string.format("Page %d/%d", reportPage, math.max(1, #reportOffsets))
+	reportBox.Visible, reportNav.Visible = true, true
+end
+local function showReport(text)
+	reportText, reportPage = text, 1
+	table.clear(reportOffsets)
+	local first = 1
+	while first <= #text do
+		table.insert(reportOffsets, first)
+		local last = math.min(#text, first + CONFIG.DiagnosticPageCharacters - 1)
+		local cursor = first
+		for _ = 1, CONFIG.DiagnosticPageLines do
+			local newline = string.find(text, "\n", cursor, true)
+			if not newline or newline > last then break end
+			cursor = newline + 1
+		end
+		if cursor > first then last = cursor - 1 end
+		-- If a long line needs splitting, preserve complete UTF-8 code points.
+		while last < #text and string.byte(text, last + 1) >= 128 and string.byte(text, last + 1) < 192 do last -= 1 end
+		first = last + 1
+	end
+	displayReportPage()
+end
 switch(safeButton, safe); switch(paintButton, painting); switch(fastButton, fast); switch(keepButton, keepColor)
 switch(diagnosticButton, diagnosticOnly)
 if diagnosticLocked then diagnosticButton.Text = "LOCKED" end
@@ -689,7 +729,10 @@ function api.GetDiagnosticReport()
 	-- source decompilation, property writes, hooks, or retained snapshot Instances.
 	local lines, length, truncated = {}, 0, false
 	local function clean(value)
-		return string.sub(tostring(value):gsub("[%c]", " "), 1, 180)
+		local text = tostring(value):gsub("[%c]", " ")
+		local last = math.min(#text, 180)
+		while last < #text and string.byte(text, last + 1) >= 128 and string.byte(text, last + 1) < 192 do last -= 1 end
+		return string.sub(text, 1, last)
 	end
 	local function line(value)
 		if length + #value + 1 > CONFIG.DiagnosticMaxText - 100 then truncated = true; return end
@@ -707,6 +750,16 @@ function api.GetDiagnosticReport()
 		end
 		return false
 	end
+	local function fullText(value)
+		-- Escape controls without dropping any part of long names/paths.
+		return (tostring(value):gsub("\\", "\\\\"):gsub("[%c]", function(character)
+			return string.format("\\x%02X", string.byte(character))
+		end))
+	end
+	local function fullPath(object)
+		if not object then return "<missing>" end
+		return object:GetFullName()
+	end
 	local function valueText(value, name)
 		local kind = typeof(value)
 		if sensitive(name or "") then return "<redacted " .. kind .. ">" end
@@ -716,7 +769,86 @@ function api.GetDiagnosticReport()
 		-- Unknown strings can be server-issued credentials; show presence/type, not contents.
 		if kind == "string" then return "<string value omitted>" end
 		if kind == "Instance" then return "<Instance " .. path(value) .. ">" end
+		if kind == "Vector2" or kind == "Vector3" or kind == "CFrame" or kind == "BrickColor"
+			or kind == "NumberRange" or kind == "UDim" or kind == "UDim2" then return clean(value) end
 		return "<" .. kind .. ">"
+	end
+	local function descendantInventory(root, expectedRemote)
+		-- Separate native enumeration: no summary queue, node/depth/attribute/text caps.
+		local output = { "PAINTBUCKET DESCENDANTS", "ReportFormat=2" }
+		local function emit(value) table.insert(output, value) end
+		if not root then
+			emit("Status=missing equipped PaintBucket; no enumeration performed")
+			emit("END PAINTBUCKET DESCENDANTS")
+			return table.concat(output, "\n")
+		end
+		emit("Root=" .. fullText(fullPath(root)))
+		local ok, descendants = pcall(function() return root:GetDescendants() end)
+		if not ok then
+			emit("Status=enumeration unavailable; completeness cannot be established")
+			emit("END PAINTBUCKET DESCENDANTS")
+			return table.concat(output, "\n")
+		end
+		emit("SnapshotDescendants=" .. #descendants)
+		local records, unreadable, remoteFound = {}, 0, false
+		for _, object in ipairs(descendants) do
+			local record, recordPath = {}, "<unavailable>"
+			if object == expectedRemote then remoteFound = true end
+			local readable = pcall(function()
+				recordPath = fullPath(object)
+				table.insert(record, "FullName=" .. fullText(recordPath))
+				table.insert(record, "ClassName=" .. fullText(object.ClassName))
+				table.insert(record, "Name=" .. fullText(object.Name))
+				table.insert(record, "Parent FullName=" .. fullText(fullPath(object.Parent)))
+				table.insert(record, "RemoteEvent=" .. tostring(object:IsA("RemoteEvent"))
+					.. " RemoteFunction=" .. tostring(object:IsA("RemoteFunction")))
+				if object:IsA("LocalScript") or object:IsA("Script") then
+					local enabledOK, enabled = pcall(function() return object.Enabled end)
+					table.insert(record, "Enabled=" .. (enabledOK and valueText(enabled, "Enabled") or "<unavailable>"))
+					if not enabledOK then unreadable += 1 end
+				end
+				if object:IsA("ValueBase") then
+					local valueOK, value = pcall(function() return object.Value end)
+					table.insert(record, "ValueBaseType=" .. fullText(object.ClassName)
+						.. " ValueType=" .. (valueOK and typeof(value) or "<unavailable>"))
+					local text = valueOK and valueText(value, object.Name) or "<unavailable>"
+					if valueOK and typeof(value) == "Instance" and not sensitive(object.Name) then
+						text = "<Instance " .. fullText(fullPath(value)) .. ">"
+					end
+					table.insert(record, "Value=" .. text)
+					if not valueOK then unreadable += 1 end
+				end
+				local attributesOK, values = pcall(function() return object:GetAttributes() end)
+				if attributesOK then
+					local names = {}
+					for name in pairs(values) do table.insert(names, name) end
+					table.sort(names)
+					table.insert(record, "Attributes=" .. #names)
+					for _, name in ipairs(names) do
+						table.insert(record, "  @" .. fullText(name) .. " (" .. typeof(values[name]) .. ") = " .. valueText(values[name], name))
+					end
+				else
+					table.insert(record, "Attributes=<unavailable>")
+					unreadable += 1
+				end
+			end)
+			if not readable then
+				unreadable += 1
+				table.insert(record, "ReadError=<metadata unavailable; descendant retained in count>")
+			end
+			table.insert(records, { path = recordPath, text = table.concat(record, "\n") })
+		end
+		table.sort(records, function(a, b)
+			-- Duplicate full paths are possible; metadata provides a deterministic tie break.
+			if a.path == b.path then return a.text < b.text end
+			return a.path < b.path
+		end)
+		for index, record in ipairs(records) do emit("\n[" .. index .. "]\n" .. record.text) end
+		emit(string.format("\nListed=%d Expected=%d UnreadableFields=%d", #records, #descendants, unreadable))
+		emit("FreshRemoteInInventory=" .. (expectedRemote and tostring(remoteFound) or "not resolved"))
+		emit("String/credential values remain redacted. No scripts were read, decompiled or executed.")
+		emit("END PAINTBUCKET DESCENDANTS")
+		return table.concat(output, "\n")
 	end
 	local function property(object, name)
 		if not object then return "<missing>" end
@@ -823,14 +955,16 @@ function api.GetDiagnosticReport()
 	end
 	if #entries > CONFIG.DiagnosticMaxSelections then line("  [more selected targets omitted]") end
 	line("String/credential values omitted; metadata presence does not establish a protocol or permission.")
-	if truncated then table.insert(lines, "[Snapshot truncated to configured bounds]") end
-	return table.concat(lines, "\n")
+	if truncated then table.insert(lines, "[Summary truncated to configured bounds; full inventory follows]") end
+	return table.concat(lines, "\n") .. "\n\n" .. descendantInventory(currentBucket, currentRemote)
 end
 
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	alive = false
 	selectionMode = nil
+	reportText = ""
+	table.clear(reportOffsets)
 	disconnectAll(connections)
 	disconnectAll(cacheConnections)
 	clearProvinces()
@@ -848,8 +982,13 @@ connect(keepButton.Activated, function() api.SetKeepColor(not keepColor) end)
 connect(randomButton.Activated, randomize)
 connect(diagnosticButton.Activated, function() api.SetDiagnostic(not diagnosticOnly) end)
 connect(inspectButton.Activated, function()
-	reportBox.Text = api.GetDiagnosticReport()
-	reportBox.Visible = true
+	showReport(api.GetDiagnosticReport())
+end)
+connect(reportPrevious.Activated, function()
+	if reportPage > 1 then reportPage -= 1; displayReportPage() end
+end)
+connect(reportNext.Activated, function()
+	if reportPage < #reportOffsets then reportPage += 1; displayReportPage() end
 end)
 connect(doneButton.Activated, function() setSelectionMode(nil) end)
 connect(close.Activated, api.Destroy)

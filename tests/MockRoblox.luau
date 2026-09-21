@@ -4,7 +4,8 @@ function Mock.new(deferredSignals)
 	local world = { now = 0, events = {}, calls = {}, active = 0, peak = 0,
 		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
 		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6,
-		taskSpawns = 0, taskDefers = 0, networkAttempts = 0 }
+		taskSpawns = 0, taskDefers = 0, networkAttempts = 0,
+		propertyWrites = 0, attributeWrites = 0, descendantReads = 0 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -60,6 +61,7 @@ function Mock.new(deferredSignals)
 		for _, child in ipairs(object._children) do ancestry(child) end
 	end
 	function mt.__newindex(object, key, value)
+		world.propertyWrites += 1
 		local old = object._props[key]
 		if old == value then return end
 		if key == "Parent" and old then
@@ -109,15 +111,41 @@ function Mock.new(deferredSignals)
 		for _, child in ipairs(self._children) do if child.ClassName == class then return child end end
 		return nil
 	end
-	function methods:GetChildren() return table.clone(self._children) end
+	function methods:GetChildren()
+		if world.childrenView and world.childrenView[self] then return table.clone(world.childrenView[self]) end
+		return table.clone(self._children)
+	end
+	function methods:GetDescendants()
+		world.descendantReads += 1
+		if world.descendantError == self then error("Injected GetDescendants read failure") end
+		local descendants, stack = {}, table.clone(self._children)
+		while #stack > 0 do
+			local object = table.remove(stack)
+			table.insert(descendants, object)
+			for _, child in ipairs(object._children) do table.insert(stack, child) end
+		end
+		if world.reverseDescendants then
+			for i = 1, math.floor(#descendants / 2) do
+				local other = #descendants - i + 1
+				descendants[i], descendants[other] = descendants[other], descendants[i]
+			end
+		end
+		return descendants
+	end
 	function methods:GetFullName()
 		local names, object = {}, self
 		while object do table.insert(names, 1, object.Name); object = object.Parent end
 		return table.concat(names, ".")
 	end
-	function methods:SetAttribute(name, value) self._attributes[name] = value end
+	function methods:SetAttribute(name, value)
+		world.attributeWrites += 1
+		self._attributes[name] = value
+	end
 	function methods:GetAttribute(name) return self._attributes[name] end
-	function methods:GetAttributes() return table.clone(self._attributes) end
+	function methods:GetAttributes()
+		if world.attributesError == self then error("Injected GetAttributes read failure") end
+		return table.clone(self._attributes)
+	end
 	function methods:GetState() return "Running" end
 	function methods:WaitForChild(name) return assert(self:FindFirstChild(name), name) end
 	function methods:GetPropertyChangedSignal(name)

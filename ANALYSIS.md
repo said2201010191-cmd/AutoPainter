@@ -120,11 +120,17 @@ Safe mode additionally spaces starts to one province by at least one second and 
 
 The UI emphasizes returns/sec and separately shows target matches/sec. Rates use elapsed time. The previous Unconfirmed counter and confirmation-grace settings were removed. A color observation still stops new attacks while the visible part matches its target, preserving the original protector behavior. This revision does not assume that attacking an already-matching province is useful; no such behavior was requested.
 
+## Read-only inventory correction
+
+The reported Handle-only hierarchy output is now supplemented by a separate native `PaintBucket:GetDescendants()` snapshot. **PAINTBUCKET DESCENDANTS** lists every returned object, sorted by full path, with complete identity/parent information, readable script Enabled flags, all attribute metadata, safe ValueBase types/values and remote flags. The old summary bounds do not limit this inventory. Explicit totals and `FreshRemoteInInventory` expose incomplete native enumeration instead of silently substituting the cached remote. Strings and credential-like values remain redacted.
+
+The complete report is returned by `GetDiagnosticReport()`. Its UI uses lossless UTF-8 pages (4,000 bytes / 40 newlines), retaining only the newest string and offsets. Snapshot work happens only on request; no per-object listeners or history are added. Format version 2 refuses stale diagnostic panels. Added tests simulate the exact inconsistent Handle-only summary, exceed all previous caps, verify every requested field and read failures, reconstruct every UI page byte-for-byte and assert zero remote calls/property writes/task creation during inspection. This corrects reporting, with no change to the unverified paint protocol or the default/locked diagnostic gate.
+
 ## Final review and validation
 
 The full revised runtime, UI callbacks, loader and tests were reviewed. Syntax is checked with the official Luau compiler; no engine API names changed in this revision. Review covered request reservation before spawning, per-group release, no negative/stuck accounting after thrown errors, immutable per-call payloads, remove/re-add identity, target-color barriers, late old-remote responses, mixed-success/error cooldowns, mode changes, fairness, timer removal, UI shutdown and independent players.
 
-The actual final source is executed by the deterministic mock suite, which now contains 163 tests (57 scheduler, 70 selection/color/boundary, and 36 diagnostic checks). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
+The actual final source is executed by the deterministic mock suite, which now contains 187 tests (57 scheduler, 70 selection/color/boundary, 36 diagnostic, and 24 inventory checks). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
 
 1. Exact peak concurrency of Normal 2, Fast 6, Safe 1 on a continuously contested province.
 2. One-slot-per-visit FIFO allocation and first-pass fairness across dirty provinces.

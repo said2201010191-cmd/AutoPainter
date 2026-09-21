@@ -142,9 +142,11 @@ for _, deferred in ipairs({ false, true }) do
 			local child = world.instance("Folder"); child.Name = "Node" .. i; child.Parent = world.bucket
 			for a = 1, 20 do child:SetAttribute("Flag" .. a, true) end
 		end
-		local report = api.GetDiagnosticReport(); assert(#report <= 24000)
-		contains(report, "Snapshot truncated"); contains(report, "more attributes omitted")
-		local count = 0; for _ in string.gmatch(report, "  child:") do count += 1 end
+		local report = api.GetDiagnosticReport()
+		local summary = string.split(report, "\n\nPAINTBUCKET DESCENDANTS\n")[1]
+		assert(#summary <= 24000)
+		contains(summary, "Summary truncated"); contains(report, "more attributes omitted")
+		local count = 0; for _ in string.gmatch(summary, "  child:") do count += 1 end
 		assert(count <= 95)
 		noTraffic(world, api); api.Destroy()
 		local deepWorld, deepApi = diagnosticStart(deferred)
@@ -153,8 +155,9 @@ for _, deferred in ipairs({ false, true }) do
 			local child = deepWorld.instance("Folder"); child.Name = "Depth" .. i; child.Parent = parent; parent = child
 		end
 		local deepReport = deepApi.GetDiagnosticReport()
-		contains(deepReport, "Snapshot truncated")
-		assert(not string.find(deepReport, "Depth9", 1, true), "Depth bound was not respected")
+		local deepSummary = string.split(deepReport, "\n\nPAINTBUCKET DESCENDANTS\n")[1]
+		contains(deepSummary, "Summary truncated")
+		assert(not string.find(deepSummary, "Depth9", 1, true), "Depth bound was not respected")
 		noTraffic(deepWorld, deepApi); deepApi.Destroy()
 	end)
 

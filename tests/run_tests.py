@@ -11,6 +11,7 @@ diagnostic_loader = (root / "LoaderDiagnostic.luau").read_text()
 suite = (root / "tests" / "scheduler.spec.luau").read_text()
 suite += "\n" + (root / "tests" / "selection.spec.luau").read_text()
 suite += "\n" + (root / "tests" / "diagnostics.spec.luau").read_text()
+suite += "\n" + (root / "tests" / "inventory.spec.luau").read_text()
 suite += '\nprint(string.format("%d tests passed (mock engine; no live throughput claim)", passed))\n'
 with tempfile.NamedTemporaryFile("w", suffix=".luau", dir=root / "tests", delete=False) as f:
     path = Path(f.name)
