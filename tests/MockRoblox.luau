@@ -1,0 +1,237 @@
+-- Deterministic Luau mock, not a Roblox engine/network benchmark.
+local Mock = {}
+function Mock.new(deferredSignals)
+	local world = { now = 0, events = {}, calls = {}, active = 0, peak = 0,
+		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {} }
+	local function resume(thread, ...)
+		local ok, err = coroutine.resume(thread, ...)
+		if not ok then table.insert(world.errors, tostring(err)) end
+	end
+	local function spawn(fn, ...)
+		local thread = type(fn) == "thread" and fn or coroutine.create(fn)
+		resume(thread, ...)
+		return thread
+	end
+	function world.schedule(delay, fn, ...)
+		table.insert(world.events, { at = world.now + delay, fn = fn, args = table.pack(...) })
+	end
+	local function signal()
+		local listeners = {}
+		local event = {}
+		function event:Connect(fn)
+			local connection = { Connected = true }
+			listeners[connection] = fn
+			world.connections += 1
+			function connection:Disconnect()
+				if self.Connected then
+					self.Connected = false; listeners[self] = nil; world.connections -= 1
+				end
+			end
+			return connection
+		end
+		function event:Fire(...)
+			for connection, fn in pairs(table.clone(listeners)) do
+				if connection.Connected then
+					if deferredSignals then
+						local args = table.pack(...)
+						world.schedule(0, function()
+							if connection.Connected then fn(table.unpack(args, 1, args.n)) end
+						end)
+					else spawn(fn, ...) end
+				end
+			end
+		end
+		function event:Clear()
+			for connection in pairs(table.clone(listeners)) do connection:Disconnect() end
+		end
+		return event
+	end
+	local methods = {}
+	local mt = {}
+	function mt.__index(object, key)
+		return methods[key] or object._props[key] or object._signals[key]
+	end
+	local function ancestry(object)
+		object._signals.AncestryChanged:Fire(object, object.Parent)
+		for _, child in ipairs(object._children) do ancestry(child) end
+	end
+	function mt.__newindex(object, key, value)
+		local old = object._props[key]
+		if old == value then return end
+		if key == "Parent" and old then
+			local function removing(child, ancestor)
+				ancestor.DescendantRemoving:Fire(child)
+				for _, descendant in ipairs(child._children) do removing(descendant, ancestor) end
+			end
+			local ancestor = old
+			while ancestor do removing(object, ancestor); ancestor = ancestor.Parent end
+		end
+		object._props[key] = value
+		if key == "Parent" then
+			if old then
+				local index = table.find(old._children, object)
+				if index then table.remove(old._children, index) end
+				old.ChildRemoved:Fire(object)
+			end
+			if value then table.insert(value._children, object); value.ChildAdded:Fire(object) end
+			ancestry(object)
+		end
+		if object._changed[key] then object._changed[key]:Fire() end
+	end
+	function world.instance(class)
+		local object = setmetatable({ _props = { ClassName = class, Name = class },
+			_children = {}, _signals = {}, _changed = {}, _destroyed = false }, mt)
+		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantRemoving",
+			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat" }) do
+			object._signals[name] = signal()
+		end
+		table.insert(world.objects, object)
+		return object
+	end
+	function methods:IsA(class)
+		return self.ClassName == class or (class == "BasePart" and self.ClassName == "Part")
+	end
+	function methods:IsDescendantOf(parent)
+		local current = self.Parent
+		while current do if current == parent then return true end; current = current.Parent end
+		return false
+	end
+	function methods:FindFirstChild(name)
+		for _, child in ipairs(self._children) do if child.Name == name then return child end end
+		return nil
+	end
+	function methods:WaitForChild(name) return assert(self:FindFirstChild(name), name) end
+	function methods:GetPropertyChangedSignal(name)
+		if not self._changed[name] then self._changed[name] = signal() end
+		return self._changed[name]
+	end
+	function methods:Destroy()
+		if self._destroyed then return end
+		self._destroyed = true
+		self.Destroying:Fire()
+		for _, child in ipairs(table.clone(self._children)) do child:Destroy() end
+		self.Parent = nil
+		for _, event in pairs(self._signals) do event:Clear() end
+		for _, event in pairs(self._changed) do event:Clear() end
+	end
+	function methods:GetMouse() return world.mouse end
+	function methods:GetFocusedTextBox() return nil end
+	function methods:Invoke(...) return self.OnInvoke(...) end
+	function methods:InvokeServer(command, payload, context)
+		assert(self:IsA("RemoteFunction"))
+		assert(command == "PaintPart" and context == "Peace")
+		assert(payload.Part and payload.Color)
+		assert(not world.activeParts[payload.Part], "Overlapping requests for one province")
+		world.activeParts[payload.Part] = true
+		world.active += 1; world.peak = math.max(world.peak, world.active)
+		local behavior = world.behavior
+		local call = { at = world.now, part = payload.Part, color = payload.Color,
+			remote = self, thread = coroutine.running(), done = false }
+		table.insert(world.calls, call)
+		if not behavior.hang then
+			local latency = type(behavior.latency) == "function" and behavior.latency(world.active) or (behavior.latency or 0.10)
+			world.schedule(latency, function()
+				local success = not behavior.errors
+				if success and not behavior.noPaint then
+					if behavior.replicationDelay then
+						world.schedule(behavior.replicationDelay, function()
+							if not payload.Part._destroyed then payload.Part.Color = payload.Color end
+						end)
+					elseif not payload.Part._destroyed then payload.Part.Color = payload.Color end
+				end
+				world.complete(call, success)
+			end)
+		end
+		local ok = coroutine.yield()
+		if not ok then error("Injected InvokeServer failure") end
+		return nil -- An ordinary nil return is not a paint acknowledgment.
+	end
+	function world.complete(call, success)
+		assert(not call.done)
+		call.done = true; world.active -= 1
+		world.activeParts[call.part] = nil
+		resume(call.thread, success)
+	end
+	function world.flush()
+		local passes = 0
+		while true do
+			local index, at = nil, math.huge
+			for i, event in ipairs(world.events) do
+				if event.at <= world.now and event.at < at then index, at = i, event.at end
+			end
+			if not index then break end
+			local event = table.remove(world.events, index)
+			spawn(event.fn, table.unpack(event.args, 1, event.args.n))
+			passes += 1
+			assert(passes < 100000, "Unbounded same-frame work")
+		end
+		assert(#world.errors == 0, table.concat(world.errors, "\n"))
+	end
+	function world.step(seconds, fps)
+		local count = math.ceil(seconds * (fps or 60))
+		local delta = seconds / count
+		for _ = 1, count do
+			world.now += delta
+			world.flush()
+			world.runService.Heartbeat:Fire(delta)
+			world.flush()
+		end
+	end
+	local colors = {}
+	local function color(r, g, b)
+		local key = tostring(r) .. "/" .. tostring(g) .. "/" .. tostring(b)
+		if not colors[key] then colors[key] = { R = r, G = g, B = b, _kind = "Color3" } end
+		return colors[key]
+	end
+	world.Color3 = { new = color, fromRGB = function(r, g, b) return color(r / 255, g / 255, b / 255) end }
+	local function udim(scale, offset) return { Scale = scale or 0, Offset = offset or 0 } end
+	local function udim2(xs, xo, ys, yo) return { X = udim(xs, xo), Y = udim(ys, yo) } end
+	world.workspace = world.instance("Workspace")
+	world.player = world.instance("Player")
+	world.playerGui = world.instance("PlayerGui"); world.playerGui.Parent = world.player
+	world.runService = world.instance("RunService")
+	world.input = world.instance("UserInputService")
+	world.mouse = {}
+	function world.equip()
+		local character = world.instance("Model"); character.Parent = world.workspace
+		local bucket = world.instance("Tool"); bucket.Name = "PaintBucket"; bucket.Parent = character
+		local remotes = world.instance("Folder"); remotes.Name = "Remotes"; remotes.Parent = bucket
+		local remote = world.instance("RemoteFunction"); remote.Name = "ServerControls"; remote.Parent = remotes
+		world.player.Character = character
+		world.character, world.bucket, world.remotes, world.remote = character, bucket, remotes, remote
+		return remote
+	end
+	function world.province()
+		local part = world.instance("Part"); part.Name = "Province"
+		part.Color = color(0, 0, 0); part.Parent = world.workspace
+		return part
+	end
+	world.equip()
+	local enum = setmetatable({}, { __index = function(self, key)
+		local category = setmetatable({}, { __index = function(_, member) return key .. "." .. member end })
+		rawset(self, key, category); return category
+	end })
+	local services = { Players = { LocalPlayer = world.player }, RunService = world.runService,
+		UserInputService = world.input, Workspace = world.workspace }
+	world.env = setmetatable({
+		game = { GetService = function(_, name) return assert(services[name]) end },
+		Instance = { new = world.instance }, Color3 = world.Color3, Enum = enum,
+		Vector2 = { new = function(x, y) return { X = x, Y = y } end },
+		UDim = { new = udim }, UDim2 = { new = udim2,
+			fromOffset = function(x, y) return udim2(0, x, 0, y) end,
+			fromScale = function(x, y) return udim2(x, 0, y, 0) end },
+		RaycastParams = { new = function() return {} end },
+		typeof = function(value) return type(value) == "table" and value._kind or type(value) end,
+		os = { clock = function() return world.now end },
+		task = { spawn = spawn, defer = function(fn, ...) world.schedule(0, fn, ...) end },
+	}, { __index = getfenv() })
+	function world.load(source)
+		local chunk = assert(loadstring(source, "AutoPainterFinal"))
+		setfenv(chunk, world.env)
+		local api = chunk()
+		world.flush()
+		return api
+	end
+	return world
+end
+return Mock
