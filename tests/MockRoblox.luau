@@ -2,7 +2,8 @@
 local Mock = {}
 function Mock.new(deferredSignals)
 	local world = { now = 0, events = {}, calls = {}, active = 0, peak = 0,
-		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {} }
+		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
+		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -121,18 +122,33 @@ function Mock.new(deferredSignals)
 		assert(self:IsA("RemoteFunction"))
 		assert(command == "PaintPart" and context == "Peace")
 		assert(payload.Part and payload.Color)
-		assert(not world.activeParts[payload.Part], "Overlapping requests for one province")
-		world.activeParts[payload.Part] = true
+		local active = world.activeParts[payload.Part] or 0
+		assert(active < world.perPartLimit, "Per-province cap exceeded")
+		assert(active == 0 or world.activeColors[payload.Part] == payload.Color, "Different target colors overlapped")
+		world.activeParts[payload.Part] = active + 1
+		world.activeColors[payload.Part] = payload.Color
+		world.peakParts[payload.Part] = math.max(world.peakParts[payload.Part] or 0, active + 1)
 		world.active += 1; world.peak = math.max(world.peak, world.active)
+		assert(world.active <= 64, "Global hard cap exceeded")
 		local behavior = world.behavior
 		local call = { at = world.now, part = payload.Part, color = payload.Color,
-			remote = self, thread = coroutine.running(), done = false }
+			remote = self, thread = coroutine.running(), done = false, concurrent = active + 1 }
 		table.insert(world.calls, call)
+		local callIndex = #world.calls
 		if not behavior.hang then
-			local latency = type(behavior.latency) == "function" and behavior.latency(world.active) or (behavior.latency or 0.10)
+			local latency = type(behavior.latency) == "function" and behavior.latency(world.active, payload.Part, callIndex) or (behavior.latency or 0.10)
 			world.schedule(latency, function()
-				local success = not behavior.errors
-				if success and not behavior.noPaint then
+				local errors = behavior.errors
+				if type(errors) == "function" then errors = errors(payload.Part, callIndex) end
+				local success = not errors
+				local noPaint = behavior.noPaint
+				if type(noPaint) == "function" then noPaint = noPaint(payload.Part) end
+				local progress = world.contributions[payload.Part] or {}
+				world.contributions[payload.Part] = progress
+				if success then progress[payload.Color] = (progress[payload.Color] or 0) + 1 end
+				local required = behavior.hitsRequired or 1
+				if type(required) == "function" then required = required(payload.Part) end
+				if success and not noPaint and progress[payload.Color] >= required then
 					if behavior.replicationDelay then
 						world.schedule(behavior.replicationDelay, function()
 							if not payload.Part._destroyed then payload.Part.Color = payload.Color end
@@ -144,12 +160,15 @@ function Mock.new(deferredSignals)
 		end
 		local ok = coroutine.yield()
 		if not ok then error("Injected InvokeServer failure") end
-		return nil -- An ordinary nil return is not a paint acknowledgment.
+		return behavior.returnValue -- nil/false/other responses are not interpreted by production.
 	end
 	function world.complete(call, success)
 		assert(not call.done)
 		call.done = true; world.active -= 1
-		world.activeParts[call.part] = nil
+		world.activeParts[call.part] -= 1
+		if world.activeParts[call.part] == 0 then
+			world.activeParts[call.part], world.activeColors[call.part] = nil, nil
+		end
 		resume(call.thread, success)
 	end
 	function world.flush()

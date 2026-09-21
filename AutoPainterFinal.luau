@@ -1,19 +1,17 @@
 -- AutoPainterFinal: client-only successor to AutoPainterFastClient.luau.
 -- Existing protocol: ServerControls:InvokeServer("PaintPart", {Part, Color}, "Peace").
--- Install as a LocalScript in StarterPlayerScripts; no server changes required.
--- See README.md for telemetry semantics, tuning, and external-loader limitations.
+-- Run through the public client loader; no place access or installation required.
+-- Each client uses its own LocalPlayer, UI, selection, and bounded request window.
 
 local CONFIG = {
-	Normal = { Initial = 8, Min = 2, Max = 24, Rate = 160, Burst = 8, Batch = 16 },
-	Fast = { Initial = 16, Min = 4, Max = 64, Rate = 360, Burst = 16, Batch = 32 },
-	Safe = { Initial = 1, Min = 1, Max = 1, Rate = 4, Burst = 1, Batch = 1 },
+	Normal = { Initial = 8, Min = 2, Max = 24, MaxPerProvince = 2, Rate = 160, Burst = 8, Batch = 16 },
+	Fast = { Initial = 16, Min = 4, Max = 64, MaxPerProvince = 6, Rate = 360, Burst = 16, Batch = 32 },
+	Safe = { Initial = 1, Min = 1, Max = 1, MaxPerProvince = 1, Rate = 4, Burst = 1, Batch = 1 },
 	HardOutstanding = 64, -- Includes stalled calls and calls using an old remote.
 	SafeProvinceInterval = 1,
 	Adaptive = true,
 	TuneInterval = 2,
 	MinTuneReturns = 8,
-	ConfirmationMin = 0.10,
-	ConfirmationMax = 0.75,
 	RetryBase = 0.20,
 	RetryMax = 5,
 	StallSeconds = 15, -- Diagnostic only: a timeout cannot cancel a server operation.
@@ -46,7 +44,8 @@ local entries, lookup = {}, {}
 local readyHead, readyTail = nil, nil
 local readyCount = 0
 local delayed = {} -- Indexed min-heap: at most one retry timer per province.
-local jobs, jobsByPart = {}, {}
+local jobs, pendingByPart = {}, {} -- A part's group survives removal/re-add and respawn.
+local selectionId = 0
 local outstanding, stalled = 0, 0
 local color = Color3.fromRGB(255, 255, 255)
 local painting, fast, safe, keepColor = true, false, false, false
@@ -60,10 +59,8 @@ local cacheDirty = false
 local cacheVersion = 0
 local pumpQueued, pumping = false, false
 local rtt = 0.15
-local stats = { Attempted = 0, Returned = 0, Failures = 0, Observed = 0,
-	Unconfirmed = 0, Stalls = 0 }
-local sample = { Returned = 0, Failures = 0, Observed = 0, Unconfirmed = 0,
-	Latency = 0, BusyTime = 0 }
+local stats = { Attempted = 0, Returned = 0, Failures = 0, Observed = 0, Stalls = 0 }
+local sample = { Returned = 0, Failures = 0, Latency = 0, BusyTime = 0 }
 local epoch = os.clock()
 local probe = nil
 local steady = nil
@@ -170,35 +167,28 @@ local function retryDelay(entry)
 		* (0.9 + (entry.index % 5) * 0.05)
 end
 
+local function canOverlap(part, desired)
+	local group = pendingByPart[part]
+	-- Count stalled and old-remote calls too. Never overlap different target colors.
+	return not group or (group.count < mode.MaxPerProvince and group.color == desired)
+end
+
 evaluate = function(entry, now)
 	if not alive or not entry.active then return end
 	local part = entry.part
 	if not valid(part) then removeEntry(entry); return end
 	local desired = targetColor(entry)
-	local receipt = entry.receipt
-	if part.Color == desired then
-		if receipt and receipt.color == desired and not receipt.observed then
-			receipt.observed = true
-			stats.Observed += 1
-			if receipt.version == cacheVersion then sample.Observed += 1 end
-		end
-		entry.receipt = nil
-		entry.failures, entry.notBefore = 0, 0
+	local matched = part.Color == desired
+	-- Count a target-color transition once, not once for each overlapping request.
+	-- This observation is independent of RPC outcomes and may be caused by others.
+	if matched and not entry.matched then stats.Observed += 1 end
+	entry.matched = matched
+	if matched then
 		unqueue(entry)
 		unschedule(entry)
 		return
 	end
-	-- Includes requests from before clear/remove/re-add and from old characters.
-	if jobsByPart[part] then unqueue(entry); unschedule(entry); return end
-	if receipt then
-		if receipt.color == desired and not receipt.observed then
-			if now < receipt.confirmAt then schedule(entry, receipt.confirmAt); return end
-			stats.Unconfirmed += 1
-			if receipt.version == cacheVersion then sample.Unconfirmed += 1 end
-			entry.notBefore = now + retryDelay(entry)
-		end
-		entry.receipt = nil
-	end
+	if not canOverlap(part, desired) then unqueue(entry); unschedule(entry); return end
 	local due = entry.notBefore
 	if safe then due = math.max(due, entry.lastSent + CONFIG.SafeProvinceInterval) end
 	if due > now then schedule(entry, due); return end
@@ -215,7 +205,7 @@ removeEntry = function(entry)
 	lookup[entry.part] = nil
 	disconnectAll(entry.connections)
 	entry.box:Destroy()
-	entry.box, entry.receipt = nil, nil
+	entry.box = nil
 	local index, last = entry.index, table.remove(entries)
 	if index <= #entries then entries[index], last.index = last, index end
 	entry.part = nil
@@ -237,9 +227,10 @@ local function addProvince(part)
 	box.SurfaceTransparency = 1
 	box.LineThickness = 0.025
 	box.Parent = ui
-	local entry = { part = part, savedColor = color, active = true, box = box,
+	selectionId += 1
+	local entry = { part = part, savedColor = color, active = true, box = box, id = selectionId,
 		connections = {}, index = #entries + 1, failures = 0, notBefore = 0,
-		lastSent = -math.huge, queued = false }
+		failureEpoch = 0, lastSent = -math.huge, queued = false, matched = part.Color == color }
 	entries[entry.index], lookup[part] = entry, entry
 	connect(part:GetPropertyChangedSignal("Color"), function() evaluate(entry, os.clock()) end, entry.connections)
 	connect(part:GetPropertyChangedSignal("Name"), function() evaluate(entry, os.clock()) end, entry.connections)
@@ -252,7 +243,8 @@ end
 local function finishRequest(job, ok)
 	-- Release first, even if the selection, remote, mode or UI changed during the yield.
 	jobs[job] = nil
-	jobsByPart[job.part] = nil
+	job.group.count -= 1
+	if job.group.count == 0 then pendingByPart[job.part] = nil end
 	outstanding -= 1
 	if job.stalled then stalled -= 1 end
 	local now = os.clock()
@@ -268,17 +260,18 @@ local function finishRequest(job, ok)
 	end
 	local entry = lookup[job.part]
 	if entry then
-		if entry.receipt == job then
+		if entry.id == job.selectionId and job.version == cacheVersion and targetColor(entry) == job.color then
 			if ok then
-				job.confirmAt = now + math.clamp(rtt * 0.5, CONFIG.ConfirmationMin, CONFIG.ConfirmationMax)
+				-- An older sibling's return must not erase a newer error's cooldown.
+				if job.failureEpoch == entry.failureEpoch then entry.failures, entry.notBefore = 0, 0 end
 			else
-				entry.receipt = nil
-				if targetColor(entry) == job.color then entry.notBefore = now + retryDelay(entry) end
+				entry.failureEpoch += 1
+				entry.notBefore = math.max(entry.notBefore, now + retryDelay(entry))
 			end
 		end
 		evaluate(entry, now)
 	end
-	if not ok then invalidateCache() end
+	if not ok and job.version == cacheVersion then invalidateCache() end
 	kick()
 end
 
@@ -311,20 +304,30 @@ local function pump()
 		local entry = readyHead
 		unqueue(entry)
 		visited += 1
+		local desired = targetColor(entry)
 		if not valid(entry.part) then removeEntry(entry)
-		elseif entry.part.Color == targetColor(entry) or jobsByPart[entry.part]
+		elseif entry.part.Color == desired or not canOverlap(entry.part, desired)
 			or entry.notBefore > now or (safe and now < entry.lastSent + CONFIG.SafeProvinceInterval) then
 			evaluate(entry, now)
 		else
-			local job = { part = entry.part, color = targetColor(entry), remote = remote,
-				started = now, version = cacheVersion, observed = false, stalled = false }
-			entry.receipt, entry.lastSent = job, now
-			jobs[job], jobsByPart[job.part] = true, job
+			local group = pendingByPart[entry.part]
+			if not group then
+				group = { count = 0, color = desired }
+				pendingByPart[entry.part] = group
+			end
+			group.count += 1
+			local job = { part = entry.part, color = desired, remote = remote,
+				started = now, version = cacheVersion, stalled = false, group = group,
+				selectionId = entry.id, failureEpoch = entry.failureEpoch }
+			entry.lastSent = now
+			jobs[job] = true
 			outstanding += 1
 			stats.Attempted += 1
 			tokens -= 1
 			frameBudget -= 1
 			task.spawn(invoke, job)
+			-- One request per visit. Extra capacity goes behind all waiting provinces.
+			evaluate(entry, now)
 			if not remote or not alive or not painting then break end
 		end
 	end
@@ -388,7 +391,8 @@ local function retargetAll()
 	for index = #entries, 1, -1 do
 		local entry = entries[index]
 		entry.notBefore, entry.failures = 0, 0
-		if entry.receipt and entry.receipt.color ~= targetColor(entry) then entry.receipt = nil end
+		entry.failureEpoch += 1
+		entry.matched = entry.part.Color == targetColor(entry)
 		entry.box.Color3 = targetColor(entry)
 		evaluate(entry, now)
 	end
@@ -409,21 +413,20 @@ local function tune(now)
 	local duration = now - epoch
 	if duration < CONFIG.TuneInterval then return end
 	local returns, failures = sample.Returned, sample.Failures
-	local usefulRate = sample.Observed / duration
+	local returnRate = returns / duration -- No server contract: a return is not a confirmed hit.
 	local latency = returns > 0 and sample.Latency / returns or rtt
 	local busy = sample.BusyTime / duration >= 0.20
 	if CONFIG.Adaptive and not safe and painting and remote then
 		local badErrors = failures >= 2 and failures / math.max(1, returns + failures) >= 0.10
-		local noPaint = sample.Unconfirmed >= CONFIG.MinTuneReturns and sample.Observed == 0
 		local congestion = steady and busy and returns >= CONFIG.MinTuneReturns
-			and latency > steady.latency * 1.5 and usefulRate < steady.rate * 0.95
-		if badErrors or noPaint or congestion then
+			and latency > steady.latency * 1.5 and returnRate < steady.rate * 0.95
+		if badErrors or congestion then
 			window = math.max(mode.Min, math.floor(window * 0.6))
 			probe, steady, tuneCooldown = nil, nil, 3
 		elseif returns >= CONFIG.MinTuneReturns then
 			if probe then
-				local improved = probe.direction == 1 and usefulRate >= probe.rate * 1.05 and latency <= probe.latency * 1.35
-				local cheaper = probe.direction == -1 and usefulRate >= probe.rate * 0.97 and latency <= probe.latency * 1.10
+				local improved = probe.direction == 1 and returnRate >= probe.rate * 1.05 and latency <= probe.latency * 1.35
+				local cheaper = probe.direction == -1 and returnRate >= probe.rate * 0.97 and latency <= probe.latency * 1.10
 				if not (improved or cheaper) then
 					window = math.max(mode.Min, probe.window)
 					tuneCooldown = 3
@@ -431,15 +434,14 @@ local function tune(now)
 				end
 				probe = nil
 			elseif tuneCooldown > 0 then tuneCooldown -= 1
-			elseif busy and sample.Observed >= CONFIG.MinTuneReturns
-				and returns / duration < mode.Rate * 0.90 then
+			elseif busy and returnRate < mode.Rate * 0.90 then
 				if window >= mode.Max then probeDirection = -1
 				elseif window <= mode.Min then probeDirection = 1 end
-				probe = { window = window, rate = usefulRate, latency = latency, direction = probeDirection }
+				probe = { window = window, rate = returnRate, latency = latency, direction = probeDirection }
 				window = math.clamp(window + probeDirection * math.max(1, math.ceil(window * 0.25)), mode.Min, mode.Max)
 			end
-			if busy and sample.Observed >= CONFIG.MinTuneReturns and not probe then
-				steady = { rate = usefulRate, latency = latency }
+			if busy and not probe then
+				steady = { rate = returnRate, latency = latency }
 			end
 		end
 	end
@@ -555,6 +557,10 @@ function api.GetStats()
 	local result = table.clone(stats)
 	result.Selected, result.Ready, result.Delayed = #entries, readyCount, #delayed
 	result.InFlight, result.Stalled, result.Window = outstanding, stalled, window
+	result.MaxPerProvince = mode.MaxPerProvince
+	local pendingProvinces = 0
+	for _ in pairs(pendingByPart) do pendingProvinces += 1 end
+	result.PendingProvinces = pendingProvinces
 	result.RTT, result.RemoteReady, result.Running = rtt, remote ~= nil, alive
 	return result
 end
@@ -663,8 +669,8 @@ connect(RunService.Heartbeat, function(dt)
 		local elapsed = now - lastDisplay
 		local observedRate, returnRate = (stats.Observed - lastObserved) / elapsed, (stats.Returned - lastReturned) / elapsed
 		local state = not painting and "Paused" or (not remote and "Equip PaintBucket" or (safe and "Safe" or (fast and "Fast" or "Normal")))
-		statusLabel.Text = string.format("%.1f observed paint/s · %d selected · %s", observedRate, #entries, state)
-		detailLabel.Text = string.format("%.1f returns/s · %d/%d active · %d stalled · %d errors", returnRate,
+		statusLabel.Text = string.format("%.1f returns/s · %d selected · %s", returnRate, #entries, state)
+		detailLabel.Text = string.format("%.1f target matches/s · %d/%d active · %d stalled · %d errors", observedRate,
 			outstanding - stalled, window, stalled, stats.Failures)
 		lastDisplay, lastObserved, lastReturned = now, stats.Observed, stats.Returned
 	end

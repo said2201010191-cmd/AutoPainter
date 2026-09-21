@@ -1,77 +1,93 @@
 # AutoPainter
 
-`AutoPainterFinal.luau` is the client-side successor to `AutoPainterFastClient.luau`. It keeps the existing game protocol:
+`AutoPainterFinal.luau` is a standalone client script. Join the game, run the public loader in the same client execution environment as the old loader, select provinces, and use your own existing PaintBucket. The UI and scheduler start automatically.
 
-```lua
-ServerControls:InvokeServer("PaintPart", { Part = province, Color = desiredColor }, "Peace")
-```
+No Studio access, place editing, publishing, server installation, or changes to existing game objects are required. Each player is resolved dynamically through `Players.LocalPlayer` and gets independent UI, selections, counters and request limits. There are no Roblox account identifiers or credentials in the script.
 
-No new server scripts, remote types, or server batching are required. Both supplied reference files are preserved byte-for-byte. The original attachment includes Markdown fences; those are intentionally preserved in the reference file, not in the runnable final script.
+## Public loader
 
-## Recommended setup for your game and friends
-
-In Roblox Studio, create a **LocalScript** under **StarterPlayer → StarterPlayerScripts**, paste the complete contents of `AutoPainterFinal.luau`, and publish your game. Each joining player runs an independent client painter using their own equipped `PaintBucket`. Restrict access using your game's normal play permissions. The repository may remain **private**. Friends do not need GitHub accounts or tokens. This is a client-only installation, not a server redesign.
-
-Ordinary Roblox LocalScripts cannot use the `loadstring(game:HttpGet(...))()` pattern: client-side `loadstring` is not a supported Roblox capability. The external loader below only works in a client environment that already provides both functions. See [Roblox script capabilities](https://create.roblox.com/docs/scripting/capabilities).
-
-## Controls
-
-- **Country Color:** click a province to copy its color; Done/Cancel or Escape cancels selection.
-- **Protect Province:** select provinces, then Done. Clicking a selected province does not register it twice.
-- **Unprotect Province / Clear Provinces:** remove selection, outlines, listeners, queue entries, and retry timers.
-- **Toggle Paint / Q:** pause or resume dispatch. Already-sent operations may still finish.
-- **Fast Paint:** use the higher rate limit and adaptive concurrency range.
-- **Safe Mode:** overrides Fast Paint with one outstanding call (including stalled calls), a global 4 requests/second ceiling, and at least one second between requests to the same province.
-- **Keep Territory Color:** preserve the **selected color at the time each province was added**, matching both supplied scripts. It does not capture that province's preexisting color.
-- **Randomize Color / R:** select a random RGB color. While Keep Territory Color is on, this affects new selections and the next normal-color mode.
-- Drag the top bar to move the panel. Close (×) stops the painter and cleans up. Re-running the script focuses an existing panel; close it before loading an updated version.
-
-Selection uses outlines on the actual parts, instead of cloned provinces. The box outlines may differ from a mesh province's exact silhouette. Decorative sounds, introductory tweens, and the obsolete external-loader advertisement are omitted.
-
-## Defaults and tuning
-
-All settings are in `CONFIG` at the top of the final file. These are starting values, not measured Roblox limits or guaranteed rates.
-
-| Mode | Initial window | Adaptive range | Request ceiling/sec | Burst | Starts/frame |
-|---|---:|---:|---:|---:|---:|
-| Normal | 8 | 2–24 | 160 | 8 | 16 |
-| Fast | 16 | 4–64 | 360 | 16 | 32 |
-| Safe | 1 | fixed 1 | 4 | 1 | 1 |
-
-Each province has **one outstanding request maximum**, including requests from before removal/re-addition or respawn. A request that has returned gets a short 0.10–0.75 second replication grace period only if its requested color is still unobserved. Errors and unconfirmed results use exponential retry backoff, starting around 0.2 seconds and capped around 5 seconds (±10% staggering).
-
-The controller samples every two seconds. Under sustained demand it tests a higher window and retains it when observed paint throughput improves without excessive latency. It also probes lower windows to find the same throughput with fewer requests outstanding. Errors, zero observed paint with repeated unconfirmed results, and latency/throughput regression reduce the window. Small selections and short runs often finish before tuning becomes relevant. Set `Adaptive = false` for controlled comparisons; each mode then keeps its initial window.
-
-`Rate` and `Burst` bound dispatch independently of FPS and latency. They do not promise that many paints/second. Raising them helps only if the rate ceiling is the active bottleneck and the game/server still accepts useful work. At low FPS, `Batch` can also become the bottleneck. Avoid raising `HardOutstanding` without measurements.
-
-## Honest telemetry and outstanding calls
-
-The panel shows **observed paint/s**, returns/s, active/window, stalled calls, selected count, and total errors. Observed paint counts one observation of a requested target color per associated attempt, using real elapsed time. A successful return alone is not a paint acknowledgment. Another player can produce the same color change; without an explicit server acknowledgment the client cannot prove attribution or reliably see every transient intermediate color.
-
-The returned controller's `GetStats()` additionally exposes Attempted, Returned, Failures, Observed, Unconfirmed, Stalls, Selected, Ready, Delayed, InFlight, Stalled, Window, RTT, RemoteReady, and Running. RTT is an exponentially smoothed round-trip estimate. No per-request log grows over time.
-
-After 15 seconds an unreturned call is labeled stalled. It remains in the **64-call hard outstanding cap** and blocks further requests to that province. It stops occupying the healthy adaptive window, allowing other provinces to use any remaining hard capacity in Normal/Fast. Safe Mode keeps its one-call total limit; switching from another mode waits for older calls to drain. Returning or throwing releases its accounting exactly once. Clear, pause, respawn, or a local timeout cannot undo a server operation already sent. Consequently, clear releases all selection state immediately, but the bounded records and arguments for real pending calls remain until those calls return.
-
-If all 64 calls never return, dispatch stops. There is no client-only way to guarantee both unlimited recovery from permanently unreturned calls and a real bound on server work. The script does not pretend that canceling a local coroutine cancels the server request. UI destruction stops new work and disconnects listeners; existing network calls may still complete afterward.
-
-## Public external loader
-
-The repository was **private at implementation time**. Its visibility is not changed by this work. A token-free, anonymous raw loader needs this file in a **public repository**, or an intentionally public static distribution copy. A private repository's browser login does not authenticate a Roblox HTTP request. Never put a PAT, cookie, signed private download URL, or other secret in a client script. GitHub documents access requirements in its [repository contents API](https://docs.github.com/en/rest/repos/contents).
-
-Exact moving-main loader, once this repository is public, in a compatible external client environment:
+After making this repository public:
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterFinal.luau", true))()
 ```
 
-For reproducible friend sessions, prefer the Studio installation above. If using an external loader, replace `main` with the reviewed full commit SHA to pin everyone to the same version. Public does not mean private distribution: anyone may retrieve a public file. No dynamic loader or credential is required by the final implementation itself.
+[LoaderPublic.luau](LoaderPublic.luau) is an equivalent loader with explicit download/compile error messages. Both use the same exact path. The repository remains private during development; an anonymous raw request cannot retrieve a private file. No PAT, cookie, signed private URL, or other secret belongs in a client loader. For reproducible sessions, replace `main` in the URL with a reviewed full commit SHA once the file is publicly accessible.
+
+As with the original loader, the player's execution environment must already provide client `loadstring` and `game:HttpGet`. The stock Roblox client does not provide an arbitrary-script launcher, and ordinary LocalScripts do not provide client `loadstring`. This package assumes your existing loader environment; it does not require a Studio or server setup. See [Roblox's capability documentation](https://create.roblox.com/docs/scripting/capabilities).
+
+When upgrading from an older running version, close its panel before loading the new version. Re-running while a panel exists focuses that running instance, avoiding duplicate schedulers. Already-sent calls cannot be canceled by closing the UI.
+
+## Existing protocol
+
+The client only reads the equipped object path:
+
+`Players.LocalPlayer.Character → PaintBucket → Remotes → ServerControls`
+
+Every invocation retains the existing arguments:
+
+```lua
+ServerControls:InvokeServer("PaintPart", { Part = province, Color = desiredColor }, "Peace")
+```
+
+No new RemoteEvents or RemoteFunctions are created. The only helper BindableFunction is local to the UI and prevents duplicate script instances. Reference files `AutoPainterOriginal.luau` and `AutoPainterFastClient.luau` remain unchanged. The original ZIP file includes Markdown fences; they are preserved only in that reference, not in the runnable final script.
+
+## Same-province attacks
+
+Several returned requests may be valid contributions before a province changes color. The current implementation therefore supports bounded same-color overlap and does not classify unchanged color as a failed or useless request.
+
+| Mode | Outstanding per province | Initial global window | Adaptive global range | Request ceiling/sec | Burst | Starts/frame |
+|---|---:|---:|---:|---:|---:|---:|
+| Normal | 2 | 8 | 2–24 | 160 | 8 | 16 |
+| Fast | 6 | 16 | 4–64 | 360 | 16 | 32 |
+| Safe | 1 | 1 | Fixed 1 | 4 | 1 | 1 |
+
+Change `Normal.MaxPerProvince`, `Fast.MaxPerProvince`, and `Safe.MaxPerProvince` in `CONFIG` near the top of the script. Safe also has an independent total outstanding limit of one and a one-second minimum between requests to the same province.
+
+Six is a practical Fast starting point: one contested province can occupy six simultaneous calls, two can occupy twelve, and larger selections share the global window. Normal uses two for moderate overlap. These defaults are reasoned starting values, not measured engine limits or a claim that six is optimal for your server. Compare 4/6/8 in your actual game; keep the global hard cap intact while tuning.
+
+The FIFO grants **one request per visit**, then moves the province to the back if it can accept more. An initial set of dirty provinces receives a first pass before extra passes. A newly selected province joins the existing FIFO order; a previously queued province may still have one earlier ticket, but cannot repeatedly jump ahead. At most one ready ticket exists per selection.
+
+A part's outstanding count survives remove, Clear, re-add and respawn. Changing target color waits for all previous-color calls to that part to drain, preventing overlapping contradictory colors. Switching to a lower-concurrency mode also lets already-sent calls drain instead of pretending to cancel them. Once the desired visible color is observed, new requests stop until it differs again; already-sent contributions may still finish.
+
+## Congestion, errors and limits
+
+The adaptive global window uses **non-throwing return rate, round-trip latency, actual invocation errors, and capacity pressure**. It never uses missing color observations to shrink the window. Higher windows are retained when return throughput improves without excessive latency; lower-window probes can retain the same throughput with fewer outstanding calls. Set `Adaptive = false` for fixed-window comparisons using each mode's Initial setting.
+
+Only an actual thrown `InvokeServer` error triggers per-province exponential backoff, starting around 0.2 seconds and capped around 5 seconds with ±10% staggering. An older successful sibling cannot erase a newer error's cooldown. Old selection/remote results release their own accounting without applying their cooldown to a newly selected province or replacement remote. Nil, false and other non-throwing server returns are recorded as returns; no acknowledgment contract is invented.
+
+There is no color-confirmation waiting period or unconfirmed-color penalty. A healthy return can immediately refill a same-province slot while the visible color remains unchanged.
+
+The **64-call hard outstanding cap** includes old-remote and stalled calls. After 15 seconds an unreturned call is marked stalled, retained in its part's count and the hard cap, and excluded from the healthy Normal/Fast adaptive window. Other provinces may use spare hard capacity. Safe retains its total one-call limit even for stalled calls. If all 64 calls never return, dispatch stops; a client timeout cannot cancel a server operation or safely fabricate released capacity.
+
+Rate, burst and per-frame budgets apply independently of the concurrency window. No task is created to wait for capacity. One task is created only after reserving a real request slot. Retry timers are bounded to one per selected province; correct/idle provinces are not scanned each frame.
+
+## Controls
+
+- **Country Color:** click a province to copy its color. Done/Cancel or Escape cancels selection.
+- **Protect / Unprotect Province:** select or remove provinces, then Done. Repeated Add clicks do not register duplicates.
+- **Clear Provinces:** remove every selection, outline, per-part listener, ready ticket and retry timer. Bounded real pending-call records remain until those calls return.
+- **Toggle Paint / Q:** pause or resume new dispatch; in-flight calls remain accounted for.
+- **Fast Paint:** enable the higher request rate/window and six-per-province default.
+- **Safe Mode:** override Fast with conservative pacing and one total outstanding call.
+- **Keep Territory Color:** use the selected color when each province was added, preserving both reference scripts' semantics. It does not capture the province's preexisting color.
+- **Randomize Color / R:** choose a random RGB color. While Keep Territory Color is on, existing selections keep their saved target colors.
+- Drag the top bar to move the panel; close × to stop and clean up. Selection boxes adorn real parts instead of cloning geometry. Decorative sounds and animation loops are omitted.
+
+## Telemetry
+
+The primary display is **returns/sec**, not claimed successful hits or paints. The secondary display shows target-color matches/sec, active/window, stalled calls, and cumulative errors.
+
+`GetStats()` exposes Attempted, Returned, Failures, Observed, Stalls, Selected, Ready, Delayed, InFlight, Stalled, Window, MaxPerProvince, PendingProvinces, RTT, RemoteReady and Running. `Observed` counts mismatch-to-target observations once per selected province transition, independently of how many calls overlap. It can include another player's color change and can miss transient changes between replication updates. Retargeting to a color already visible is not counted. The previous `Unconfirmed` field and color-confirmation settings were removed.
 
 ## Validation
 
-The final source compiles with the official Luau compiler. `tests/` runs the actual script against a deterministic mock of Roblox events, tasks, Instances, and RemoteFunction behavior:
+Run the actual final source through the deterministic Luau mock suite:
 
 ```sh
 python3 tests/run_tests.py /path/to/luau
 ```
 
-Tests cover immediate/deferred event delivery, FIFO fairness, color deduplication, delayed replication, old-color completion, errors, retries, Safe mode, missing/replaced remotes, respawn, stalled calls, destruction, repeated clear cycles, UI shutdown, duplicate loading, adaptive tuning, and rate limits at different frame rates. These tests do **not** replace a Studio/live-game test. No actual-game throughput improvement is claimed as measured. See [ANALYSIS.md](ANALYSIS.md) for the original/optimized behavior review, design rationale, simulated results, and a suggested live benchmark.
+The revised suite has 57 passing tests. It covers controlled same-province overlap, one-slot-per-visit fairness, multi-contribution captures, no-color-change returns, nil/false returns, actual-error backoff, out-of-order completions, color barriers, clear/remove/re-add, respawn, stalled hard caps, independent players, lifecycle cleanup and the exact public loader path. Both runtime and loader compile with the official Luau compiler.
+
+These are simulated correctness/performance tests, not a live-game benchmark. In a fixture requiring 24 contributions at 200 ms simulated latency, Fast capped at one per province took 5.15 seconds; Fast capped at six took 0.85 seconds. Actual performance depends on server behavior, throttling, network latency, replication and FPS. See [ANALYSIS.md](ANALYSIS.md) for the review and revision details.
