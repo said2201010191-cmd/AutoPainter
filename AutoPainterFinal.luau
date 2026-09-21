@@ -48,7 +48,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 2 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 3 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -534,7 +534,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 2)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 3)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -606,6 +606,9 @@ local keepButton = option("Keep Territory Color", "OFF")
 local randomButton = option("Randomize Color  [R]", "Change")
 local diagnosticButton = option("Diagnostics · no requests", "ON")
 local inspectButton = option("Local state report", "Inspect")
+local sourceButton = option("PaintBucket LocalScript source", "Inspect source")
+sourceButton.TextSize, sourceButton.TextWrapped = 12, true
+local sourceInspectionBusy = false
 local reportNav = make("Frame", scroll, { Name = "DiagnosticPages", Visible = false,
 	LayoutOrder = rowOrder + 1, Size = UDim2.new(1, -6, 0, 32), BackgroundTransparency = 1 })
 local reportPrevious = make("TextButton", reportNav, { Text = "Prev", Size = UDim2.fromOffset(70, 28),
@@ -959,6 +962,135 @@ function api.GetDiagnosticReport()
 	return table.concat(lines, "\n") .. "\n\n" .. descendantInventory(currentBucket, currentRemote)
 end
 
+function api.GetLocalScriptReport()
+	-- Optional environment capability only. Never read Source/closures, execute the
+	-- returned text, require modules, invoke tool callbacks, or probe game remotes.
+	local heading = "PAINTBUCKET LOCALSCRIPT SOURCE\nSourceReportFormat=1\n"
+	if not alive then return heading .. "Status=unavailable; AutoPainter is closed" end
+	if not diagnosticOnly or not diagnosticLocked then
+		return heading .. "Status=refused; use LoaderDiagnostic.luau with diagnostics LOCKED ON"
+	end
+	if sourceInspectionBusy then return heading .. "Status=busy; one inspection is already running; no new work started" end
+	sourceInspectionBusy = true
+	local ok, report = pcall(function()
+		local output = { heading .. "DiagnosticOnly=true Locked=true",
+			"Scope=LocalPlayer Character/Backpack PaintBucket Tool descendants of class LocalScript only.",
+			"Only the existing environment decompile function is called; target scripts/functions are never executed.",
+			"Decompiler output is unverified text, not original source or proof of a working protocol.",
+			"No live state/closures are extracted; source text stays local and is not uploaded." }
+		local function emit(value) table.insert(output, value) end
+		local function safeName(value)
+			return (value:gsub("\\", "\\\\"):gsub("[%c]", function(c) return string.format("\\x%02X", string.byte(c)) end))
+		end
+		local function fullPath(object)
+			local readable, name = pcall(function() return object:GetFullName() end)
+			return readable and name or "<unavailable>"
+		end
+		local inspectSource = decompile -- Optional global; no guessed aliases or fallback mechanisms.
+		local available = type(inspectSource) == "function"
+		emit("decompile=" .. (available and "available (environment-provided; implementation not verified)" or "unavailable; no source can be inspected"))
+		local roots, seenRoots, candidates, seenScripts = {}, {}, {}, {}
+		local function collectRoots(container)
+			if not container then return end
+			for _, object in ipairs(container:GetChildren()) do
+				if object.Name == "PaintBucket" and object:IsA("Tool") and not seenRoots[object] then
+					seenRoots[object] = true; table.insert(roots, object)
+				end
+			end
+		end
+		collectRoots(player.Character)
+		collectRoots(player:FindFirstChild("Backpack"))
+		table.sort(roots, function(a, b) return fullPath(a) < fullPath(b) end)
+		for _, root in ipairs(roots) do
+			emit("Root=" .. safeName(fullPath(root)))
+			local listed, descendants = pcall(function() return root:GetDescendants() end)
+			if not listed then emit("RootStatus=GetDescendants failed; this root's scripts could not be enumerated")
+			else
+				for _, object in ipairs(descendants) do
+					if object:IsA("LocalScript") and not seenScripts[object] then
+						seenScripts[object] = true
+						table.insert(candidates, { object = object, root = root, path = fullPath(object) })
+					end
+				end
+			end
+		end
+		table.sort(candidates, function(a, b) return a.path < b.path end)
+		emit("LocalScriptsFound=" .. #candidates)
+		if #roots == 0 then emit("Status=no PaintBucket Tool in current Character or Backpack") end
+		local searches = {
+			{ "ServerControls", "servercontrols" }, { "ClientControls", "clientcontrols" },
+			{ "InvokeServer", "invokeserver" }, { "FireServer", "fireserver" },
+			{ "PaintPart", "paintpart" }, { "Peace", "peace" },
+			{ "color", "color", "colour", "brickcolor" },
+			{ "equip", "equipped", "unequipped" }, { "activate", "activated", "deactivated" },
+			{ "tool/state", "tool", "state", "enabled", "humanoid", "parent" },
+			{ "mode", "mode" }, { "client response", "onclientinvoke", "onclientevent", "return" },
+			{ "timing", "cooldown", "debounce", "timestamp", "tick(", "os.clock", "wait(" },
+			{ "session", "token", "session", "nonce" },
+		}
+		local function searchText(source)
+			emit("TEXT SEARCH INDEX (1-based source lines; includes comments and unused code)")
+			local first, lineNumber, hits = 1, 1, 0
+			while first <= #source do
+				local newline = string.find(source, "\n", first, true)
+				local text = string.sub(source, first, newline and newline - 1 or #source)
+				local lower, labels = string.lower(text), {}
+				for _, search in ipairs(searches) do
+					for i = 2, #search do
+						if string.find(lower, search[i], 1, true) then table.insert(labels, search[1]); break end
+					end
+				end
+				if #labels > 0 then
+					hits += 1
+					emit("L" .. lineNumber .. " [" .. table.concat(labels, ", ") .. "] " .. text)
+				end
+				if not newline then break end
+				first, lineNumber = newline + 1, lineNumber + 1
+			end
+			emit("MatchingLines=" .. hits .. "; inspect full source for arguments, callback responses and preceding statements.")
+			emit("Text matches alone cannot establish call order, runtime values, server acceptance or a return contract.")
+		end
+		local returned, failures, skipped = 0, 0, 0
+		for index, candidate in ipairs(candidates) do
+			emit("\n[LocalScript " .. index .. "]\nFullName=" .. safeName(candidate.path))
+			if not alive then emit("Status=aborted; AutoPainter closed during inspection"); break end
+			local root, object = candidate.root, candidate.object
+			local currentCharacter, currentBackpack = player.Character, player:FindFirstChild("Backpack")
+			local stillOwned = root.Name == "PaintBucket" and root:IsA("Tool")
+				and ((currentCharacter ~= nil and root.Parent == currentCharacter)
+					or (currentBackpack ~= nil and root.Parent == currentBackpack))
+			if not stillOwned or not object:IsA("LocalScript") or not object:IsDescendantOf(root) then
+				skipped += 1; emit("Status=skipped; script/tool left the current player's PaintBucket scope")
+			elseif not available then
+				skipped += 1; emit("Status=unavailable; decompile is not a function in this environment")
+			else
+				-- Serial protected reads: no spawned jobs, retry loop, or waiting backlog.
+				local readOK, source = pcall(inspectSource, object)
+				if not alive then emit("Status=aborted; AutoPainter closed while decompile was running"); break end
+				if not readOK then
+					failures += 1
+					emit("Status=decompiler failed\nError=" .. (type(source) == "string" and utf8.len(source)
+						and source or "<error is not readable UTF-8 text>"))
+				elseif type(source) ~= "string" or #source == 0 or not utf8.len(source) then
+					failures += 1; emit("Status=decompiler failed; expected nonempty UTF-8 source text; returned type=" .. type(source))
+				else
+					returned += 1
+					emit("Status=text returned; decompiler accuracy/completeness unverified\nSourceBytes=" .. #source)
+					emit("CurrentFullName=" .. safeName(fullPath(object)))
+					emit("BEGIN DECOMPILED SOURCE\n" .. source .. "\nEND DECOMPILED SOURCE")
+					searchText(source)
+				end
+			end
+		end
+		emit(string.format("\nTextReturned=%d Failures=%d Skipped=%d", returned, failures, skipped))
+		emit("END PAINTBUCKET LOCALSCRIPT SOURCE")
+		return table.concat(output, "\n")
+	end)
+	sourceInspectionBusy = false
+	if not ok then return heading .. "Status=inspection failed; diagnostic lock remains enabled; retry Inspect source" end
+	return report
+end
+
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	alive = false
@@ -983,6 +1115,11 @@ connect(randomButton.Activated, randomize)
 connect(diagnosticButton.Activated, function() api.SetDiagnostic(not diagnosticOnly) end)
 connect(inspectButton.Activated, function()
 	showReport(api.GetDiagnosticReport())
+end)
+connect(sourceButton.Activated, function()
+	if sourceInspectionBusy or not alive then return end
+	local report = api.GetLocalScriptReport()
+	if alive then showReport(report) end
 end)
 connect(reportPrevious.Activated, function()
 	if reportPage > 1 then reportPage -= 1; displayReportPage() end

@@ -52,6 +52,7 @@ function Mock.new(deferredSignals)
 	local methods = {}
 	local mt = {}
 	function mt.__index(object, key)
+		if key == "Source" and world.forbidSourceRead then error("Unexpected direct Source read") end
 		if methods[key] then return methods[key] end
 		if object._props[key] ~= nil then return object._props[key] end
 		return object._signals[key]

@@ -1,6 +1,6 @@
 # AutoPainter behavior and performance review
 
-**Latest live status:** the user reports that the first Safe-mode PaintPart request causes a moderation disconnect. Previous modeled throughput/correctness results do not establish protocol validity. The normal tool source is unavailable; no rate limits or protocol fields were guessed/changed. See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the investigation and new default-on, zero-request diagnostic mode. The live issue is unresolved.
+**Latest live status:** the user reports that the first Safe-mode PaintPart request causes a moderation disconnect. Previous modeled throughput/correctness results do not establish protocol validity. The latest inventory names normal tool LocalScripts, but their source has not yet been supplied; no rate limits or protocol fields were guessed/changed. See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the investigation and new default-on, zero-request diagnostic mode. The live issue is unresolved.
 
 ## Scope and evidence
 
@@ -124,13 +124,19 @@ The UI emphasizes returns/sec and separately shows target matches/sec. Rates use
 
 The reported Handle-only hierarchy output is now supplemented by a separate native `PaintBucket:GetDescendants()` snapshot. **PAINTBUCKET DESCENDANTS** lists every returned object, sorted by full path, with complete identity/parent information, readable script Enabled flags, all attribute metadata, safe ValueBase types/values and remote flags. The old summary bounds do not limit this inventory. Explicit totals and `FreshRemoteInInventory` expose incomplete native enumeration instead of silently substituting the cached remote. Strings and credential-like values remain redacted.
 
-The complete report is returned by `GetDiagnosticReport()`. Its UI uses lossless UTF-8 pages (4,000 bytes / 40 newlines), retaining only the newest string and offsets. Snapshot work happens only on request; no per-object listeners or history are added. Format version 2 refuses stale diagnostic panels. Added tests simulate the exact inconsistent Handle-only summary, exceed all previous caps, verify every requested field and read failures, reconstruct every UI page byte-for-byte and assert zero remote calls/property writes/task creation during inspection. This corrects reporting, with no change to the unverified paint protocol or the default/locked diagnostic gate.
+The complete report is returned by `GetDiagnosticReport()`. Its UI uses lossless UTF-8 pages (4,000 bytes / 40 newlines), retaining only the newest string and offsets. Snapshot work happens only on request; no per-object listeners or history are added. Inventory format 2 is retained; UI capability version 3 refuses panels lacking source inspection. Added tests simulate the exact inconsistent Handle-only summary, exceed all previous caps, verify every requested field and read failures, reconstruct every UI page byte-for-byte and assert zero remote calls/property writes/task creation during inspection. This corrects reporting, with no change to the unverified paint protocol or the default/locked diagnostic gate.
+
+## Optional LocalScript inspection
+
+The locked build adds an explicit source action and `GetLocalScriptReport()`, separate from the unchanged metadata/inventory action. It accepts only LocalScript descendants of current LocalPlayer Character/Backpack PaintBucket tools and rechecks that scope before each read. It uses only the environment's existing `decompile` function, serially inside protected calls. There is no fallback source/closure access, module execution, target-function invocation, property write or game request. Absence/failure/invalid results are explicit; nonempty returned text is preserved and labeled unverified. A textual line index points to the requested protocol/color/state terms without inventing execution order or accepted arguments.
+
+Only one inspection may run at a time. Repeated clicks/API calls cannot spawn waiting work. Respawn/removal skips stale candidates; shutdown prevents further reads and stale UI writes. The same paginated view retains only the newest report. A never-returning external decompiler leaves one inspection busy; it is not replaced with accumulating timeout jobs. The decompiler provider's internals and reconstruction accuracy cannot be certified here. No actual game client source has yet been collected in this workspace, and no live protocol repair or test paint is claimed.
 
 ## Final review and validation
 
 The full revised runtime, UI callbacks, loader and tests were reviewed. Syntax is checked with the official Luau compiler; no engine API names changed in this revision. Review covered request reservation before spawning, per-group release, no negative/stuck accounting after thrown errors, immutable per-call payloads, remove/re-add identity, target-color barriers, late old-remote responses, mixed-success/error cooldowns, mode changes, fairness, timer removal, UI shutdown and independent players.
 
-The actual final source is executed by the deterministic mock suite, which now contains 187 tests (57 scheduler, 70 selection/color/boundary, 36 diagnostic, and 24 inventory checks). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
+The actual final source is executed by the deterministic mock suite, which now contains 227 tests (57 scheduler, 70 selection/color/boundary, 36 diagnostic, 24 inventory, and 40 source-inspection checks). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
 
 1. Exact peak concurrency of Normal 2, Fast 6, Safe 1 on a continuously contested province.
 2. One-slot-per-visit FIFO allocation and first-pass fairness across dirty provinces.
