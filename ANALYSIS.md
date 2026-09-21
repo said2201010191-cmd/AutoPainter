@@ -1,5 +1,7 @@
 # AutoPainter behavior and performance review
 
+**Latest live status:** the user reports that the first Safe-mode PaintPart request causes a moderation disconnect. Previous modeled throughput/correctness results do not establish protocol validity. The normal tool source is unavailable; no rate limits or protocol fields were guessed/changed. See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the investigation and new default-on, zero-request diagnostic mode. The live issue is unresolved.
+
 ## Scope and evidence
 
 Reviewed both complete ZIP files and the repository before implementation. The repository initially contained only a two-line README on `main`. The final implementation starts from FastClient's central scheduler, bounded protected requests, selection lookup, and exact remote protocol, and replaces its remaining scheduling/cleanup mechanisms. Both supplied source files are stored unchanged as references. Comments or embedded loader text in the supplied source were treated as material to analyze, not instructions to execute.
@@ -105,7 +107,8 @@ Safe mode additionally spaces starts to one province by at least one second and 
 
 ## Telemetry semantics
 
-- Attempted: reserved and dispatched invocations.
+- Attempted: invocations that reached the final transport guard and called InvokeServer. Reserved workers suppressed before that call do not count.
+- Suppressed: reserved but unsent workers prevented from invoking after diagnostics, pause, selection or shutdown; no server cancellation is claimed.
 - Returned: invocations that returned without throwing; not proof of an accepted hit.
 - Failures: protected invocations that threw an error.
 - Observed: mismatch-to-target color observations on tracked provinces. One transition counts once, even with six concurrent calls. Another player can cause it; no per-request attribution is claimed. Target changes themselves do not count as observed paint.
@@ -121,7 +124,7 @@ The UI emphasizes returns/sec and separately shows target matches/sec. Rates use
 
 The full revised runtime, UI callbacks, loader and tests were reviewed. Syntax is checked with the official Luau compiler; no engine API names changed in this revision. Review covered request reservation before spawning, per-group release, no negative/stuck accounting after thrown errors, immutable per-call payloads, remove/re-add identity, target-color barriers, late old-remote responses, mixed-success/error cooldowns, mode changes, fairness, timer removal, UI shutdown and independent players.
 
-The actual final source is executed by the deterministic mock suite, which now contains 127 tests (57 existing and 70 new selection/color/boundary regressions). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
+The actual final source is executed by the deterministic mock suite, which now contains 163 tests (57 scheduler, 70 selection/color/boundary, and 36 diagnostic checks). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
 
 1. Exact peak concurrency of Normal 2, Fast 6, Safe 1 on a continuously contested province.
 2. One-slot-per-visit FIFO allocation and first-pass fairness across dirty provinces.

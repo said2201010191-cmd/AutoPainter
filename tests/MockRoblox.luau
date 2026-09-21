@@ -4,7 +4,7 @@ function Mock.new(deferredSignals)
 	local world = { now = 0, events = {}, calls = {}, active = 0, peak = 0,
 		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
 		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6,
-		taskSpawns = 0, taskDefers = 0 }
+		taskSpawns = 0, taskDefers = 0, networkAttempts = 0 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -51,7 +51,9 @@ function Mock.new(deferredSignals)
 	local methods = {}
 	local mt = {}
 	function mt.__index(object, key)
-		return methods[key] or object._props[key] or object._signals[key]
+		if methods[key] then return methods[key] end
+		if object._props[key] ~= nil then return object._props[key] end
+		return object._signals[key]
 	end
 	local function ancestry(object)
 		object._signals.AncestryChanged:Fire(object, object.Parent)
@@ -82,7 +84,7 @@ function Mock.new(deferredSignals)
 	end
 	function world.instance(class)
 		local object = setmetatable({ _props = { ClassName = class, Name = class },
-			_children = {}, _signals = {}, _changed = {}, _destroyed = false }, mt)
+			_children = {}, _signals = {}, _changed = {}, _attributes = {}, _destroyed = false }, mt)
 		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantRemoving",
 			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat" }) do
 			object._signals[name] = signal()
@@ -92,6 +94,7 @@ function Mock.new(deferredSignals)
 	end
 	function methods:IsA(class)
 		return self.ClassName == class or (class == "BasePart" and self.ClassName == "Part")
+			or (class == "ValueBase" and table.find({ "Color3Value", "StringValue", "NumberValue", "BoolValue", "IntValue", "ObjectValue" }, self.ClassName) ~= nil)
 	end
 	function methods:IsDescendantOf(parent)
 		local current = self.Parent
@@ -102,6 +105,20 @@ function Mock.new(deferredSignals)
 		for _, child in ipairs(self._children) do if child.Name == name then return child end end
 		return nil
 	end
+	function methods:FindFirstChildOfClass(class)
+		for _, child in ipairs(self._children) do if child.ClassName == class then return child end end
+		return nil
+	end
+	function methods:GetChildren() return table.clone(self._children) end
+	function methods:GetFullName()
+		local names, object = {}, self
+		while object do table.insert(names, 1, object.Name); object = object.Parent end
+		return table.concat(names, ".")
+	end
+	function methods:SetAttribute(name, value) self._attributes[name] = value end
+	function methods:GetAttribute(name) return self._attributes[name] end
+	function methods:GetAttributes() return table.clone(self._attributes) end
+	function methods:GetState() return "Running" end
 	function methods:WaitForChild(name) return assert(self:FindFirstChild(name), name) end
 	function methods:GetPropertyChangedSignal(name)
 		if not self._changed[name] then self._changed[name] = signal() end
@@ -120,6 +137,7 @@ function Mock.new(deferredSignals)
 	function methods:GetFocusedTextBox() return nil end
 	function methods:Invoke(...) return self.OnInvoke(...) end
 	function methods:InvokeServer(command, payload, context)
+		world.networkAttempts += 1
 		if world.onInvoke then world.onInvoke(payload.Part, payload.Color) end
 		assert(self:IsA("RemoteFunction"))
 		assert(command == "PaintPart" and context == "Peace")
@@ -163,6 +181,10 @@ function Mock.new(deferredSignals)
 		local ok = coroutine.yield()
 		if not ok then error("Injected InvokeServer failure") end
 		return behavior.returnValue -- nil/false/other responses are not interpreted by production.
+	end
+	function methods:FireServer()
+		world.networkAttempts += 1
+		error("Unexpected RemoteEvent invocation")
 	end
 	function world.complete(call, success)
 		assert(not call.done)
@@ -249,10 +271,10 @@ function Mock.new(deferredSignals)
 			defer = function(fn, ...) world.taskDefers += 1; world.schedule(0, fn, ...) end,
 		},
 	}, { __index = getfenv() })
-	function world.load(source)
+	function world.load(source, options)
 		local chunk = assert(loadstring(source, "AutoPainterFinal"))
 		setfenv(chunk, world.env)
-		local api = chunk()
+		local api = chunk(options)
 		world.flush()
 		return api
 	end

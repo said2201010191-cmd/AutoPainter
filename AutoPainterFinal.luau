@@ -1,9 +1,15 @@
 -- AutoPainterFinal: client-only successor to AutoPainterFastClient.luau.
--- Existing protocol: ServerControls:InvokeServer("PaintPart", {Part, Color}, "Peace").
+-- Legacy call shape only; the normal game's PaintBucket protocol is UNVERIFIED.
 -- Run through the public client loader; no place access or installation required.
 -- Each client uses its own LocalPlayer, UI, selection, and bounded request window.
 
 local CONFIG = {
+	DiagnosticOnly = true, -- Default to zero traffic while the first-request kick is unresolved.
+	DiagnosticMaxNodes = 96,
+	DiagnosticMaxDepth = 8,
+	DiagnosticMaxAttributes = 12,
+	DiagnosticMaxSelections = 24,
+	DiagnosticMaxText = 24000,
 	Normal = { Initial = 8, Min = 2, Max = 24, MaxPerProvince = 2, Rate = 160, Burst = 8, Batch = 16 },
 	Fast = { Initial = 16, Min = 4, Max = 64, MaxPerProvince = 6, Rate = 360, Burst = 16, Batch = 32 },
 	Safe = { Initial = 1, Min = 1, Max = 1, MaxPerProvince = 1, Rate = 4, Burst = 1, Batch = 1 },
@@ -19,6 +25,13 @@ local CONFIG = {
 	TelemetryInterval = 1,
 }
 
+local options = ...
+if type(options) ~= "table" then options = {} end
+local diagnosticOnly = CONFIG.DiagnosticOnly
+if type(options.DiagnosticOnly) == "boolean" then diagnosticOnly = options.DiagnosticOnly end
+local diagnosticLocked = options.LockDiagnostics == true
+if diagnosticLocked then diagnosticOnly = true end
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Input = game:GetService("UserInputService")
@@ -33,7 +46,12 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		return bridge:Invoke()
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 1 then
+			error("Close the older AutoPainter panel before loading diagnostics; it cannot guarantee zero traffic.")
+		end
+		local running = bridge:Invoke()
+		if diagnosticOnly then running.SetDiagnostic(true, diagnosticLocked) end
+		return running
 	end
 	existing:Destroy()
 end
@@ -61,7 +79,7 @@ local cacheDirty = false
 local cacheVersion = 0
 local pumpQueued, pumping = false, false
 local rtt = 0.15
-local stats = { Attempted = 0, Returned = 0, Failures = 0, Observed = 0, Stalls = 0 }
+local stats = { Attempted = 0, Returned = 0, Failures = 0, Observed = 0, Stalls = 0, Suppressed = 0 }
 local sample = { Returned = 0, Failures = 0, Latency = 0, BusyTime = 0 }
 local epoch = os.clock()
 local probe = nil
@@ -188,7 +206,7 @@ evaluate = function(entry, now)
 	-- This observation is independent of RPC outcomes and may be caused by others.
 	if matched and not entry.matched then stats.Observed += 1 end
 	entry.matched = matched
-	if matched or not painting or selectionMode then
+	if matched or diagnosticOnly or not painting or selectionMode then
 		unqueue(entry)
 		unschedule(entry)
 		return
@@ -283,13 +301,17 @@ local function commitPending(now)
 	end
 end
 
-local function finishRequest(job, ok)
-	-- Release first, even if the selection, remote, mode or UI changed during the yield.
+local function releaseRequest(job)
 	jobs[job] = nil
 	job.group.count -= 1
 	if job.group.count == 0 then pendingByPart[job.part] = nil end
 	outstanding -= 1
 	if job.stalled then stalled -= 1 end
+end
+
+local function finishRequest(job, ok)
+	-- Release first, even if the selection, remote, mode or UI changed during the yield.
+	releaseRequest(job)
 	local now = os.clock()
 	local elapsed = now - job.started
 	if ok then stats.Returned += 1 else stats.Failures += 1 end
@@ -320,6 +342,14 @@ end
 
 local function invoke(job)
 	-- The scheduler reserves capacity BEFORE spawning. No tasks wait for a slot.
+	-- Final transport guard also covers a reserved worker that has not started yet.
+	if diagnosticOnly or not alive or not painting or selectionMode then
+		releaseRequest(job)
+		job.remote = nil
+		stats.Suppressed += 1
+		return
+	end
+	stats.Attempted += 1
 	local ok = pcall(function()
 		job.remote:InvokeServer("PaintPart", { Part = job.part, Color = job.color }, "Peace")
 	end)
@@ -334,7 +364,7 @@ end
 
 local function pump()
 	pumpQueued = false
-	if not alive or pumping or not painting or selectionMode or not remote then return end
+	if not alive or pumping or diagnosticOnly or not painting or selectionMode or not remote then return end
 	if not ui:IsDescendantOf(playerGui) then api.Destroy(); return end
 	pumping = true
 	local now = os.clock()
@@ -366,20 +396,19 @@ local function pump()
 			entry.lastSent = now
 			jobs[job] = true
 			outstanding += 1
-			stats.Attempted += 1
 			tokens -= 1
 			frameBudget -= 1
 			task.spawn(invoke, job)
 			-- One request per visit. Extra capacity goes behind all waiting provinces.
 			evaluate(entry, now)
-			if not remote or not alive or not painting or selectionMode then break end
+			if not remote or not alive or diagnosticOnly or not painting or selectionMode then break end
 		end
 	end
 	pumping = false
 end
 
 kick = function()
-	if not alive or pumpQueued or pumping or not painting or selectionMode or not remote or not readyHead then return end
+	if not alive or pumpQueued or pumping or diagnosticOnly or not painting or selectionMode or not remote or not readyHead then return end
 	if frameBudget <= 0 or outstanding >= CONFIG.HardOutstanding or (outstanding - stalled) >= window then return end
 	if safe and outstanding >= 1 then return end
 	refill(os.clock())
@@ -460,7 +489,7 @@ local function tune(now)
 	local returnRate = returns / duration -- No server contract: a return is not a confirmed hit.
 	local latency = returns > 0 and sample.Latency / returns or rtt
 	local busy = sample.BusyTime / duration >= 0.20
-	if CONFIG.Adaptive and not safe and painting and not selectionMode and remote then
+	if CONFIG.Adaptive and not safe and not diagnosticOnly and painting and not selectionMode and remote then
 		local badErrors = failures >= 2 and failures / math.max(1, returns + failures) >= 0.10
 		local congestion = steady and busy and returns >= CONFIG.MinTuneReturns
 			and latency > steady.latency * 1.5 and returnRate < steady.rate * 0.95
@@ -503,6 +532,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 1)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -513,7 +543,7 @@ local top = make("TextLabel", main, { Text = "Paint Admin Panel · FINAL", TextS
 	Size = UDim2.new(1, 0, 0, 36), Active = true })
 local close = make("TextButton", top, { Text = "×", TextSize = 24, BackgroundTransparency = 1,
 	TextColor3 = Color3.new(1, 1, 1), Position = UDim2.new(1, -36, 0, 0), Size = UDim2.fromOffset(36, 36) })
-statusLabel = make("TextLabel", main, { Text = "Ready", TextSize = 16, BackgroundTransparency = 1,
+statusLabel = make("TextLabel", main, { Text = diagnosticOnly and "DIAGNOSTIC: no new requests" or "Ready", TextSize = 16, BackgroundTransparency = 1,
 	TextColor3 = Color3.fromRGB(80, 255, 123), Position = UDim2.fromOffset(8, 39), Size = UDim2.new(1, -16, 0, 23) })
 detailLabel = make("TextLabel", main, { Text = "Q: pause/resume · R: random color", TextSize = 13,
 	BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(195, 195, 210),
@@ -572,7 +602,17 @@ local paintButton = option("Toggle Paint  [Q]", "ON")
 local fastButton = option("Fast Paint", "OFF")
 local keepButton = option("Keep Territory Color", "OFF")
 local randomButton = option("Randomize Color  [R]", "Change")
+local diagnosticButton = option("Diagnostics · no requests", "ON")
+local inspectButton = option("Local state report", "Inspect")
+local reportBox = make("TextBox", scroll, { Name = "DiagnosticReport", Text = "", Visible = false,
+	LayoutOrder = rowOrder + 1, Size = UDim2.new(1, -6, 0, 120), AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = Color3.fromRGB(25, 25, 32), TextColor3 = Color3.new(1, 1, 1),
+	Font = Enum.Font.Code, TextSize = 13, TextWrapped = true, RichText = false,
+	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+	TextEditable = false, ClearTextOnFocus = false, MultiLine = true })
 switch(safeButton, safe); switch(paintButton, painting); switch(fastButton, fast); switch(keepButton, keepColor)
+switch(diagnosticButton, diagnosticOnly)
+if diagnosticLocked then diagnosticButton.Text = "LOCKED" end
 
 function api.SetColor(value)
 	if not alive then return end
@@ -606,6 +646,21 @@ function api.SetKeepColor(value)
 	if not alive then return end
 	keepColor = value == true; switch(keepButton, keepColor); retargetAll()
 end
+function api.SetDiagnostic(value, lock)
+	if not alive then return false end
+	if lock == true then diagnosticLocked = true; value = true end
+	if diagnosticLocked and value ~= true then return false end
+	diagnosticOnly = value == true
+	switch(diagnosticButton, diagnosticOnly)
+	if diagnosticLocked then diagnosticButton.Text = "LOCKED" end
+	-- Clear only unsent work. Sent calls remain counted until their real return.
+	while readyHead do unqueue(readyHead) end
+	while delayed[1] do unschedule(delayed[1]) end
+	resetSample(os.clock())
+	-- Leaving inspection never starts traffic as a side effect of this control.
+	if not diagnosticOnly then api.SetPainting(false) end
+	return true
+end
 api.AddProvince = addProvince
 -- Programmatic additions obey the same transaction boundary as the UI.
 function api.CommitSelections() setSelectionMode(nil) end
@@ -618,6 +673,7 @@ function api.GetStats()
 	result.Selected, result.Ready, result.Delayed = #entries, readyCount, #delayed
 	result.PendingSelections, result.CommittedSelections = pendingCount, #entries - pendingCount
 	result.Painting, result.SelectionMode = painting, selectionMode
+	result.DiagnosticOnly, result.DiagnosticLocked = diagnosticOnly, diagnosticLocked
 	result.InFlight, result.Stalled, result.Window = outstanding, stalled, window
 	result.MaxPerProvince = mode.MaxPerProvince
 	result.RequestTokens = tokens
@@ -627,6 +683,150 @@ function api.GetStats()
 	result.RTT, result.RemoteReady, result.Running = rtt, remote ~= nil, alive
 	return result
 end
+
+function api.GetDiagnosticReport()
+	-- Explicit snapshot only: no polling tree scans, remote calls, script execution,
+	-- source decompilation, property writes, hooks, or retained snapshot Instances.
+	local lines, length, truncated = {}, 0, false
+	local function clean(value)
+		return string.sub(tostring(value):gsub("[%c]", " "), 1, 180)
+	end
+	local function line(value)
+		if length + #value + 1 > CONFIG.DiagnosticMaxText - 100 then truncated = true; return end
+		table.insert(lines, value); length += #value + 1
+	end
+	local function path(object)
+		if not object then return "<missing>" end
+		local ok, name = pcall(function() return object:GetFullName() end)
+		return ok and clean(name) or "<unavailable>"
+	end
+	local function sensitive(name)
+		local lower = string.lower(name)
+		for _, word in ipairs({ "token", "session", "nonce", "secret", "password", "cookie", "auth", "key" }) do
+			if string.find(lower, word, 1, true) then return true end
+		end
+		return false
+	end
+	local function valueText(value, name)
+		local kind = typeof(value)
+		if sensitive(name or "") then return "<redacted " .. kind .. ">" end
+		if kind == "Color3" then return string.format("Color3(%.5f, %.5f, %.5f)", value.R, value.G, value.B) end
+		if kind == "boolean" or kind == "number" or kind == "EnumItem" then return clean(value) end
+		if kind == "nil" then return "<nil>" end
+		-- Unknown strings can be server-issued credentials; show presence/type, not contents.
+		if kind == "string" then return "<string value omitted>" end
+		if kind == "Instance" then return "<Instance " .. path(value) .. ">" end
+		return "<" .. kind .. ">"
+	end
+	local function property(object, name)
+		if not object then return "<missing>" end
+		local ok, value = pcall(function() return object[name] end)
+		return ok and valueText(value, name) or "<unavailable>"
+	end
+	local function attributes(object)
+		local ok, values = pcall(function() return object:GetAttributes() end)
+		if not ok then line("  attributes: <unavailable>"); return end
+		local names, count = {}, 0
+		for name in pairs(values) do
+			count += 1
+			if #names < CONFIG.DiagnosticMaxAttributes then table.insert(names, name) end
+		end
+		table.sort(names)
+		for _, name in ipairs(names) do line("  @" .. clean(name) .. " = " .. valueText(values[name], name)) end
+		if count > #names then line("  [more attributes omitted]") end
+	end
+	local function describe(object, label)
+		if not object then line(label .. ": <missing>"); return end
+		line(label .. ": " .. path(object) .. " [" .. clean(object.ClassName) .. "]")
+		attributes(object)
+		if object:IsA("Tool") then
+			line("  Enabled=" .. property(object, "Enabled") .. " RequiresHandle=" .. property(object, "RequiresHandle")
+				.. " ManualActivationOnly=" .. property(object, "ManualActivationOnly"))
+			local handle = object:FindFirstChild("Handle")
+			line("  Handle=" .. path(handle) .. " BasePart=" .. tostring(handle ~= nil and handle:IsA("BasePart")))
+		elseif object:IsA("Humanoid") then
+			line("  Health=" .. property(object, "Health") .. " Sit=" .. property(object, "Sit")
+				.. " PlatformStand=" .. property(object, "PlatformStand"))
+			local ok, state = pcall(function() return object:GetState() end)
+			line("  Humanoid state=" .. (ok and clean(state) or "<unavailable>"))
+		elseif object:IsA("ValueBase") then
+			local ok, value = pcall(function() return object.Value end)
+			line("  Value=" .. (ok and valueText(value, object.Name) or "<unavailable>"))
+		elseif object:IsA("LocalScript") or object:IsA("Script") then
+			line("  Enabled=" .. property(object, "Enabled") .. "; source not read/executed")
+		elseif object:IsA("ModuleScript") then line("  Module not required/read") end
+	end
+
+	line("AUTOPAINTER LOCAL SNAPSHOT · normal tool protocol UNVERIFIED")
+	line("Read-only snapshot; no network probe or test paint is performed.")
+	line("DiagnosticOnly=" .. tostring(diagnosticOnly) .. " Locked=" .. tostring(diagnosticLocked)
+		.. " PaintingToggle=" .. tostring(painting) .. " SelectionMode=" .. (selectionMode or "none"))
+	line(string.format("Selected=%d Pending=%d Committed=%d Ready=%d Delayed=%d", #entries,
+		pendingCount, #entries - pendingCount, readyCount, #delayed))
+	line(string.format("Attempted=%d Returned=%d Errors=%d InFlight=%d Stalled=%d SuppressedBeforeSend=%d",
+		stats.Attempted, stats.Returned, stats.Failures, outstanding, stalled, stats.Suppressed))
+	line("Already-sent operations cannot be canceled by diagnostics. Other tool scripts are unchanged.")
+	line("Selected global color=" .. valueText(color, "Color") .. " KeepTerritoryColor=" .. tostring(keepColor))
+	line('Legacy payload only: InvokeServer("PaintPart", {Part = selected BasePart, Color = target Color3}, "Peace")')
+	line('"Peace", argument contract, prerequisites and server acceptance are NOT verified.')
+	local currentCharacter = player.Character
+	local currentBucket = currentCharacter and currentCharacter:FindFirstChild("PaintBucket")
+	local currentRemotes = currentBucket and currentBucket:FindFirstChild("Remotes")
+	local currentRemote = currentRemotes and currentRemotes:FindFirstChild("ServerControls")
+	local backpack = player:FindFirstChild("Backpack")
+	local storedBucket = backpack and backpack:FindFirstChild("PaintBucket")
+	local humanoid = currentCharacter and currentCharacter:FindFirstChildOfClass("Humanoid")
+	local resolved = currentRemote ~= nil and currentRemote:IsA("RemoteFunction")
+		and currentCharacter:IsDescendantOf(Workspace)
+	line("Observed Character in Workspace=" .. tostring(currentCharacter ~= nil and currentCharacter:IsDescendantOf(Workspace)))
+	line("Observed Tool parent is current Character=" .. tostring(currentBucket ~= nil
+		and currentBucket:IsA("Tool") and currentBucket.Parent == currentCharacter))
+	line("Remote path resolves=" .. tostring(resolved) .. "; this is not a server-readiness check")
+	line("Fresh remote=" .. path(currentRemote) .. " Cached remote=" .. path(remote)
+		.. " Same=" .. tostring(currentRemote ~= nil and currentRemote == remote)
+		.. " CacheDirty=" .. tostring(cacheDirty) .. " Version=" .. tostring(cacheVersion))
+	describe(currentCharacter, "Character summary")
+	describe(humanoid, "Humanoid summary")
+
+	-- Bounded breadth-first inventory of equipped/backpack tools only, not the world.
+	local queue, seen = {}, {}
+	local function append(object, label, depth)
+		if not object or seen[object] then return end
+		if #queue >= CONFIG.DiagnosticMaxNodes then truncated = true; return end
+		seen[object] = true
+		table.insert(queue, { object = object, label = label, depth = depth })
+	end
+	append(currentBucket, "Equipped hierarchy", 0)
+	append(storedBucket, "Backpack hierarchy (not equipped)", 0)
+	if not currentBucket then line("Equipped hierarchy: <missing>") end
+	if not storedBucket then line("Backpack PaintBucket: <missing>") end
+	local index = 1
+	while index <= #queue and not (length >= CONFIG.DiagnosticMaxText - 200) do
+		local item = queue[index]
+		describe(item.object, item.label)
+		local children = item.object:GetChildren()
+		if item.depth < CONFIG.DiagnosticMaxDepth then
+			for _, child in ipairs(children) do
+				if #queue >= CONFIG.DiagnosticMaxNodes then truncated = true; break end
+				append(child, "  child", item.depth + 1)
+			end
+		elseif #children > 0 then truncated = true end
+		index += 1
+	end
+	if index <= #queue then truncated = true end
+	line("Selected targets (bounded sample; saved color is selected color at add time):")
+	for i = 1, math.min(#entries, CONFIG.DiagnosticMaxSelections) do
+		local entry = entries[i]
+		line(string.format("  %d %s committed=%s valid=%s", i, path(entry.part), tostring(entry.committed), tostring(valid(entry.part))))
+		line("    current=" .. valueText(entry.part.Color, "Color") .. " target=" .. valueText(targetColor(entry), "Color")
+			.. " saved=" .. valueText(entry.savedColor, "Color"))
+	end
+	if #entries > CONFIG.DiagnosticMaxSelections then line("  [more selected targets omitted]") end
+	line("String/credential values omitted; metadata presence does not establish a protocol or permission.")
+	if truncated then table.insert(lines, "[Snapshot truncated to configured bounds]") end
+	return table.concat(lines, "\n")
+end
+
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	alive = false
@@ -646,6 +846,11 @@ connect(paintButton.Activated, function() api.SetPainting(not painting) end)
 connect(fastButton.Activated, function() api.SetFast(not fast) end)
 connect(keepButton.Activated, function() api.SetKeepColor(not keepColor) end)
 connect(randomButton.Activated, randomize)
+connect(diagnosticButton.Activated, function() api.SetDiagnostic(not diagnosticOnly) end)
+connect(inspectButton.Activated, function()
+	reportBox.Text = api.GetDiagnosticReport()
+	reportBox.Visible = true
+end)
 connect(doneButton.Activated, function() setSelectionMode(nil) end)
 connect(close.Activated, api.Destroy)
 
@@ -728,14 +933,15 @@ connect(RunService.Heartbeat, function(dt)
 			end
 		end
 	end
-	if painting and not selectionMode and remote and readyHead and outstanding - stalled >= window then sample.BusyTime += dt end
+	if painting and not diagnosticOnly and not selectionMode and remote and readyHead and outstanding - stalled >= window then sample.BusyTime += dt end
 	tune(now)
 	kick()
 	if now - lastDisplay >= CONFIG.TelemetryInterval then
 		local elapsed = now - lastDisplay
 		local observedRate, returnRate = (stats.Observed - lastObserved) / elapsed, (stats.Returned - lastReturned) / elapsed
-		local state = selectionMode and "Selecting (dispatch paused)" or (not painting and "Paused"
-			or (not remote and "Equip PaintBucket" or (safe and "Safe" or (fast and "Fast" or "Normal"))))
+		local state = diagnosticOnly and "DIAGNOSTIC: no new requests"
+			or (selectionMode and "Selecting (dispatch paused)" or (not painting and "Paused"
+			or (not remote and "Equip PaintBucket" or (safe and "Safe" or (fast and "Fast" or "Normal")))))
 		statusLabel.Text = string.format("%.1f returns/s · %d selected · %s", returnRate, #entries, state)
 		detailLabel.Text = string.format("%.1f target matches/s · %d/%d active · %d stalled · %d errors", observedRate,
 			outstanding - stalled, window, stalled, stats.Failures)

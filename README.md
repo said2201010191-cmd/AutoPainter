@@ -1,6 +1,18 @@
 # AutoPainter
 
-`AutoPainterFinal.luau` is a standalone client script. Join the game, run the public loader in the same client execution environment as the old loader, click Protect Province, select provinces, and press Done to activate them with your own existing PaintBucket. The UI and scheduler start automatically.
+**Current status: the normal PaintBucket protocol is unverified. The user reports a kick on the very first Safe-mode request. This revision adds diagnostics; it does not fix or live-validate that rejection.** The script now defaults to diagnostics ON, so selecting and committing provinces, equipping the bucket, and toggling painting produce zero AutoPainter game requests. Rate/concurrency values are unchanged.
+
+For this investigation, close the older AutoPainter panel and run the locked diagnostic loader:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/LoaderDiagnostic.luau", true))()
+```
+
+Select provinces and press Done, then use **Local state report → Inspect** to view the current local tool/remote/Humanoid state. The diagnostic loader locks that instance to zero AutoPainter requests, including after Q/Safe/Fast/Toggle Paint. Inspect again after equipping or respawning to refresh the snapshot. No probing calls or test paint are performed. Existing already-sent calls and independently running normal tool scripts cannot be canceled by this mode.
+
+See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the evidence table, missing normal client/module/server-contract sources, exact diagnostic behavior and limits. A real successful request is still needed before any protocol repair can be called fixed.
+
+`AutoPainterFinal.luau` is a standalone client script. Join the game, run the public loader in the same client execution environment as the old loader, click Protect Province, select provinces, and press Done to activate them with your own existing PaintBucket. The UI starts automatically; the diagnostic gate suppresses dispatch by default.
 
 No Studio access, place editing, publishing, server installation, or changes to existing game objects are required. Each player is resolved dynamically through `Players.LocalPlayer` and gets independent UI, selections, counters and request limits. There are no Roblox account identifiers or credentials in the script.
 
@@ -24,7 +36,7 @@ The client only reads the equipped object path:
 
 `Players.LocalPlayer.Character → PaintBucket → Remotes → ServerControls`
 
-Every invocation retains the existing arguments:
+Outside diagnostics, the retained legacy invocation has these arguments (not verified against the normal game client):
 
 ```lua
 ServerControls:InvokeServer("PaintPart", { Part = province, Color = desiredColor }, "Peace")
@@ -66,7 +78,7 @@ Rate, burst and per-frame budgets apply independently of the concurrency window.
 
 **Protect Province → click tiles → highlights only → Done → eligible for painting.** A clicked tile is registered as pending. Registration does not evaluate paint work, enqueue it, consume tokens, create workers, alter request statistics, or wake the scheduler. Color changes, R, respawn, remote replacement, and duplicate loading cannot commit it. Pending entries still have lifecycle listeners so invalid/destroyed tiles can be removed promptly.
 
-All selection tools temporarily suspend **new AutoPainter dispatch**, including for previously committed provinces. Already-sent calls continue and remain honestly counted. Toggle Paint itself is unchanged. Done / Cancel and Escape both mean **finish and preserve clicked selections**; there is no rollback. All pending entries are marked committed before any is evaluated, in click order. With Toggle Paint ON, work resumes; with it OFF, no work starts until Q or the toggle turns it on. Country Color stays open after copying a color and requires Done/Escape to finish, preventing the color-copy click from resuming painting.
+All selection tools temporarily suspend **new AutoPainter dispatch**, including for previously committed provinces. Already-sent calls continue and remain honestly counted. Toggle Paint itself is unchanged. Done / Cancel and Escape both mean **finish and preserve clicked selections**; there is no rollback. All pending entries are marked committed before any is evaluated, in click order. With diagnostics OFF and Toggle Paint ON, work resumes; Toggle Paint OFF or diagnostics ON prevents dispatch. Country Color stays open after copying a color and requires Done/Escape to finish, preventing the color-copy click from resuming painting.
 
 Remove deletes a pending or committed entry immediately. Clear deletes both kinds plus highlights and queue/timer records; neither sends a new request. Closing × discards pending selections and stops the local painter. Existing game-tool behavior is not intercepted: this guarantee covers requests made by AutoPainter, not an independently running manual-tool script. There is no moderation, kick, or anti-cheat interception.
 
@@ -74,13 +86,16 @@ Programmatic `AddProvince(part)` has the same pending behavior. Call `CommitSele
 
 ## Current color and the normal manual bucket
 
-Country Color, Randomize Color, and R all use one selected color and update the UI swatch immediately. `GetColor()` exposes it. A color change alone performs no remote call or fake click. Outside selection mode, an enabled scheduler may repaint **already committed** provinces to their new target as intended.
+Country Color, Randomize Color, and R all use one selected color and update the UI swatch immediately. `GetColor()` exposes it. A color change alone performs no remote call or fake click. Outside selection/diagnostic mode, an enabled scheduler may repaint **already committed** provinces to their new target as intended.
 
 With **Keep Territory Color OFF**, pending and committed provinces follow the latest global color. With it **ON**, each province keeps the selected color at the moment it was clicked/added; committing does not overwrite that snapshot. Thus a single selection session may add A while red, change to blue, and add B: after Done, A targets red and B blue. The snapshot is the selected color, not the tile's existing color. Global color changes remain independent of that snapshot.
 
 **Manual PaintBucket color synchronization is not implemented in this revision.** The supplied files only reveal an AutoPainter-local `color` variable and the explicit `Color` argument in `PaintPart`. They contain neither the normal PaintBucket's LocalScript nor an established writable Color3Value/attribute/client setter. No live tool hierarchy is accessible in this workspace. A plausible property name cannot establish that normal clicks read it or that writing it has no painting side effects. Accordingly, the manual bucket is left unchanged, including while Keep Territory Color is ON. No guessed attribute, new remote, hook, or paint request is used as a substitute. A verified existing client color setter and its change handlers are the missing evidence needed to add safe synchronization.
 
 ## Controls
+
+- **Diagnostics · no requests:** ON by default during protocol investigation. Blocks all new AutoPainter remote invocations while allowing selection/commit/cache inspection. Turning an unlocked mode OFF also turns Toggle Paint OFF; it never resumes by itself. LOCKED instances cannot turn diagnostics OFF.
+- **Local state report / Inspect:** displays a fresh bounded snapshot without remote probes or game-state writes. No automatic upload, clipboard write or snapshot history is created.
 
 - **Country Color:** click a province to copy its color only; finish with Done/Cancel or Escape.
 - **Protect / Unprotect Province:** add pending selections or remove selections, then Done. Repeated Add clicks do not register duplicates; newly clicked tiles cannot paint before Done.
@@ -96,7 +111,7 @@ With **Keep Territory Color OFF**, pending and committed provinces follow the la
 
 The primary display is **returns/sec**, not claimed successful hits or paints. The secondary display shows target-color matches/sec, active/window, stalled calls, and cumulative errors.
 
-`GetStats()` exposes Attempted, Returned, Failures, Observed, Stalls, Selected, PendingSelections, CommittedSelections, SelectionMode, Painting, Ready, Delayed, InFlight, Stalled, Window, MaxPerProvince, RequestTokens, PendingProvinces, RTT, RemoteReady and Running. `Observed` counts mismatch-to-target observations once per selected province transition, independently of how many calls overlap. It can include another player's color change and can miss transient changes between replication updates. Retargeting to a color already visible is not counted. The previous `Unconfirmed` field and color-confirmation settings were removed.
+`GetStats()` exposes Attempted, Returned, Failures, Observed, Stalls, Selected, PendingSelections, CommittedSelections, SelectionMode, Painting, Ready, Delayed, InFlight, Stalled, Window, MaxPerProvince, RequestTokens, PendingProvinces, DiagnosticOnly, DiagnosticLocked, Suppressed, RTT, RemoteReady and Running. `Observed` counts mismatch-to-target observations once per selected province transition, independently of how many calls overlap. It can include another player's color change and can miss transient changes between replication updates. Retargeting to a color already visible is not counted. The previous `Unconfirmed` field and color-confirmation settings were removed.
 
 ## Validation
 
@@ -106,6 +121,6 @@ Run the actual final source through the deterministic Luau mock suite:
 python3 tests/run_tests.py /path/to/luau
 ```
 
-The revised suite has 127 passing tests: all 57 existing checks plus 70 selection/color/boundary regressions. It covers controlled same-province overlap, one-slot-per-visit fairness, multi-contribution captures, no-color-change returns, nil/false returns, actual-error backoff, out-of-order completions, color barriers, clear/remove/re-add, respawn, stalled hard caps, independent players, lifecycle cleanup and the exact public loader path. The new suite drives the actual Add/Pick/Remove/Done/Clear button callbacks, mouse/touch input, Q/R/Escape, and checks pending highlights, zero traffic/task/token use, atomic commit, OFF-state preservation, lifecycle races, repeated sessions, and post-commit concurrency/fairness. It also verifies the safe fallback of leaving an unverified manual-bucket value untouched; it does not claim a working manual-color binding. Both runtime and loader compile with the official Luau compiler.
+The revised suite has 163 passing tests: 57 scheduler checks, 70 selection/color/boundary regressions, and 36 diagnostic checks. Painting regressions explicitly opt out of diagnostics in their mocked startup; diagnostic checks test the actual default and locked loader. It covers controlled same-province overlap, one-slot-per-visit fairness, multi-contribution captures, no-color-change returns, nil/false returns, actual-error backoff, out-of-order completions, color barriers, clear/remove/re-add, respawn, stalled hard caps, independent players, lifecycle cleanup and the exact public loader path. The new suite drives the actual Add/Pick/Remove/Done/Clear button callbacks, mouse/touch input, Q/R/Escape, and checks pending highlights, zero traffic/task/token use, atomic commit, OFF-state preservation, lifecycle races, repeated sessions, and post-commit concurrency/fairness. It also verifies the safe fallback of leaving an unverified manual-bucket value untouched; it does not claim a working manual-color binding. The runtime and both loaders compile with the official Luau compiler. Mock acceptance of PaintPart is not evidence that the real server accepts it; the live rejection remains unresolved.
 
 These are simulated correctness/performance tests, not a live-game benchmark. In a fixture requiring 24 contributions at 200 ms simulated latency, Fast capped at one per province took 5.15 seconds; Fast capped at six took 0.85 seconds. Actual performance depends on server behavior, throttling, network latency, replication and FPS. See [ANALYSIS.md](ANALYSIS.md) for the review and revision details.

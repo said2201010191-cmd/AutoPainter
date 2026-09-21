@@ -302,7 +302,7 @@ for _, deferred in ipairs({ false, true }) do
 	test(prefix .. "reload while Add is open does not commit, duplicate listeners or paint", function()
 		local world, api = start(deferred); press(world, "Add"); selectMany(world, 20)
 		local baseline = world.connections
-		assert(world.load(SOURCE) == api); world.step(3)
+		assert(world.load(SOURCE, { DiagnosticOnly = false }) == api); world.step(3)
 		assertSilent(world, api, 20); assert(world.connections == baseline and api.GetStats().SelectionMode == "Add")
 		finishSelection(world, api); world.step(2); assert(api.GetStats().Observed == 20)
 		api.Destroy()

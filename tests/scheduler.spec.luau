@@ -8,7 +8,7 @@ local function test(name, callback)
 end
 local function start(deferred)
 	local world = Mock.new(deferred)
-	return world, world.load(SOURCE)
+	return world, world.load(SOURCE, { DiagnosticOnly = false })
 end
 local function add(world, api, count)
 	local parts = {}
@@ -170,7 +170,7 @@ for _, deferred in ipairs({ false, true }) do
 	test(prefix .. "duplicate loader and UI destruction", function()
 		local world, api = start(deferred)
 		local baseline = world.connections
-		assert(world.load(SOURCE) == api and world.connections == baseline)
+		assert(world.load(SOURCE, { DiagnosticOnly = false }) == api and world.connections == baseline)
 		add(world, api, 30); world.step(0.02)
 		world.playerGui:FindFirstChild("AutoPainterFinalUI"):Destroy(); world.flush()
 		local sent = #world.calls
@@ -206,7 +206,7 @@ test("adaptive performance versus fixed initial window (simulated latency)", fun
 	for _, adaptive in ipairs({ false, true }) do
 		local world = Mock.new(true)
 		local source = adaptive and SOURCE or string.gsub(SOURCE, "Adaptive = true", "Adaptive = false", 1)
-		local api = world.load(source); api.SetFast(true)
+		local api = world.load(source, { DiagnosticOnly = false }); api.SetFast(true)
 		world.behavior = { latency = 0.35 }; add(world, api, 1600); world.step(10)
 		table.insert(observations, api.GetStats().Observed)
 		api.Destroy(); world.step(1)
@@ -337,7 +337,7 @@ for _, deferred in ipairs({ false, true }) do
 	test(prefix .. "late selections wait at most one existing FIFO ticket from a busy province", function()
 		local world = Mock.new(deferred)
 		local source = string.gsub(SOURCE, "Fast = { Initial = 16", "Fast = { Initial = 4", 1)
-		local api = world.load(source); api.SetFast(true)
+		local api = world.load(source, { DiagnosticOnly = false }); api.SetFast(true)
 		world.behavior = { noPaint = true, latency = 0.2 }
 		add(world, api, 1); world.step(0.02); assert(#world.calls == 4)
 		local others = add(world, api, 20); world.step(1.5)
@@ -434,7 +434,7 @@ test("Fast 6 versus configurable Fast 1 on a province requiring 24 contributions
 	for _, limit in ipairs({ 1, 6 }) do
 		local world = Mock.new(true)
 		local source = string.gsub(SOURCE, "MaxPerProvince = 6", "MaxPerProvince = " .. limit, 1)
-		local api = world.load(source); api.SetFast(true)
+		local api = world.load(source, { DiagnosticOnly = false }); api.SetFast(true)
 		world.behavior = { hitsRequired = 24, latency = 0.2 }
 		add(world, api, 1)
 		while api.GetStats().Observed == 0 and world.now < 12 do world.step(1 / 60) end
@@ -481,6 +481,8 @@ test("public loader fetches the exact path and starts the complete local UI", fu
 		return chunk, err
 	end
 	local api = world.load(LOADER_SOURCE)
+	assert(api.GetStats().DiagnosticOnly)
+	api.SetDiagnostic(false); api.SetPainting(true)
 	assert(downloads == 1 and api.GetStats().Running and world.playerGui:FindFirstChild("AutoPainterFinalUI"))
 	add(world, api, 1); world.step(1); assert(api.GetStats().Observed == 1)
 	api.Destroy()
