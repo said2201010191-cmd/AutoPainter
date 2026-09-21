@@ -10,9 +10,9 @@ This is client-only. The server implementation, game place, and live PaintBucket
 
 | Feature | Original behavior | Final behavior |
 |---|---|---|
-| Selection | Mouse target must be named `Province`; Add mode allows repeated clicks and creates a clone each time. | Also requires a BasePart inside Workspace; lookup prevents duplicates. Touch selection is supported. |
+| Selection | Mouse target must be named `Province`; Add mode allows repeated clicks and creates a clone each time. | Also requires a BasePart inside Workspace; lookup prevents duplicates. Pending selection has highlights only until Done/Escape. Touch follows the same transaction. |
 | Protected storage | Array of Province, Coroutine, Event, Highlight records. Each selection creates a coroutine that merely installs a Stepped callback and exits. | Dense array plus Instance lookup; swap-remove, intrusive FIFO, indexed retry heap. |
-| Painting trigger | Each province's Stepped listener checks painting, debounce, prior-second PPS, PaintBucket, and color. | Color changes enqueue dirty work; adding, retargeting, completion, retry expiry, and remote restoration wake the scheduler. |
+| Painting trigger | Each province's Stepped listener checks painting, debounce, prior-second PPS, PaintBucket, and color. | Only committed selections can enter the FIFO. Color changes, commit, retargeting, completion, retry expiry and remote restoration can wake eligible work. Selection tools suspend dispatch; adding alone never wakes it. |
 | Remote | `Character.PaintBucket.Remotes.ServerControls:InvokeServer("PaintPart", {Part = province, Color = desired}, "Peace")`. | Exactly the same path and arguments; cached and refreshed when the hierarchy changes. |
 | Normal mode | One yielding callback per province if debounce works; no global cap. | Two pending same-color RPCs per province by default, a global adaptive window, token bucket, and frame-start budget. |
 | Safe mode | Disables the province debounce while InvokeServer runs and then uses legacy `wait(1)`; no global pacing across many provinces. | Fixed total outstanding concurrency 1, globally paced at 4 requests/sec, plus 1 second between same-province attempts. |
@@ -21,7 +21,7 @@ This is client-only. The server implementation, game place, and live PaintBucket
 | Keep Territory Color | `savedColor = color` when added. The condition parses as `(province.Color ~= color and not keepTerColor) or (keepTerColor and province.Color ~= savedColor)`. The original precedence is valid, though hard to read. | Explicit target selection, same saved-selected-color semantics. |
 | Unprotect | Disconnects matching events and destroys their clones, but never removes their array records. | Removes every selection record, listener, timer and visual. Pending RPC identity remains bounded until it returns. |
 | Clear | Disconnects and destroys but leaves the array full of references. Closing the already-ended registration coroutine does not cancel yielded event callbacks. | Clears the registry and ready/retry structures; future work stops for these selections. |
-| Country Color | Click a province to copy its Color; selection is handled independently of other mode booleans. | One exclusive selection mode with explicit cancellation. |
+| Country Color | Click a province to copy its Color; selection is handled independently of other mode booleans. | One exclusive selection mode; click only copies color, and Done/Cancel/Escape finishes selection. |
 | Random color | Button/R selects random integer RGB components and updates the swatch. | Preserved; all pending old-target operations must drain before a different color is sent to that province. |
 | PPS | Counts attempts before InvokeServer; snapshots once per second without correcting for actual elapsed time. If last interval exceeds 1000, the next interval is blocked, creating burst/stall oscillation. | Separate attempts, returns, errors, and independent observed target-color transitions. Unchanged color is not an invocation failure. |
 | UI/lifetime | UI can reset on respawn while global listeners/loops continue; per-drag connections accumulate; four sounds, multiple decorative tweens, unbounded clone risks. | ResetOnSpawn false, explicit shutdown, fixed drag listeners, no decorative loops, clone-free selection outlines. |
@@ -49,9 +49,33 @@ The previous final version imposed one outstanding call per province, waited bri
 
 The script remains client-only and self-starting from the public loader. It requires no place/project access, Studio setup, publishing, server scripts, or modifications to the existing PaintBucket hierarchy. There are no account-specific identifiers. The runtime is scoped to Players.LocalPlayer, so each player uses their own equipped remote and independent UI/state. As with the old loader, its execution environment must already supply client loadstring and game:HttpGet. A stock Roblox client does not itself offer an arbitrary-code launcher; no alternate installation is required by this package.
 
+## Selection-safety revision
+
+The live issue was reproducible in the prior source: `addProvince()` called `evaluate()`, and painting defaulted to ON, so the very first Add click could schedule PaintPart. The fix introduces a transaction with an explicit `committed` field plus an intrusive pending list. This is separate from `pendingByPart`, which accounts for actual unreturned RPCs.
+
+Registration now creates only the unique registry entry, color snapshot, outline and lifecycle listeners. It does not evaluate, enqueue, create a retry timer, spend tokens, update request statistics, or wake a paint worker. `evaluate`, enqueue, timer insertion and dispatch independently reject uncommitted entries. Pending color/ancestry events can validate and remove entries but cannot turn them into work. Removal unlinks pending entries in O(1); the existing array/map and ready FIFO stay intact.
+
+Done/Cancel/Escape have consistent finish semantics: preserve clicked tiles, mark the entire pending list committed without yielding, clear its links/count, then evaluate in click order. Painting OFF commits without queuing; the next explicit resume evaluates eligible committed selections. The occasional resume/finish pass handles events received while dispatch was paused; it does not add a per-frame selection scan.
+
+All selection modes suspend new dispatch for existing committed provinces too, while retaining the user's Toggle Paint setting. Responses/stalls remain counted, errors preserve their cooldowns, and removal/Clear never fabricate cancellation. Country Color no longer exits immediately on click: Done/Escape explicitly resumes eligible work. Escape also finishes when CoreGui processes the key, without blocking CoreGui. Duplicate loading no longer closes/commits a selection session. Closing the UI discards pending entries and listeners. No moderation or input-hook bypass is involved.
+
+Color semantics use a single global setter. Keep OFF follows its latest value; Keep ON uses the selected color at click/add time, even when global color changes before Done. The UI swatch updates immediately. Pending color transitions do not contribute observed-paint telemetry. Existing in-flight groups still drain the previous target before a different color can be sent.
+
+### Manual PaintBucket inspection and limitation
+
+Both supplied reference scripts were searched and traced for PaintBucket resolution, local color assignment and PaintPart payload construction. Their color variable belongs to AutoPainter itself; they do not contain the normal tool's client code, hierarchy dump, Color3Value contract, attribute contract or local color setter. The available repository contains the AutoPainter sources/tests, not the game project or a live engine bridge. Therefore the manual bucket's real selected-color representation and its change-handler side effects cannot be determined from this material.
+
+The requested safe fallback is used: manual bucket state is unchanged. A synthetic fixture with a plausible `SelectedColor` Color3Value confirms that neither Randomize, R nor Country Color guesses at it or invokes its change listener. This is a test of noninterference, not evidence of supported synchronization. Testing a working manual binding (including Keep ON) requires the actual existing client mechanism; it would be misleading to invent a fixture and claim it matches the game. No server protocol, extra remote, secret, or fake paint operation was added.
+
+### Selection regression evidence
+
+The 70 new checks run with both immediate and deferred signals and execute the actual production script. They cover the real Add button and tile-click path, one then twenty highlighted pending selections with zero calls/attempts/workers/deferred scheduler wakes/token consumption in Normal/Fast/Safe; atomic Done; OFF then Q; R during Add; Country Color; Remove; Clear; repeated Escape; duplicate clicks; remove/re-add; respawn/tool absence/remote replacement; pending lifecycle destruction; one hundred selection cycles; duplicate loaders; close; touch input; and invalid/processed input.
+
+After commit, tests retain exact 2/6/1 same-province peaks, FIFO first-pass fairness, a 64-call hard cap with stalled calls, no waiting-worker buildup, and old/new-color group barriers. Color tests cover global/button/R swatches, Keep OFF retargeting, Keep ON add-time snapshots, and mixed saved colors in one pending transaction. The 57 previous tests still pass with their setup explicitly committing selections. Test fixtures instrument task creation and actual invocation counts, rather than inferring silence from Part.Color. Full-source compilation succeeds with the official Luau compiler. Standalone luau-analyze reports its expected missing Roblox globals/type definitions; no full Roblox static-type validation or live-engine test is claimed.
+
 ## Revised architecture and invariants
 
-**Fair scheduling with useful overlap.** A dirty selection has at most one intrusive FIFO ticket. Each visit may reserve one request, then moves the province behind all current waiting entries if it has room for another. All initially eligible provinces receive their first turn before additional passes. Late additions join the existing queue; an older ticket can run first, but repeated completions cannot jump the queue. No full selection scan is performed each frame. Color/lifecycle events, request completions, due retry timers, target/mode changes and remote restoration wake work.
+**Fair scheduling with useful overlap.** A dirty selection has at most one intrusive FIFO ticket. Each visit may reserve one request, then moves the province behind all current waiting entries if it has room for another. All initially eligible provinces receive their first turn before additional passes. Late committed selections join the existing queue; an older ticket can run first, but repeated completions cannot jump the queue. No full selection scan is performed each frame. Color/lifecycle events, request completions, due retry timers, target/mode changes and remote restoration wake work.
 
 **Separate request groups from selection records.** `pendingByPart[part]` holds a count and immutable target color for the live group. Every request refers to that group and snapshots its part, color, remote version, selection identity and error epoch. Each return/error releases one count; the map entry is removed only after the last call returns. Clear/remove release all selection state while these genuinely outstanding operations remain bounded. Re-adding the same part cannot reset its pending count. Old-remote and stalled calls also count against its limit.
 
@@ -87,6 +111,9 @@ Safe mode additionally spaces starts to one province by at least one second and 
 - Observed: mismatch-to-target color observations on tracked provinces. One transition counts once, even with six concurrent calls. Another player can cause it; no per-request attribution is claimed. Target changes themselves do not count as observed paint.
 - InFlight/Stalled: real unreturned calls, including old selection/character state.
 - PendingProvinces: distinct parts with at least one real outstanding call.
+- PendingSelections / CommittedSelections: selected entries before/after explicit selection commit. These are independent of RPC groups.
+- Painting / SelectionMode: user toggle and temporary selection tool; selection mode suspends dispatch without changing Painting.
+- RequestTokens: current token-bucket balance, useful for checking that registration consumes none.
 
 The UI emphasizes returns/sec and separately shows target matches/sec. Rates use elapsed time. The previous Unconfirmed counter and confirmation-grace settings were removed. A color observation still stops new attacks while the visible part matches its target, preserving the original protector behavior. This revision does not assume that attacking an already-matching province is useful; no such behavior was requested.
 
@@ -94,7 +121,7 @@ The UI emphasizes returns/sec and separately shows target matches/sec. Rates use
 
 The full revised runtime, UI callbacks, loader and tests were reviewed. Syntax is checked with the official Luau compiler; no engine API names changed in this revision. Review covered request reservation before spawning, per-group release, no negative/stuck accounting after thrown errors, immutable per-call payloads, remove/re-add identity, target-color barriers, late old-remote responses, mixed-success/error cooldowns, mode changes, fairness, timer removal, UI shutdown and independent players.
 
-The actual final source is executed by the deterministic mock suite, which now contains 57 tests. It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
+The actual final source is executed by the deterministic mock suite, which now contains 127 tests (57 existing and 70 new selection/color/boundary regressions). It covers both immediate and deferred event delivery and all previous lifecycle cases, revised where the gameplay assumption changed. New checks include:
 
 1. Exact peak concurrency of Normal 2, Fast 6, Safe 1 on a continuously contested province.
 2. One-slot-per-visit FIFO allocation and first-pass fairness across dirty provinces.

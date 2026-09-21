@@ -8,6 +8,8 @@ root = Path(__file__).resolve().parent.parent
 source = (root / "AutoPainterFinal.luau").read_text()
 loader = (root / "LoaderPublic.luau").read_text()
 suite = (root / "tests" / "scheduler.spec.luau").read_text()
+suite += "\n" + (root / "tests" / "selection.spec.luau").read_text()
+suite += '\nprint(string.format("%d tests passed (mock engine; no live throughput claim)", passed))\n'
 with tempfile.NamedTemporaryFile("w", suffix=".luau", dir=root / "tests", delete=False) as f:
     path = Path(f.name)
     f.write("local SOURCE = [====[\n" + source + "\n]====]\n"

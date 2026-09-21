@@ -15,6 +15,7 @@ local function add(world, api, count)
 	for _ = 1, count do
 		local part = world.province(); api.AddProvince(part); table.insert(parts, part)
 	end
+	api.CommitSelections()
 	return parts
 end
 
@@ -62,7 +63,7 @@ for _, deferred in ipairs({ false, true }) do
 		world.behavior = { latency = 0.4 }
 		local part = add(world, api, 1)[1]; world.step(0.02)
 		api.Clear(); assert(api.GetStats().Selected == 0 and api.GetStats().InFlight == 2)
-		api.SetColor(world.Color3.new(1, 0, 0)); api.AddProvince(part)
+		api.SetColor(world.Color3.new(1, 0, 0)); api.AddProvince(part); api.CommitSelections()
 		world.step(0.2); assert(#world.calls == 2)
 		world.step(1); assert(#world.calls == 4 and world.peak == 2)
 		assert(part.Color == world.Color3.new(1, 0, 0))
@@ -99,7 +100,7 @@ for _, deferred in ipairs({ false, true }) do
 		assert(#world.calls <= 9 and world.peak <= 1 and api.GetStats().Window == 1)
 		api.Clear(); world.step(1)
 		local part = parts[1]; part.Color = world.Color3.new(0, 0, 0)
-		api.AddProvince(part); world.step(0.3)
+		api.AddProvince(part); api.CommitSelections(); world.step(0.3)
 		part.Color = world.Color3.new(0, 0, 0); world.step(2)
 		local last = -math.huge
 		for _, call in ipairs(world.calls) do
@@ -131,7 +132,7 @@ for _, deferred in ipairs({ false, true }) do
 		local parts = add(world, api, 200); world.step(65)
 		assert(#world.calls == 64 and api.GetStats().InFlight == 64)
 		assert(api.GetStats().Stalled == 64)
-		api.Clear(); for _, part in ipairs(parts) do api.AddProvince(part) end
+		api.Clear(); for _, part in ipairs(parts) do api.AddProvince(part) end; api.CommitSelections()
 		world.step(20); assert(#world.calls == 64)
 		world.behavior = {}
 		for _, call in ipairs(table.clone(world.calls)) do world.complete(call, false) end
@@ -147,7 +148,7 @@ for _, deferred in ipairs({ false, true }) do
 		for i = 1, 25 do parts[i]:Destroy() end
 		for i = 26, 50 do parts[i].Name = "Other" end
 		for i = 51, 75 do parts[i].Parent = nil end
-		world.flush(); assert(api.GetStats().Selected == 25 and api.GetStats().Ready == 25)
+		world.flush(); assert(api.GetStats().Selected == 25 and api.GetStats().Ready == 0)
 		api.SetPainting(true); world.step(2); assert(api.GetStats().Observed == 25)
 		api.Destroy()
 	end)
@@ -222,7 +223,7 @@ test("randomized add/remove/clear, pending retries, and target changes", functio
 	for iteration = 1, 700 do
 		local part = parts[math.random(1, #parts)]
 		local operation = math.random(1, 9)
-		if operation == 1 then api.AddProvince(part); selected[part] = true
+		if operation == 1 then api.AddProvince(part); api.CommitSelections(); selected[part] = true
 		elseif operation == 2 then api.RemoveProvince(part); selected[part] = nil
 		elseif operation == 3 then part.Color = world.Color3.new(0, 0, 0)
 		elseif operation == 4 then api.SetColor(world.Color3.fromRGB(iteration % 256, 100, 200))
@@ -280,7 +281,7 @@ test("UI buttons, exclusive selection, mouse input and keyboard shortcuts", func
 	button("Pick").Activated:Fire(); world.flush()
 	local samplePart = world.province(); samplePart.Color = world.Color3.new(0, 1, 0); world.mouse.Target = samplePart
 	world.input.InputBegan:Fire({ UserInputType = world.env.Enum.UserInputType.MouseButton1 }, false)
-	world.flush(); world.step(1)
+	world.flush(); button("Color · Done / Cancel").Activated:Fire(); world.flush(); world.step(1)
 	assert(api.GetStats().Selected == 1 and part.Color == samplePart.Color)
 	world.input.InputBegan:Fire({ KeyCode = world.env.Enum.KeyCode.Q }, false); world.flush()
 	local sent = #world.calls
@@ -349,7 +350,7 @@ for _, deferred in ipairs({ false, true }) do
 		local world, api = start(deferred); api.SetFast(true); world.behavior = { hang = true }
 		local part = add(world, api, 1)[1]; world.step(0.02); assert(#world.calls == 6)
 		for _ = 1, 100 do
-			api.RemoveProvince(part); api.AddProvince(part); api.Clear(); api.AddProvince(part); world.flush()
+			api.RemoveProvince(part); api.AddProvince(part); api.CommitSelections(); api.Clear(); api.AddProvince(part); api.CommitSelections(); world.flush()
 		end
 		assert(#world.calls == 6 and api.GetStats().PendingProvinces == 1)
 		world.step(20); assert(api.GetStats().Stalled == 6 and #world.calls == 6)
@@ -485,4 +486,3 @@ test("public loader fetches the exact path and starts the complete local UI", fu
 	api.Destroy()
 end)
 
-print(string.format("%d tests passed (mock engine; no live throughput claim)", passed))

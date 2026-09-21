@@ -3,7 +3,8 @@ local Mock = {}
 function Mock.new(deferredSignals)
 	local world = { now = 0, events = {}, calls = {}, active = 0, peak = 0,
 		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
-		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6 }
+		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6,
+		taskSpawns = 0, taskDefers = 0 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -119,6 +120,7 @@ function Mock.new(deferredSignals)
 	function methods:GetFocusedTextBox() return nil end
 	function methods:Invoke(...) return self.OnInvoke(...) end
 	function methods:InvokeServer(command, payload, context)
+		if world.onInvoke then world.onInvoke(payload.Part, payload.Color) end
 		assert(self:IsA("RemoteFunction"))
 		assert(command == "PaintPart" and context == "Peace")
 		assert(payload.Part and payload.Color)
@@ -242,7 +244,10 @@ function Mock.new(deferredSignals)
 		RaycastParams = { new = function() return {} end },
 		typeof = function(value) return type(value) == "table" and value._kind or type(value) end,
 		os = { clock = function() return world.now end },
-		task = { spawn = spawn, defer = function(fn, ...) world.schedule(0, fn, ...) end },
+		task = {
+			spawn = function(fn, ...) world.taskSpawns += 1; return spawn(fn, ...) end,
+			defer = function(fn, ...) world.taskDefers += 1; world.schedule(0, fn, ...) end,
+		},
 	}, { __index = getfenv() })
 	function world.load(source)
 		local chunk = assert(loadstring(source, "AutoPainterFinal"))

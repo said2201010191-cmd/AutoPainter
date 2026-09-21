@@ -28,7 +28,7 @@ assert(player, "AutoPainter must run on the client")
 local playerGui = player:WaitForChild("PlayerGui")
 local GUI_NAME = "AutoPainterFinalUI"
 
--- Re-running the loader focuses the running instance instead of doubling traffic.
+-- Re-running the loader reuses the running instance without ending selection.
 local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
@@ -41,6 +41,8 @@ end
 local alive = true
 local connections, cacheConnections = {}, {}
 local entries, lookup = {}, {}
+local pendingHead, pendingTail = nil, nil -- Selection transaction, NOT outstanding RPCs.
+local pendingCount = 0
 local readyHead, readyTail = nil, nil
 local readyCount = 0
 local delayed = {} -- Indexed min-heap: at most one retry timer per province.
@@ -102,7 +104,7 @@ local function unqueue(entry)
 end
 
 local function enqueue(entry)
-	if entry.queued or not entry.active then return end
+	if entry.queued or not entry.active or not entry.committed then return end
 	entry.queued, entry.previous, entry.next = true, readyTail, nil
 	if readyTail then readyTail.next = entry else readyHead = entry end
 	readyTail = entry
@@ -146,6 +148,7 @@ local function unschedule(entry)
 end
 
 local function schedule(entry, due)
+	if not entry.active or not entry.committed then return end
 	unqueue(entry)
 	unschedule(entry)
 	entry.due = due
@@ -177,13 +180,15 @@ evaluate = function(entry, now)
 	if not alive or not entry.active then return end
 	local part = entry.part
 	if not valid(part) then removeEntry(entry); return end
+	-- Pending selections may be validated/removed by lifecycle events, never scheduled.
+	if not entry.committed then return end
 	local desired = targetColor(entry)
 	local matched = part.Color == desired
 	-- Count a target-color transition once, not once for each overlapping request.
 	-- This observation is independent of RPC outcomes and may be caused by others.
 	if matched and not entry.matched then stats.Observed += 1 end
 	entry.matched = matched
-	if matched then
+	if matched or not painting or selectionMode then
 		unqueue(entry)
 		unschedule(entry)
 		return
@@ -197,9 +202,18 @@ evaluate = function(entry, now)
 	if kick then kick() end
 end
 
+local function unlinkPending(entry)
+	if entry.committed then return end
+	if entry.pendingPrevious then entry.pendingPrevious.pendingNext = entry.pendingNext else pendingHead = entry.pendingNext end
+	if entry.pendingNext then entry.pendingNext.pendingPrevious = entry.pendingPrevious else pendingTail = entry.pendingPrevious end
+	entry.pendingPrevious, entry.pendingNext = nil, nil
+	pendingCount -= 1
+end
+
 removeEntry = function(entry)
 	if not entry.active then return end
 	entry.active = false
+	unlinkPending(entry)
 	unqueue(entry)
 	unschedule(entry)
 	lookup[entry.part] = nil
@@ -228,16 +242,45 @@ local function addProvince(part)
 	box.LineThickness = 0.025
 	box.Parent = ui
 	selectionId += 1
-	local entry = { part = part, savedColor = color, active = true, box = box, id = selectionId,
+	local entry = { part = part, savedColor = color, active = true, committed = false, box = box, id = selectionId,
 		connections = {}, index = #entries + 1, failures = 0, notBefore = 0,
 		failureEpoch = 0, lastSent = -math.huge, queued = false, matched = part.Color == color }
 	entries[entry.index], lookup[part] = entry, entry
+	entry.pendingPrevious = pendingTail
+	if pendingTail then pendingTail.pendingNext = entry else pendingHead = entry end
+	pendingTail = entry
+	pendingCount += 1
 	connect(part:GetPropertyChangedSignal("Color"), function() evaluate(entry, os.clock()) end, entry.connections)
 	connect(part:GetPropertyChangedSignal("Name"), function() evaluate(entry, os.clock()) end, entry.connections)
 	connect(part.AncestryChanged, function() evaluate(entry, os.clock()) end, entry.connections)
 	connect(part.Destroying, function() removeEntry(entry) end, entry.connections)
-	evaluate(entry, os.clock())
+	-- No evaluate, queue, token use, worker creation or scheduler wake on registration.
 	return true
+end
+
+local function evaluateAll(now)
+	-- Only on explicit resume/selection finish, never a full per-frame scan.
+	local index = 1
+	while index <= #entries do
+		local entry = entries[index]
+		evaluate(entry, now)
+		if entries[index] == entry then index += 1 end -- Removal can swap the last entry here.
+	end
+end
+
+local function commitPending(now)
+	-- No yield: mark the entire transaction committed before evaluating its first entry.
+	local first, entry = pendingHead, pendingHead
+	while entry do entry.committed = true; entry = entry.pendingNext end
+	pendingHead, pendingTail, pendingCount = nil, nil, 0
+	entry = first
+	while entry do
+		local nextEntry = entry.pendingNext
+		entry.pendingPrevious, entry.pendingNext = nil, nil
+		entry.matched = entry.part.Color == targetColor(entry) -- Pending observations are not paints.
+		if painting then evaluate(entry, now) end
+		entry = nextEntry
+	end
 end
 
 local function finishRequest(job, ok)
@@ -291,7 +334,7 @@ end
 
 local function pump()
 	pumpQueued = false
-	if not alive or pumping or not painting or not remote then return end
+	if not alive or pumping or not painting or selectionMode or not remote then return end
 	if not ui:IsDescendantOf(playerGui) then api.Destroy(); return end
 	pumping = true
 	local now = os.clock()
@@ -305,6 +348,7 @@ local function pump()
 		unqueue(entry)
 		visited += 1
 		local desired = targetColor(entry)
+		if not entry.active or not entry.committed then continue end
 		if not valid(entry.part) then removeEntry(entry)
 		elseif entry.part.Color == desired or not canOverlap(entry.part, desired)
 			or entry.notBefore > now or (safe and now < entry.lastSent + CONFIG.SafeProvinceInterval) then
@@ -328,14 +372,14 @@ local function pump()
 			task.spawn(invoke, job)
 			-- One request per visit. Extra capacity goes behind all waiting provinces.
 			evaluate(entry, now)
-			if not remote or not alive or not painting then break end
+			if not remote or not alive or not painting or selectionMode then break end
 		end
 	end
 	pumping = false
 end
 
 kick = function()
-	if not alive or pumpQueued or pumping or not painting or not remote or not readyHead then return end
+	if not alive or pumpQueued or pumping or not painting or selectionMode or not remote or not readyHead then return end
 	if frameBudget <= 0 or outstanding >= CONFIG.HardOutstanding or (outstanding - stalled) >= window then return end
 	if safe and outstanding >= 1 then return end
 	refill(os.clock())
@@ -416,7 +460,7 @@ local function tune(now)
 	local returnRate = returns / duration -- No server contract: a return is not a confirmed hit.
 	local latency = returns > 0 and sample.Latency / returns or rtt
 	local busy = sample.BusyTime / duration >= 0.20
-	if CONFIG.Adaptive and not safe and painting and remote then
+	if CONFIG.Adaptive and not safe and painting and not selectionMode and remote then
 		local badErrors = failures >= 2 and failures / math.max(1, returns + failures) >= 0.10
 		local congestion = steady and busy and returns >= CONFIG.MinTuneReturns
 			and latency > steady.latency * 1.5 and returnRate < steady.rate * 0.95
@@ -497,9 +541,19 @@ local function option(label, action)
 end
 
 local function setSelectionMode(value)
+	if not alive then return end
+	local finishing = value == nil and (selectionMode ~= nil or pendingCount > 0)
 	selectionMode = value
 	main.Visible, doneButton.Visible = value == nil, value ~= nil
 	if value then doneButton.Text = value .. " · Done / Cancel" end
+	-- All selection tools suspend new dispatch without changing Toggle Paint.
+	-- Switching tools keeps the transaction open. Done/Cancel/Escape finish it.
+	if finishing then
+		local now = os.clock()
+		commitPending(now)
+		if painting then evaluateAll(now) end
+		resetSample(now)
+	end
 end
 
 local function switch(button, enabled)
@@ -526,14 +580,18 @@ function api.SetColor(value)
 	color = value
 	colorButton.BackgroundColor3 = value
 	colorButton.TextColor3 = (value.R + value.G + value.B > 1.5) and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
+	-- The supplied game sources do not expose the manual bucket's color contract.
+	-- Do not guess at attributes/values or send a PaintPart just to change its color.
 	if not keepColor then retargetAll() end
 end
+function api.GetColor() return color end
 function api.SetPainting(value)
 	if not alive then return end
 	painting = value == true
 	switch(paintButton, painting)
 	tokens, tokenTime = math.min(tokens, 1), os.clock()
 	resetSample(tokenTime)
+	if painting and not selectionMode then evaluateAll(tokenTime) end
 	kick()
 end
 function api.SetFast(value)
@@ -549,6 +607,8 @@ function api.SetKeepColor(value)
 	keepColor = value == true; switch(keepButton, keepColor); retargetAll()
 end
 api.AddProvince = addProvince
+-- Programmatic additions obey the same transaction boundary as the UI.
+function api.CommitSelections() setSelectionMode(nil) end
 function api.RemoveProvince(part)
 	if lookup[part] then removeEntry(lookup[part]) end
 end
@@ -556,8 +616,11 @@ api.Clear = clearProvinces
 function api.GetStats()
 	local result = table.clone(stats)
 	result.Selected, result.Ready, result.Delayed = #entries, readyCount, #delayed
+	result.PendingSelections, result.CommittedSelections = pendingCount, #entries - pendingCount
+	result.Painting, result.SelectionMode = painting, selectionMode
 	result.InFlight, result.Stalled, result.Window = outstanding, stalled, window
 	result.MaxPerProvince = mode.MaxPerProvince
+	result.RequestTokens = tokens
 	local pendingProvinces = 0
 	for _ in pairs(pendingByPart) do pendingProvinces += 1 end
 	result.PendingProvinces = pendingProvinces
@@ -567,6 +630,7 @@ end
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	alive = false
+	selectionMode = nil
 	disconnectAll(connections)
 	disconnectAll(cacheConnections)
 	clearProvinces()
@@ -587,12 +651,14 @@ connect(close.Activated, api.Destroy)
 
 local function selectPart(part)
 	if not part or not valid(part) then return end
-	if selectionMode == "Color" then api.SetColor(part.Color); setSelectionMode(nil)
+	if selectionMode == "Color" then api.SetColor(part.Color)
 	elseif selectionMode == "Add" then addProvince(part)
 	elseif selectionMode == "Remove" then api.RemoveProvince(part) end
 end
 local mouse = player:GetMouse()
 connect(Input.InputBegan, function(input, processed)
+	-- Escape finishes this local selection even if CoreGui also handles that key.
+	if input.KeyCode == Enum.KeyCode.Escape and selectionMode then setSelectionMode(nil); return end
 	if processed or Input:GetFocusedTextBox() then return end
 	if input.KeyCode == Enum.KeyCode.R then randomize()
 	elseif input.KeyCode == Enum.KeyCode.Q then api.SetPainting(not painting)
@@ -629,7 +695,7 @@ connect(Input.InputEnded, function(input) if input == dragInput then dragInput =
 connect(ui.Destroying, function() api.Destroy(true) end)
 connect(ui.AncestryChanged, function() if not ui:IsDescendantOf(playerGui) then api.Destroy() end end)
 local bridge = make("BindableFunction", ui, { Name = "Controller" })
-bridge.OnInvoke = function() setSelectionMode(nil); return api end
+bridge.OnInvoke = function() return api end -- Reload must not commit an open selection.
 
 connect(player:GetPropertyChangedSignal("Character"), invalidateCache)
 -- This signal survives destruction of a part/tool and its own deferred signals.
@@ -662,13 +728,14 @@ connect(RunService.Heartbeat, function(dt)
 			end
 		end
 	end
-	if painting and remote and readyHead and outstanding - stalled >= window then sample.BusyTime += dt end
+	if painting and not selectionMode and remote and readyHead and outstanding - stalled >= window then sample.BusyTime += dt end
 	tune(now)
 	kick()
 	if now - lastDisplay >= CONFIG.TelemetryInterval then
 		local elapsed = now - lastDisplay
 		local observedRate, returnRate = (stats.Observed - lastObserved) / elapsed, (stats.Returned - lastReturned) / elapsed
-		local state = not painting and "Paused" or (not remote and "Equip PaintBucket" or (safe and "Safe" or (fast and "Fast" or "Normal")))
+		local state = selectionMode and "Selecting (dispatch paused)" or (not painting and "Paused"
+			or (not remote and "Equip PaintBucket" or (safe and "Safe" or (fast and "Fast" or "Normal"))))
 		statusLabel.Text = string.format("%.1f returns/s · %d selected · %s", returnRate, #entries, state)
 		detailLabel.Text = string.format("%.1f target matches/s · %d/%d active · %d stalled · %d errors", observedRate,
 			outstanding - stalled, window, stalled, stats.Failures)
