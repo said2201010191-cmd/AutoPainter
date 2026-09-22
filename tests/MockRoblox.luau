@@ -5,7 +5,7 @@ function Mock.new(deferredSignals)
 		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
 		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6,
 		taskSpawns = 0, taskDefers = 0, networkAttempts = 0,
-		propertyWrites = 0, attributeWrites = 0, descendantReads = 0 }
+		propertyWrites = 0, attributeWrites = 0, descendantReads = 0, writeLog = {}, waits = 0 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -63,6 +63,7 @@ function Mock.new(deferredSignals)
 	end
 	function mt.__newindex(object, key, value)
 		world.propertyWrites += 1
+		table.insert(world.writeLog, { object = object, key = key })
 		local old = object._props[key]
 		if old == value then return end
 		if key == "Parent" and old then
@@ -296,6 +297,12 @@ function Mock.new(deferredSignals)
 		typeof = function(value) return type(value) == "table" and value._kind or type(value) end,
 		os = { clock = function() return world.now end },
 		task = {
+			wait = function(duration)
+				world.waits += 1
+				local thread = coroutine.running()
+				world.schedule(math.max(duration or 1 / 60, 1 / 60), function() resume(thread) end)
+				return coroutine.yield()
+			end,
 			spawn = function(fn, ...) world.taskSpawns += 1; return spawn(fn, ...) end,
 			defer = function(fn, ...) world.taskDefers += 1; world.schedule(0, fn, ...) end,
 		},

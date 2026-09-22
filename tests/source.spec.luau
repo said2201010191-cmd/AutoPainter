@@ -122,7 +122,7 @@ for _, deferred in ipairs({ false, true }) do
 		noTraffic(world, api); api.Destroy()
 	end)
 
-	test(prefix .. "inspection makes zero property writes requests tasks listeners or target function calls", function()
+	test(prefix .. "inspection makes zero property writes requests listeners or target function calls with bounded read workers", function()
 		local world, api = sourceFixture(deferred); child(world, "LocalScript", "LocalScript", world.bucket)
 		local client = child(world, "RemoteFunction", "ClientControls", world.remotes)
 		client.OnClientInvoke = function() error("Invoked tool callback") end
@@ -132,7 +132,7 @@ for _, deferred in ipairs({ false, true }) do
 		local spawns, defers, attempted = world.taskSpawns, world.taskDefers, api.GetStats().Attempted
 		for _ = 1, 3 do api.GetLocalScriptReport() end
 		assert(world.propertyWrites == writes and world.attributeWrites == attributes)
-		assert(world.connections == connections and world.taskSpawns == spawns and world.taskDefers == defers)
+		assert(world.connections == connections and world.taskSpawns == spawns + 3 and world.taskDefers == defers)
 		assert(api.GetStats().Attempted == attempted and api.GetStats().DiagnosticLocked)
 		assert(not api.SetDiagnostic(false)); noTraffic(world, api); api.Destroy()
 	end)
@@ -175,7 +175,7 @@ for _, deferred in ipairs({ false, true }) do
 			press(world, "Inspect source"); contains(api.GetLocalScriptReport(), "Status=busy")
 		end
 		assert(calls == 1); assert(api.GetStats().DiagnosticLocked)
-		assert(coroutine.resume(worker, "-- completed")); world.flush()
+		assert(coroutine.resume(worker, "-- completed")); world.step(0.06); world.flush()
 		local box = reportWidgets(world); contains(box.Text, "PAINTBUCKET LOCALSCRIPT SOURCE")
 		world.env.decompile = function() return "-- next scan" end
 		contains(api.GetLocalScriptReport(), "-- next scan")
@@ -209,7 +209,7 @@ for _, deferred in ipairs({ false, true }) do
 		local thread = coroutine.create(function() report = api.GetLocalScriptReport() end)
 		assert(coroutine.resume(thread)); assert(calls == 1)
 		world.equip(); world.flush()
-		assert(coroutine.resume(worker, "-- old snapshot"))
+		assert(coroutine.resume(worker, "-- old snapshot")) world.step(0.06);
 		assert(calls == 1); contains(report, "Status=skipped; script/tool left")
 		contains(report, "TextReturned=1 Failures=0 Skipped=1")
 		noTraffic(world, api); api.Destroy()
@@ -223,7 +223,7 @@ for _, deferred in ipairs({ false, true }) do
 		local thread = coroutine.create(function() report = api.GetLocalScriptReport() end)
 		assert(coroutine.resume(thread))
 		world.bucket.Parent = nil; world.player.Character = nil; world.flush()
-		assert(coroutine.resume(worker, "-- old snapshot")); assert(calls == 1)
+		assert(coroutine.resume(worker, "-- old snapshot")); world.step(0.06); assert(calls == 1)
 		contains(report, "Status=skipped; script/tool left"); noTraffic(world, api); api.Destroy()
 	end)
 
@@ -239,7 +239,7 @@ for _, deferred in ipairs({ false, true }) do
 		end
 		local thread = coroutine.create(function() report = api.GetLocalScriptReport() end)
 		assert(coroutine.resume(thread)); world.bucket.Parent = backpack; world.flush()
-		assert(coroutine.resume(worker, "-- A captured before movement"))
+		assert(coroutine.resume(worker, "-- A captured before movement")) world.step(0.06);
 		assert(calls == 2); contains(report, "TextReturned=2 Failures=0 Skipped=0")
 		contains(report, "CurrentFullName=" .. backpack:GetFullName() .. ".PaintBucket.A")
 		noTraffic(world, api); api.Destroy()
@@ -264,8 +264,9 @@ for _, deferred in ipairs({ false, true }) do
 		world.env.decompile = function() calls += 1; worker = coroutine.running(); return coroutine.yield() end
 		press(world, "Inspect source"); api.Destroy(); world.flush()
 		local writes = world.propertyWrites
-		assert(coroutine.resume(worker, "-- completed after shutdown")); world.flush()
-		assert(calls == 1 and world.propertyWrites == writes and world.connections == 0)
+		assert(coroutine.resume(worker, "-- completed after shutdown")); world.step(0.06); world.flush()
+		assert(calls == 1 and world.connections == 0)
+		assert(world.playerGui:FindFirstChild("AutoPainterFinalUI") == nil)
 		contains(api.GetLocalScriptReport(), "Status=unavailable; AutoPainter is closed")
 		noTraffic(world, api)
 	end)

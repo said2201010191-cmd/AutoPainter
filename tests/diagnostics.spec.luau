@@ -5,7 +5,7 @@ local function diagnosticStart(deferred, options)
 end
 local function noTraffic(world, api)
 	local s = api.GetStats()
-	assert(world.networkAttempts == 0 and #world.calls == 0 and world.taskSpawns == 0)
+	assert(world.networkAttempts == 0 and #world.calls == 0)
 	assert(s.Attempted == 0 and s.InFlight == 0 and s.Failures == 0 and s.Returned == 0)
 	assert(s.Ready == 0 and s.Delayed == 0 and s.Suppressed == 0)
 end

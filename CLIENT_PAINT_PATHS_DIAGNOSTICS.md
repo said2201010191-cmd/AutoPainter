@@ -1,68 +1,76 @@
-# Comprehensive locked client paint-path diagnostics
+# Incremental, locked paint-path diagnostics
 
-This build extends **diagnostics only**. AutoPainter's paint scheduler, request payload, limits, colors, selection transactions and remote cache are unchanged. No requests are enabled. The diagnostic loader enforces `DiagnosticOnly = true` and `LockDiagnostics = true`.
+This revision changes diagnostic inspection, UI and export only. The painting scheduler, remote protocol, colors and selection behavior are unchanged and stay disabled by the locked diagnostic loader.
 
-## Use
+## Use the new build
 
-Close the older AutoPainter panel (diagnostic versions 1–4), then run:
+If the previous build is already stuck inside a decompiler call, restart the Roblox client once before using this build. Closing that older panel cannot prove its external decompiler stopped. No Studio or place access is needed.
 
-```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/LoaderDiagnostic.luau", true))()
-```
+Run the public diagnostic loader, then use these separate buttons:
 
-Click **Full Paint Paths Report**, then **Copy Full Paint Paths Report**. Clicking Copy first also builds the report. The entire report is copied through the environment's existing `setclipboard`; if unavailable or failing, it is saved through `writefile` as `CLIENT_PAINT_PATHS_FULL_REPORT.txt` in that environment's file area. If neither works, the complete report remains available in Prev/Next pages. Export is explicit, local and independent of the current displayed page. Nothing is uploaded.
+- **Quick Paint Path Scan**: recommended first. Enumerates the five high-priority roots and reads only likely relevant paths.
+- **Full Client Scan**: optional. Reads all high-priority candidates first, then enumerates and inspects the broader roots.
+- **CANCEL SCAN**: immediately stops scheduling new reads; the coordinator finishes with partial results.
+- **Copy Current Report**: exports only collected results, including partial results while a scan is active. It never starts or resumes inspection.
 
-The report is headed `CLIENT_PAINT_PATHS_FULL_REPORT`. To refresh its snapshot, click Full Paint Paths Report again. Copy exports the latest completed full snapshot. Existing PaintBucket-only Protocol Extract, source inspection and descendant inventory remain separate actions.
+Public loader:
 
-## What is inspected
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/LoaderDiagnostic.luau", true))()
 
-Every enumerated **LocalScript** and **ModuleScript**, including scripts with no matching text, receives a manifest entry with an ID, full path, class, read status, source byte count when available, remote-shaped call count and PaintPart occurrence count.
+Clipboard export uses the existing setclipboard function. If unavailable or failing, writefile saves CLIENT_PAINT_PATHS_FULL_REPORT.txt in the environment's file area. No report is uploaded. If neither capability works, collected results remain available through GetFullPaintPathsReport() and the UI pages.
 
-Roots:
+Optional PaintBucket-only Protocol Extract, full source and descendant inventory remain available. Copy Protocol Report now also requires an already-collected report; it never starts inspection. All decompilation actions share the same watchdog and outstanding-call cap.
 
-- LocalPlayer.PlayerScripts, PlayerGui, Backpack, Character and other visible LocalPlayer descendants.
-- ReplicatedStorage, ReplicatedFirst, StarterPlayer (including StarterPlayerScripts where present), StarterGui and StarterPack.
-- Workspace, including visible tools/controllers regardless of their names.
-- Other readable top-level DataModel containers discovered at inspection time.
+## Progress and order
 
-Overlapping roots are deduplicated by Instance identity. Identical full paths remain separate IDs. Results sort by path/class; identical path/class ties use snapshot discovery order. Every root records enumeration counts; absent/unreplicated roots, failed enumeration, unreadable metadata, failed/invalid decompilation and scripts that leave scope are explicit gaps.
+The UI shows scripts discovered, current script index/total, text returned, failed, timed out, skipped, cached, actual outstanding decompiles, current full path, and last timed-out path. The current path is published before calling the external decompiler.
 
-Excluded: CoreGui engine internals, other players' containers under Players, server-only containers and the Script class (including RunContext Client). Those exclusions are printed. Workspace-visible tools remain included. Server-only/unreplicated, unparented, late-created or already-removed code is not available in this snapshot.
+High-priority roots are LocalPlayer.PlayerScripts, Backpack, Character, PlayerGui and ReplicatedStorage. Names/full paths containing Paint, Province, Territory, Country, Map, Bucket, War, Peace, Remote, Admin, Capture or Color are prioritized, case-insensitively. Within the relevant and remaining groups, the listed root order takes precedence over path order.
 
-The existing environment-provided `decompile` function is the only source-reading capability used. Missing decompile is reported for every candidate. No direct Source/bytecode/closure fallback, require, execution of returned source, call to inspected functions, remotes, callback hooks, spoofing, moderation interception, state/attribute writes or synthetic input is used by the collector. The environment provider determines what its decompile implementation does internally; returned text is explicitly unverified.
+Quick mode skips non-relevant paths and does not enumerate broad roots. Full mode processes all five high-priority roots before broad-root discovery: other LocalPlayer descendants, ReplicatedFirst, StarterPlayer (including readable StarterPlayerScripts), StarterGui, StarterPack, Workspace and additional readable DataModel containers. Overlapping roots deduplicate by Instance identity; identical paths can still be distinct Instances.
 
-## Compact report layout
+CoreGui engine internals, other players' containers under Players, server-only containers and the Script class are excluded and disclosed. Workspace-visible tools/controllers remain included. Absent/unreplicated roots and enumeration failures are explicit gaps.
 
-All requested search terms are searched case-insensitively, with additional ownership/state/permission and method-reference candidates. The report contains:
+## Timeout and strict task bounds
 
-1. ALL PAINT/PROVINCE REMOTE CALLS
-2. ALL PaintPart CALL SITES
-3. ALL ALTERNATE PROVINCE-MODIFICATION PATHS
-4. ADMIN / PRIVATE / TEST PATHS
-5. BATCH / MULTI-TARGET PATHS
-6. STORED-INSTANCE TARGETING PATHS
-7. PERMISSION / CAPABILITY / TOKEN STATE
-8. READ FAILURES / COVERAGE GAPS
-9. FINAL SUPPORTED CLIENT ROUTES
+Important parameters near the top of AutoPainterFinal.luau:
 
-Remote call text includes colon, dot and literal-index invocation syntax, whitespace/newline-separated tokens, repeated same-line calls and method references for alias tracing. All remote-shaped calls are retained, including those whose paint relevance is unknown. FireAllClients is included alongside the four requested remote methods; server-facing/client-facing names in shared module source do not grant ordinary clients new capabilities.
+| Parameter | Default | Meaning |
+|---|---:|---|
+| DiagnosticDecompileTimeout | 6 seconds | Stop waiting for an individual decompile |
+| DiagnosticMaxUnreturned | 2 | Hard maximum of external decompiler calls that have not actually returned |
+| DiagnosticWatchdogPoll | 0.05 seconds | Cooperative deadline/cancellation polling |
+| DiagnosticSliceSeconds | 0.008 seconds | Local processing budget before yielding |
+| DiagnosticSliceItems | 128 | Additional iteration bound before yielding |
 
-Each PaintPart occurrence has a line/column reference. Category indexes point to shared context blocks printed once: eight preceding and twelve following lines, merging overlapping/adjacent windows per script. Each block identifies the script and numbered source lines. All blocks are retained; there is no hidden source/script/report truncation cap. Large relevant codebases can still produce large reports, but one export contains every page without repeating the same context in each category.
+There is one incremental scan coordinator and at most two unreturned decompile workers. No per-script waiting tasks, unlimited replacement workers or task cancellation are used.
 
-## What the report can and cannot conclude
+A TIMED_OUT call **continues occupying its slot**. With one stalled call, the other slot processes subsequent scripts sequentially. If both calls stall, remaining uncached candidates receive SKIPPED_CAPACITY and the report completes with coverage gaps. Repeated scans cannot start replacements beyond that cap. A slot is released only when its actual call returns.
 
-The categories are **textual candidates**, not a semantic call graph or live trace. Comments, strings, dead code, local-only color changes, generic loops, and aliases of the real mouse target can all match. Dynamic method construction, wrapper chains and indirect arguments require manual source tracing. A decompiler can return incomplete/error-comment text without throwing.
+Cancel stops scheduling immediately and stops waiting within the next watchdog poll while the scheduler is running. It does not pretend to cancel an already-entered external call. Timeout/cancel/busy guards cover the narrow source readers too. A live late return releases its own slot and becomes available to the cache.
 
-A–D remain **UNRESOLVED** in the generated report until its evidence is reviewed: stored/off-cursor targets, batch APIs, ordinary-player access to admin/private/test branches, and alternative painting remotes. No keyword match proves an authorized supported route. No-match results never claim that an alternate route is impossible.
+**Unavoidable limitation:** Roblox tasks are cooperatively scheduled. If the environment's decompiler blocks the entire VM/native client thread without yielding, an in-client watchdog cannot run or forcibly interrupt it. This design handles yielded/stalled calls while the scheduler remains responsive; it cannot guarantee recovery from a frozen executor/client. Roblox's task API does not provide a proven safe cancellation contract for a third-party decompiler: https://create.roblox.com/docs/reference/engine/libraries/task
 
-E prints exact snapshot counts: unique enumerated candidates, text returned, read failures, not-read candidates, returned source bytes, remote call text, PaintPart occurrences and coverage gaps. Enumeration failures leave the unknown number of missing scripts explicitly unknown. Coverage percentages for the entire shipped game would be unjustified.
+Closing the new UI while decompiles remain outstanding leaves a hidden local controller with all ordinary listeners disconnected. It refuses loader reruns until those calls really return, preventing close/reload from multiplying abandoned workers. It removes itself when the last call returns. If calls never return, restart the client. This guards normal loader/UI usage; it cannot retroactively account for calls created by older builds or unrelated scripts.
 
-No actual client corpus or live game is accessible to the repository tests. After running this build in the game, share the exported report for protocol analysis. No paint-path diagnosis or successful paint is claimed by this build.
+## Cache and cancellation
 
-## Lifecycle and verification
+Completed per-script results are cached by Instance identity, including read errors. Raw returned text is cached before context indexing, so cancellation during indexing does not require another decompile. Once indexed, the raw text is replaced by compact analysis fragments. Rerunning rediscovers current objects and reuses completed cached results.
 
-One shared inspection runs at a time across the full and PaintBucket-only actions. No per-script jobs, retries or waiting-worker queue are created. The collector yields cooperatively when its local processing exceeds approximately 12 ms, checking shutdown and current scope after yields. A synchronous external decompiler call cannot be forcibly interrupted; while it is yielded/hung, additional inspections are refused. Closing prevents subsequent decompiler calls, cached results, stale UI updates and fallback file export.
+Timeout records remain associated with their outstanding call; they are never repeatedly retried while it remains outstanding. A late result can replace the timeout cache on a subsequent scan. Capacity skips and absent decompile capability are not permanent cached read results.
 
-Only the latest completed full report string is retained; no source-object history/listeners are retained after completion. The existing narrow report has its own export snapshot. Showing results changes AutoPainter's own UI; the collector itself performs no Instance property/attribute writes. Explicit copy/file export is the requested external side effect.
+Instances are weak cache keys; completed report rows retain text/metadata rather than Instances. New Instances, even at the same path, are independently inspected. Cache lifetime is the current diagnostic session, not a disk cache or source-change detector. If source changes inside the same Instance, a fresh session is required to refresh a completed cached result; do not start a fresh session over still-outstanding reads.
 
-Validation: **333 deterministic tests pass**, including 62 new full-coverage tests across immediate/deferred signals and all 271 existing tests. The tests cover zero collector game traffic/property writes, no source execution, roots/modules, gaps/failures, duplicates, multiline calls, all search terms, shared context, export fallback, UI actions, lifecycle/busy guards, respawn/removal, cooperative yielding and a 400-module corpus. Official Luau compilation validates the final source, loaders and tests. These are mock/runtime syntax checks, not proof of decompiler quality, live server acceptance or moderation behavior.
+## Report and read-only contract
+
+CLIENT_PAINT_PATHS_FULL_REPORT format 2 preserves all nine requested sections. Each discovered script/module has FullName, ClassName, status and byte count when available. Call sites, PaintPart occurrences and candidate categories reference shared merged context, with eight preceding and twelve following lines. Script-specific block IDs prevent collisions when cached fragments are reused. No source/count cap silently truncates the report.
+
+The collector calls only the environment-provided decompile function. It does not require/execute modules, execute inspected source, call target functions, send game remotes, paint, hook callbacks, spoof state or change game properties/attributes. Progress/report rendering changes only AutoPainter's own local UI. Clipboard/file export occurs only on explicit Copy. The decompiler provider remains responsible for the implementation of that external function.
+
+The report distinguishes pending, failed, timed-out, unavailable, quick-mode-skipped, cancelled and capacity-blocked results. No read failure is evidence that a painting route does not exist. Sections about stored targets, batch APIs, admin/private/test branches or alternate remotes remain candidates needing manual source review. Source inspection cannot establish hidden server validation or live acceptance.
+
+## Validation
+
+337 deterministic tests pass, including 66 tests for the new incremental full/quick scanner and the existing 271 tests adapted where source workers/copy semantics intentionally changed. Coverage includes an indefinitely yielded decompiler, one-stall continuation, two-stall capacity exhaustion, progress/full paths, cancellation/resume, cached success/failure/late returns, copying during a stall, UI buttons, close/reload guarding, root priority, source/context extraction, cleanup and a 300-module corpus.
+
+These are mock-engine tests and Luau compilation checks, not live executor or game validation. No real paint request or live source scan is performed from this workspace.

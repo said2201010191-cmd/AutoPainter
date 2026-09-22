@@ -168,12 +168,13 @@ for _, deferred in ipairs({ false, true }) do
 		noTraffic(world, api); api.Destroy()
 	end)
 
-	test(prefix .. "copy button generates once then copies full compact report regardless of displayed raw page", function()
+	test(prefix .. "copy button refuses to scan then copies already-collected compact report", function()
 		local world, api, reads = protocolFixture(deferred, protocolLines(600, { [20] = "Color", [300] = 'x:InvokeServer("PaintPart")' }))
 		local copied, copies, files = nil, 0, 0
 		world.env.setclipboard = function(text) copied = text; copies += 1 end
 		world.env.writefile = function() files += 1 end
-		press(world, "Copy Protocol Report"); assert(reads() == 1 and copies == 1 and files == 0)
+		press(world, "Copy Protocol Report"); assert(reads() == 0 and copies == 0 and files == 0)
+		press(world, "Protocol Extract"); press(world, "Copy Protocol Report"); assert(reads() == 1 and copies == 1 and files == 0)
 		local expected = copied; contains(copied, "REMOTE CALL SUMMARY"); contains(copied, "END PROTOCOL EXTRACT")
 		assert(not string.find(copied, "BEGIN DECOMPILED SOURCE", 1, true))
 		press(world, "Inspect source"); assert(reads() == 2)
@@ -197,6 +198,7 @@ for _, deferred in ipairs({ false, true }) do
 	test(prefix .. "clipboard throw falls back to file and failures release export guard for retry", function()
 		local world, api = protocolFixture(deferred, "PaintPart")
 		world.env.setclipboard = function() error("clipboard unavailable") end
+		api.GetProtocolReport()
 		local saved = 0
 		world.env.writefile = function() saved += 1 end
 		assert(api.CopyProtocolReport()); assert(saved == 1)
@@ -208,6 +210,7 @@ for _, deferred in ipairs({ false, true }) do
 
 	test(prefix .. "no export capability reports failure and retains whole report for manual pages", function()
 		local world, api, reads = protocolFixture(deferred, "PaintPart")
+		api.GetProtocolReport()
 		local ok, status = api.CopyProtocolReport(); assert(not ok)
 		contains(status, "Protocol Report remains available in pages")
 		local copied
@@ -233,24 +236,26 @@ for _, deferred in ipairs({ false, true }) do
 		local worker, reads, exports = nil, 0, 0
 		world.env.decompile = function() reads += 1; worker = coroutine.running(); return coroutine.yield() end
 		world.env.setclipboard = function() exports += 1 end
-		press(world, "Copy Protocol Report"); assert(worker and reads == 1 and exports == 0)
+		press(world, "Protocol Extract"); assert(worker and reads == 1 and exports == 0)
 		for _ = 1, 40 do
 			press(world, "Protocol Extract"); press(world, "Copy Protocol Report")
 			contains(api.GetProtocolReport(), "Status=busy"); assert(not api.CopyProtocolReport())
 		end
 		assert(reads == 1 and exports == 0)
-		assert(coroutine.resume(worker, "PaintPart")); world.flush(); assert(exports == 1)
+		assert(coroutine.resume(worker, "PaintPart")); world.step(0.06); world.flush(); assert(exports == 0)
+		press(world, "Copy Protocol Report"); assert(exports == 1)
 		noTraffic(world, api); api.Destroy()
 	end)
 
 	test(prefix .. "yielded clipboard prevents repeated exports and cleanup avoids stale UI writes", function()
 		local world, api = protocolFixture(deferred, "PaintPart")
+		api.GetProtocolReport()
 		local worker, calls = nil, 0
 		world.env.setclipboard = function() calls += 1; worker = coroutine.running(); coroutine.yield() end
 		press(world, "Copy Protocol Report"); assert(calls == 1)
 		for _ = 1, 30 do press(world, "Copy Protocol Report"); assert(not api.CopyProtocolReport()) end
 		api.Destroy(); world.flush(); local writes = world.propertyWrites
-		assert(coroutine.resume(worker)); world.flush()
+		assert(coroutine.resume(worker)); world.step(0.06); world.flush()
 		assert(calls == 1 and world.propertyWrites == writes and world.connections == 0)
 		noTraffic(world, api)
 	end)
@@ -261,18 +266,19 @@ for _, deferred in ipairs({ false, true }) do
 		world.env.decompile = function() worker = coroutine.running(); return coroutine.yield() end
 		world.env.setclipboard = function() error("Must not export after shutdown") end
 		world.env.writefile = function() error("Must not export after shutdown") end
-		press(world, "Copy Protocol Report"); api.Destroy(); world.flush()
-		assert(coroutine.resume(worker, "PaintPart")); world.flush()
+		press(world, "Protocol Extract"); press(world, "Copy Protocol Report"); api.Destroy(); world.flush()
+		assert(coroutine.resume(worker, "PaintPart")); world.step(0.06); world.flush()
 		assert(world.connections == 0); noTraffic(world, api)
 	end)
 
 	test(prefix .. "closing during failed clipboard call prevents fallback file writes", function()
 		local world, api = protocolFixture(deferred, "PaintPart")
+		api.GetProtocolReport()
 		local worker, files = nil, 0
 		world.env.setclipboard = function() worker = coroutine.running(); coroutine.yield(); error("failed after close") end
 		world.env.writefile = function() files += 1 end
 		press(world, "Copy Protocol Report"); api.Destroy(); world.flush()
-		assert(coroutine.resume(worker)); world.flush(); assert(files == 0)
+		assert(coroutine.resume(worker)); world.step(0.06); world.flush(); assert(files == 0)
 		noTraffic(world, api)
 	end)
 
@@ -285,7 +291,7 @@ for _, deferred in ipairs({ false, true }) do
 			press(world, "Protocol Extract"); press(world, "Copy Protocol Report")
 			contains(copied, "| Color = " .. i .. "\n")
 		end
-		assert(world.connections == connections and world.taskSpawns == spawns and world.taskDefers == defers)
+		assert(world.connections == connections and world.taskSpawns == spawns + 20 and world.taskDefers == defers)
 		noTraffic(world, api); api.Destroy(); world.flush(); assert(world.connections == 0)
 	end)
 

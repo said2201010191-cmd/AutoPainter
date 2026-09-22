@@ -1,10 +1,12 @@
-# Latest diagnostic build: comprehensive client paint-path search
+# Latest diagnostic build: incremental scans with bounded decompile watchdogs
 
-The locked build now includes **Full Paint Paths Report** and **Copy Full Paint Paths Report**. It inspects client-visible LocalScripts and ModuleScripts across the requested player/replicated containers, Workspace tools/controllers and additional readable DataModel roots. Every candidate/read failure is recorded; shared context avoids repeating source in each category. Missing reads are coverage gaps, and candidate routes are not automatically declared supported.
+**Quick Paint Path Scan**, **Full Client Scan**, **CANCEL SCAN**, and **Copy Current Report** are separate actions. The UI shows current path and counts. Copy never starts inspection; completed results are cached for reruns.
 
-Use the unchanged **LoaderDiagnostic.luau** entry point and close older diagnostic panels first (the current UI capability version is 5). No painting runtime behavior, request protocol or request enablement changed. **333 deterministic tests pass**, including 62 new coverage tests. No live client scan or paint has been performed from this workspace.
+Each decompile has a six-second cooperative deadline. At most two calls may remain unreturned, including timed-out/cancelled calls. One stalled call allows continued inspection; two cause remaining uncached scripts to be marked SKIPPED_CAPACITY so the report can finish. A decompiler that freezes the entire client/native VM cannot be interrupted by an in-client watchdog. Restart the client once if the previous build is already hung.
 
-See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for the loader, one-click export, exact scope/exclusions and interpretation limits. The PaintBucket-only extractor described below still exists as a separate narrower action.
+Use **LoaderDiagnostic.luau**; diagnostics remain LOCKED. The current UI capability version is 6. Only diagnostic/UI/export behavior changed; the paint runtime and protocol remain unchanged. **337 deterministic tests pass**. No live scan or paint test was performed here.
+
+See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for exact ordering, cache behavior, bounds, loader and limitations. Descriptions of synchronous inspection, implicit-copy scanning and earlier UI versions below are historical and superseded by this section.
 
 ---
 
