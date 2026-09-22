@@ -50,7 +50,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 4 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 5 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -536,7 +536,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 4)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 5)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -613,6 +613,8 @@ local function reportAction(text)
 		Size = UDim2.new(1, -6, 0, 36), TextSize = 17, Font = Enum.Font.SourceSansBold,
 		BackgroundColor3 = Color3.fromRGB(60, 100, 125), TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
 end
+local fullPathsButton = reportAction("Full Paint Paths Report")
+local copyFullPathsButton = reportAction("Copy Full Paint Paths Report")
 local protocolButton = reportAction("Protocol Extract")
 local copyProtocolButton = reportAction("Copy Protocol Report")
 rowOrder += 1
@@ -1243,12 +1245,337 @@ function api.CopyProtocolReport()
 	return exported, message
 end
 
+-- Comprehensive diagnostics are isolated from the unchanged paint scheduler.
+local fullPaintPathsReport = nil
+function api.GetFullPaintPathsReport()
+	local heading = "CLIENT_PAINT_PATHS_FULL_REPORT\nFullPaintPathsReportFormat=1\n"
+	if not alive then return heading .. "Status=closed" end
+	if not diagnosticOnly or not diagnosticLocked then return heading .. "Status=refused; diagnostics must be LOCKED" end
+	if sourceInspectionBusy then return heading .. "Status=busy; no extra inspection started" end
+	sourceInspectionBusy, fullPaintPathsReport = true, nil
+	local ok, result = pcall(function()
+		local manifest, gaps, rootLog, candidates, seen, roots = {}, {}, {}, {}, {}, {}
+		local sections, blocks = {}, {}
+		for i = 1, 7 do sections[i] = {} end
+		local excludedScripts = 0
+		local counts = { returned = 0, failed = 0, skipped = 0, bytes = 0, calls = 0, paint = 0, blocks = 0 }
+		local inspectSource = decompile -- Optional existing capability; never require/execute a target.
+		local available = type(inspectSource) == "function"
+		local lastYield = os.clock()
+		local function checkpoint()
+			if not alive then return false end
+			if os.clock() - lastYield >= 0.012 then task.wait(); lastYield = os.clock() end
+			return alive
+		end
+		local function clean(value)
+			return (tostring(value):gsub("\\", "\\\\"):gsub("[%c]", function(c) return string.format("\\x%02X", string.byte(c)) end))
+		end
+		local function nameOf(object)
+			local readable, value = pcall(function() return object:GetFullName() end)
+			return readable and clean(value) or "<FullName unreadable>"
+		end
+		local function gap(text) table.insert(gaps, text) end
+		local function childOf(parent, name, label)
+			local readable, object = pcall(function() return parent and parent:FindFirstChild(name) end)
+			if not readable or not object then gap(label .. (readable and ": absent/not replicated" or ": lookup failed")) end
+			return readable and object or nil
+		end
+		local rootsSeen = {}
+		local function root(object, label, current)
+			if not object or rootsSeen[object] then return end
+			rootsSeen[object] = true
+			table.insert(roots, { object = object, label = label, current = current })
+		end
+		for _, name in ipairs({ "PlayerScripts", "PlayerGui", "Backpack" }) do
+			local object = childOf(player, name, "LocalPlayer." .. name)
+			root(object, "LocalPlayer." .. name, function() return player:FindFirstChild(name) == object end)
+		end
+		local currentCharacter = player.Character
+		if not currentCharacter then gap("LocalPlayer.Character: absent at snapshot") end
+		root(currentCharacter, "LocalPlayer.Character", function() return player.Character == currentCharacter end)
+		-- Includes additional local-player controllers without inspecting other players' private containers.
+		root(player, "LocalPlayer (all visible descendants)", function() return Players.LocalPlayer == player end)
+		for _, name in ipairs({ "ReplicatedStorage", "ReplicatedFirst", "StarterPlayer", "StarterGui", "StarterPack", "Workspace" }) do
+			local object = childOf(game, name, name)
+			root(object, name, function() return game:FindFirstChild(name) == object end)
+			if name == "StarterPlayer" then childOf(object, "StarterPlayerScripts", "StarterPlayer.StarterPlayerScripts") end
+		end
+		local excluded = { Players = true, CoreGui = true, ServerScriptService = true, ServerStorage = true }
+		local listed, topLevel = pcall(function() return game:GetChildren() end)
+		if not listed then gap("Additional DataModel roots: GetChildren failed; discovery incomplete")
+		else
+			for _, object in ipairs(topLevel) do
+				local rootName = object.Name
+				if not excluded[rootName] then
+					root(object, "Additional client-visible root: " .. clean(rootName), function() return game:FindFirstChild(rootName) == object end)
+				end
+			end
+		end
+		table.sort(roots, function(a, b) return a.label < b.label end)
+		for _, item in ipairs(roots) do
+			if not checkpoint() then gap("Closed during root enumeration; remaining roots not enumerated"); break end
+			local readable, objects = pcall(function() return item.object:GetDescendants() end)
+			if not readable then gap(item.label .. ": GetDescendants failed"); table.insert(rootLog, item.label .. " | ENUMERATION FAILED")
+			else
+				local found, visited = 0, 0
+				for _, object in ipairs(objects) do
+					visited += 1
+					local metadataOK, class = pcall(function() return object.ClassName end)
+					if not metadataOK then gap(item.label .. ": unreadable descendant ClassName")
+					elseif class == "Script" then
+						excludedScripts += 1
+					elseif class == "LocalScript" or class == "ModuleScript" then
+						found += 1
+						if not seen[object] then
+							seen[object] = true
+							local path = nameOf(object)
+							if path == "<FullName unreadable>" then gap(item.label .. ": script FullName unreadable") end
+							table.insert(candidates, { object = object, path = path, class = class, order = #candidates + 1 })
+						end
+					end
+					if not checkpoint() then break end
+				end
+				if visited < #objects then gap(item.label .. ": enumeration processing interrupted") end
+				table.insert(rootLog, item.label .. " | Descendants=" .. #objects .. " Visited=" .. visited .. " ScriptsSeen=" .. found)
+			end
+		end
+		table.sort(candidates, function(a, b)
+			if a.path ~= b.path then return a.path < b.path end
+			if a.class ~= b.class then return a.class < b.class end
+			return a.order < b.order
+		end)
+		local function inScope(object)
+			for _, item in ipairs(roots) do
+				local readable, eligible = pcall(function() return item.current() and object:IsDescendantOf(item.object) end)
+				if readable and eligible then return true end
+			end
+			return false
+		end
+		local terms = { "PaintPart", "ServerControls", "ClientControls", "InvokeServer", "FireServer", "InvokeClient", "FireClient", "FireAllClients",
+			"Province", "Provinces", "PaintBucket", "PaintBucketColor", "Peace", "War", "IsBannable", "RemotesReady",
+			"admin", "developer", "private server", "test mode", "batch", "multi", "ownership", "capture", "paint", "color" }
+		local categoryTerms = {
+			[3] = { "province", "ownership", "capture", "paint", "color", "colour", "brickcolor", "setattribute" },
+			[4] = { "admin", "developer", "privateserver", "private server", "isstudio", "testmode", "test mode", "vipserver" },
+			[5] = { "batch", "multi", "targets", "parts", "ipairs", "pairs" },
+			[6] = { "part", "target", "selected", "stored", "mouse", "instance" },
+			[7] = { "permission", "capability", "token", "nonce", "session", "isbannable", "remotesready", "getattribute", "onclientinvoke", "onclientevent" },
+		}
+		for i, term in ipairs(terms) do terms[i] = string.lower(term) end
+		local methodTerms = { "invokeserver", "fireserver", "invokeclient", "fireclient", "fireallclients" }
+		local function any(lower, list)
+			for _, term in ipairs(list) do if string.find(lower, term, 1, true) then return true end end
+			return false
+		end
+		local function extract(source, id, path)
+			local lines, starts, hits, refs, spans, calls = {}, {}, {}, {}, {}, {}
+			local first = 1
+			while first <= #source do
+				local newline = string.find(source, "\n", first, true)
+				table.insert(starts, first)
+				table.insert(lines, string.sub(source, first, newline and newline - 1 or #source))
+				if not newline then break end
+				first = newline + 1
+				if not checkpoint() then return nil end
+			end
+			local function lineAt(position)
+				local low, high = 1, #starts
+				while low < high do
+					local middle = math.ceil((low + high) / 2)
+					if starts[middle] <= position then low = middle else high = middle - 1 end
+				end
+				return low
+			end
+			for number, line in ipairs(lines) do
+				local lower = string.lower(line)
+				local categories = {}
+				if any(lower, methodTerms) then categories[1] = true end
+				if string.find(lower, "paintpart", 1, true) then categories[2] = true end
+				for section, words in pairs(categoryTerms) do if any(lower, words) then categories[section] = true end end
+				if any(lower, terms) or next(categories) then hits[number] = categories end
+				if not checkpoint() then return nil end
+			end
+			-- Keep all remote-shaped call text, including unrelated/aliased receivers, rather than
+			-- assuming names identify the paint remote. Dot, colon, and literal-index syntax.
+			local callPositions = {}
+			for _, method in ipairs({ "InvokeServer", "FireServer", "InvokeClient", "FireClient", "FireAllClients" }) do
+				for _, pattern in ipairs({ "[:%.]%s*" .. method .. "%s*%(", "%[%s*['\"]" .. method .. "['\"]%s*%]%s*%(" }) do
+					local cursor = 1
+					while true do
+						local position, last = string.find(source, pattern, cursor)
+						if not position then break end
+						if not callPositions[position] then
+							callPositions[position] = true
+							local number, lastLine = lineAt(position), lineAt(last)
+							table.insert(calls, { position = position, line = number, method = method })
+							for n = number, lastLine do hits[n] = hits[n] or {} end
+						end
+						cursor = last + 1
+						if not checkpoint() then return nil end
+					end
+				end
+			end
+			table.sort(calls, function(a, b) return a.position < b.position end)
+			for number = 1, #lines do
+				if hits[number] then
+					local from, to = math.max(1, number - CONFIG.ProtocolBefore), math.min(#lines, number + CONFIG.ProtocolAfter)
+					local previous = spans[#spans]
+					if previous and from <= previous.to + 1 then previous.to = math.max(previous.to, to)
+					else table.insert(spans, { from = from, to = to }) end
+				end
+				if not checkpoint() then return nil end
+			end
+			for _, span in ipairs(spans) do
+				counts.blocks += 1
+				local blockId = string.format("F%05d", counts.blocks)
+				local output = { "[" .. blockId .. "] " .. id .. " FullName=" .. path,
+					string.format("Lines=L%d-L%d", span.from, span.to) }
+				for number = span.from, span.to do
+					if hits[number] then refs[number] = blockId end
+					table.insert(output, (hits[number] and "* " or "  ") .. "L" .. number .. " | " .. lines[number])
+					if not checkpoint() then return nil end
+				end
+				table.insert(blocks, table.concat(output, "\n"))
+			end
+			local directCallLines = {}
+			for _, call in ipairs(calls) do
+				directCallLines[call.line] = true
+				table.insert(sections[1], string.format("%s L%d:C%d %s Context=%s", id, call.line,
+					call.position - starts[call.line] + 1, call.method, refs[call.line]))
+			end
+			for number = 1, #lines do
+				if hits[number] and hits[number][1] and not directCallLines[number] then
+					table.insert(sections[1], id .. " L" .. number .. " METHOD REFERENCE / alias candidate Context=" .. refs[number])
+				end
+			end
+			-- PaintPart indexes every literal occurrence, including two occurrences on one line.
+			local cursor, paintCount, lowerSource = 1, 0, string.lower(source)
+			while true do
+				local at, last = string.find(lowerSource, "paintpart", cursor, true)
+				if not at then break end
+				local number = lineAt(at)
+				paintCount += 1
+				table.insert(sections[2], string.format("%s L%d:C%d Context=%s", id, number, at - starts[number] + 1, refs[number]))
+				cursor = last + 1
+				if not checkpoint() then return nil end
+			end
+			-- Category indexes reference the same blocks once each: compact, conservative candidates.
+			for section = 3, 7 do
+				local categoryBlocks = {}
+				for number = 1, #lines do
+					if hits[number] and hits[number][section] and not categoryBlocks[refs[number]] then
+						categoryBlocks[refs[number]] = true
+						table.insert(sections[section], id .. " Context=" .. refs[number])
+					end
+				end
+			end
+			return #calls, paintCount
+		end
+		for index, candidate in ipairs(candidates) do
+			local id = string.format("S%05d", index)
+			local entry = id .. " FullName=" .. candidate.path .. " ClassName=" .. candidate.class
+			local status, bytes, callCount, paintCount = "", "unavailable", 0, 0
+			if not checkpoint() then status = "NOT_READ: closed"; counts.skipped += 1
+			elseif not inScope(candidate.object) then status = "NOT_READ: left visible scope"; counts.skipped += 1
+			elseif not available then status = "NOT_READ: decompile unavailable"; counts.skipped += 1
+			else
+				local readPath = nameOf(candidate.object)
+				local readOK, source = pcall(inspectSource, candidate.object)
+				if not readOK then
+					status = "FAILED: decompiler threw"
+					if type(source) == "string" and utf8.len(source) then status ..= " | " .. clean(source) end
+					counts.failed += 1
+				elseif type(source) ~= "string" or #source == 0 or not utf8.len(source) then
+					status = "FAILED: nonempty UTF-8 text not returned"; counts.failed += 1
+				elseif not alive or not inScope(candidate.object) or readPath ~= nameOf(candidate.object) then
+					status = "NOT_READ: closed or scope/path changed during decompile; text discarded"; counts.skipped += 1
+				else
+					bytes = #source
+					callCount, paintCount = extract(source, id, readPath)
+					if not callCount then status = "NOT_READ: extraction interrupted"; counts.skipped += 1
+					else
+						status = "TEXT_RETURNED_UNVERIFIED"
+						counts.returned += 1; counts.bytes += bytes; counts.calls += callCount; counts.paint += paintCount
+						if readPath ~= candidate.path then entry ..= " SourceFullName=" .. readPath end
+					end
+				end
+			end
+			if status ~= "TEXT_RETURNED_UNVERIFIED" then gap(id .. " " .. candidate.path .. " | " .. status) end
+			table.insert(manifest, entry .. " Status=" .. status .. " SourceBytes=" .. tostring(bytes)
+				.. " RemoteCallText=" .. tostring(callCount or 0) .. " PaintPartOccurrences=" .. tostring(paintCount or 0))
+			candidate.object = nil -- Do not retain Instances in the completed report/cache.
+		end
+		local output = { heading .. "DiagnosticOnly=true Locked=true AutoPainterRequestsEnabled=false",
+			"Static text inspection only. No remotes, script execution, module require, hooks, state writes or automatic export.",
+			"decompile=" .. (available and "available; environment implementation unverified" or "UNAVAILABLE"),
+			"All categories are CANDIDATES, not confirmed supported routes. Comments/strings/dead code can match.",
+			"FireClient/InvokeClient/FireAllClients text may belong to server branches of shared modules; it is not an ordinary client capability.",
+			"All remote-shaped calls are retained, even when paint relevance is unknown. Dynamic method names/wrappers need manual tracing.",
+			"Coverage is a client-visible snapshot, not the entire server/game. No source/count limit silently truncates this report.",
+			"Excluded: CoreGui engine internals, other players' Players containers, server-only containers, and Script class (including RunContext Client).",
+			"Excluded Script-class observations across overlapping roots=" .. excludedScripts,
+			"Workspace includes visible tools/controllers regardless of name. Additional DataModel roots are enumerated when readable.",
+			"SCRIPT/MODULE MANIFEST (IDs disambiguate identical full paths)", table.concat(manifest, "\n") }
+		local headings = { "1. ALL PAINT/PROVINCE REMOTE CALLS", "2. ALL PaintPart CALL SITES",
+			"3. ALL ALTERNATE PROVINCE-MODIFICATION PATHS", "4. ADMIN / PRIVATE / TEST PATHS",
+			"5. BATCH / MULTI-TARGET PATHS", "6. STORED-INSTANCE TARGETING PATHS", "7. PERMISSION / CAPABILITY / TOKEN STATE" }
+		for i, title in ipairs(headings) do
+			table.insert(output, "\n" .. title)
+			table.insert(output, #sections[i] > 0 and table.concat(sections[i], "\n") or "No matching text in returned source; not proof of absence.")
+		end
+		table.insert(output, "\n8. READ FAILURES / COVERAGE GAPS")
+		table.insert(output, table.concat(rootLog, "\n"))
+		local summary = string.format("EnumeratedUnique=%d TextReturned=%d ReadFailures=%d NotRead=%d SourceBytes=%d RemoteCallText=%d PaintPartOccurrences=%d CoverageGaps=%d",
+			#candidates, counts.returned, counts.failed, counts.skipped, counts.bytes, counts.calls, counts.paint, #gaps)
+		table.insert(output, summary)
+		table.insert(output, #gaps > 0 and table.concat(gaps, "\n") or "No enumeration/read failures recorded for the listed snapshot roots.")
+		table.insert(output, "Decompiler text accuracy/completeness cannot be certified, including returned error-comment text. Late replication, removed/unparented scripts and server-only logic are outside this snapshot.")
+		table.insert(output, "\n9. FINAL SUPPORTED CLIENT ROUTES")
+		table.insert(output, "A stored/off-cursor route: UNRESOLVED. Inspect sections 1/2/3/6 and trace target aliases to their source.")
+		table.insert(output, "B batch/multi-target route: UNRESOLVED. Loops and multiple names do not establish a server batch contract.")
+		table.insert(output, "C private/admin/test route: UNRESOLVED. A shipped branch/flag does not prove ordinary-player permission.")
+		table.insert(output, "D alternate painting remote: UNRESOLVED. Trace receiver discovery, wrappers, arguments and return state in the shared context.")
+		table.insert(output, "E coverage: " .. summary)
+		table.insert(output, "No route is automatically certified or ruled out by keyword matching. Server validation/acceptance remains untested; diagnostics remain LOCKED.")
+		table.insert(output, "\nSHARED MERGED CONTEXT BLOCKS\n8 lines before / 12 after; overlapping and adjacent windows merge per script. * marks search hits. Source is printed once; category indexes reference Fxxxxx.")
+		table.insert(output, table.concat(blocks, "\n\n"))
+		table.insert(output, "END CLIENT_PAINT_PATHS_FULL_REPORT")
+		return table.concat(output, "\n")
+	end)
+	sourceInspectionBusy = false
+	if not ok then return heading .. "Status=inspection failed internally; coverage incomplete; no report cached; diagnostics remain LOCKED" end
+	if alive then fullPaintPathsReport = result end
+	return result
+end
+
+function api.CopyFullPaintPathsReport()
+	if not alive then return false, "AutoPainter is closed." end
+	if not diagnosticOnly or not diagnosticLocked then return false, "Use the LOCKED diagnostic loader." end
+	if sourceInspectionBusy or protocolExportBusy then return false, "Inspection/export is busy; no extra work started." end
+	protocolExportBusy = true
+	local ok, exported, message = pcall(function()
+		if not fullPaintPathsReport then api.GetFullPaintPathsReport() end
+		if not alive or not fullPaintPathsReport then return false, "No completed full report to export." end
+		local snapshot = fullPaintPathsReport
+		if type(setclipboard) == "function" and pcall(setclipboard, snapshot) then return true, "Copied complete Full Paint Paths Report." end
+		if not alive then return false, "AutoPainter closed; no fallback write started." end
+		if type(writefile) == "function" and pcall(writefile, "CLIENT_PAINT_PATHS_FULL_REPORT.txt", snapshot) then
+			return true, "Saved CLIENT_PAINT_PATHS_FULL_REPORT.txt in the client environment's file area."
+		end
+		return false, "Clipboard/file export unavailable or failed. Full report remains available in pages."
+	end)
+	protocolExportBusy = false
+	if not ok then return false, "Full report export failed; diagnostics remain LOCKED." end
+	return exported, message
+end
+
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	alive = false
 	selectionMode = nil
 	reportText = ""
 	protocolReport = nil
+	fullPaintPathsReport = nil
 	table.clear(reportOffsets)
 	disconnectAll(connections)
 	disconnectAll(cacheConnections)
@@ -1284,6 +1611,21 @@ connect(copyProtocolButton.Activated, function()
 	local _, message = api.CopyProtocolReport()
 	if alive then
 		if protocolReport then showReport(protocolReport) end
+		exportStatus.Text, exportStatus.Visible = message, true
+	end
+end)
+connect(fullPathsButton.Activated, function()
+	if sourceInspectionBusy or not alive then return end
+	exportStatus.Text, exportStatus.Visible = "Inspecting client scripts/modules (read-only)...", true
+	local report = api.GetFullPaintPathsReport()
+	if alive then showReport(report); exportStatus.Text = "Full report ready. Copy Full Paint Paths Report exports all pages." end
+end)
+connect(copyFullPathsButton.Activated, function()
+	if sourceInspectionBusy or protocolExportBusy or not alive then return end
+	exportStatus.Text, exportStatus.Visible = "Preparing Full Paint Paths Report export...", true
+	local _, message = api.CopyFullPaintPathsReport()
+	if alive then
+		if fullPaintPathsReport then showReport(fullPaintPathsReport) end
 		exportStatus.Text, exportStatus.Visible = message, true
 	end
 end)
@@ -1397,7 +1739,7 @@ connect(RunService.Heartbeat, function(dt)
 end)
 api.SetColor(color)
 if diagnosticOnly then
-	showReport("PROTOCOL EXTRACT\nUse Protocol Extract for merged code context, then Copy Protocol Report to export it in one click.\n"
+	showReport("PROTOCOL EXTRACT\nUse Full Paint Paths Report to inspect client-visible LocalScripts/modules, then Copy Full Paint Paths Report. Protocol Extract remains available for PaintBucket-only context.\n"
 		.. "Diagnostics must remain LOCKED. Full inventory and raw source are optional separate actions. No inspection runs automatically.")
 end
 return api

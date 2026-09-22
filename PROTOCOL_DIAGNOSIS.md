@@ -1,3 +1,13 @@
+# Latest diagnostic build: comprehensive client paint-path search
+
+The locked build now includes **Full Paint Paths Report** and **Copy Full Paint Paths Report**. It inspects client-visible LocalScripts and ModuleScripts across the requested player/replicated containers, Workspace tools/controllers and additional readable DataModel roots. Every candidate/read failure is recorded; shared context avoids repeating source in each category. Missing reads are coverage gaps, and candidate routes are not automatically declared supported.
+
+Use the unchanged **LoaderDiagnostic.luau** entry point and close older diagnostic panels first (the current UI capability version is 5). No painting runtime behavior, request protocol or request enablement changed. **333 deterministic tests pass**, including 62 new coverage tests. No live client scan or paint has been performed from this workspace.
+
+See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for the loader, one-click export, exact scope/exclusions and interpretation limits. The PaintBucket-only extractor described below still exists as a separate narrower action.
+
+---
+
 # PaintBucket protocol investigation — unresolved first-request rejection
 
 The user reports that selection and committing while painting is OFF succeed, but the very first Safe-mode PaintPart request causes a disconnect. The selection fix and concurrency tests do not establish that the game's normal tool protocol is correct. No rate, burst or concurrency settings were reduced in this revision. **The live issue is not fixed or live-validated.**

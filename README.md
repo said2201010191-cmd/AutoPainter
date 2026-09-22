@@ -1,3 +1,13 @@
+# Latest diagnostic build: comprehensive client paint-path search
+
+The locked build now includes **Full Paint Paths Report** and **Copy Full Paint Paths Report**. It inspects client-visible LocalScripts and ModuleScripts across the requested player/replicated containers, Workspace tools/controllers and additional readable DataModel roots. Every candidate/read failure is recorded; shared context avoids repeating source in each category. Missing reads are coverage gaps, and candidate routes are not automatically declared supported.
+
+Use the unchanged **LoaderDiagnostic.luau** entry point and close older diagnostic panels first (the current UI capability version is 5). No painting runtime behavior, request protocol or request enablement changed. **333 deterministic tests pass**, including 62 new coverage tests. No live client scan or paint has been performed from this workspace.
+
+See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for the loader, one-click export, exact scope/exclusions and interpretation limits. The PaintBucket-only extractor described below still exists as a separate narrower action.
+
+---
+
 # AutoPainter
 
 **Current status: diagnostics remain locked for investigation; no live fix is verified.** The real tool reportedly sends its genuine Mouse.Target and exposes GetMouseData through ClientControls. That makes off-cursor stored-target requests incompatible with the working normal-client contract, although the server's actual target comparison and kick cause are not yet proven. The normal flow also uses RemotesReady/IsBannable discovery, PaintBucketColor, Peace/War state and EquippedPaintCooldown. See the updated [A–D feasibility diagnosis](PROTOCOL_DIAGNOSIS.md) for what can work legitimately and what evidence is still missing.
