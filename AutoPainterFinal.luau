@@ -12,6 +12,8 @@ local CONFIG = {
 	DiagnosticMaxText = 24000,
 	DiagnosticPageCharacters = 4000, -- Display pages only; never truncates the inventory.
 	DiagnosticPageLines = 40,
+	ProtocolBefore = 8,
+	ProtocolAfter = 12,
 	Normal = { Initial = 8, Min = 2, Max = 24, MaxPerProvince = 2, Rate = 160, Burst = 8, Batch = 16 },
 	Fast = { Initial = 16, Min = 4, Max = 64, MaxPerProvince = 6, Rate = 360, Burst = 16, Batch = 32 },
 	Safe = { Initial = 1, Min = 1, Max = 1, MaxPerProvince = 1, Rate = 4, Burst = 1, Batch = 1 },
@@ -48,7 +50,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 3 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 4 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -534,7 +536,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 3)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 4)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -605,10 +607,23 @@ local fastButton = option("Fast Paint", "OFF")
 local keepButton = option("Keep Territory Color", "OFF")
 local randomButton = option("Randomize Color  [R]", "Change")
 local diagnosticButton = option("Diagnostics · no requests", "ON")
-local inspectButton = option("Local state report", "Inspect")
-local sourceButton = option("PaintBucket LocalScript source", "Inspect source")
+local function reportAction(text)
+	rowOrder += 1
+	return make("TextButton", scroll, { Text = text, LayoutOrder = rowOrder,
+		Size = UDim2.new(1, -6, 0, 36), TextSize = 17, Font = Enum.Font.SourceSansBold,
+		BackgroundColor3 = Color3.fromRGB(60, 100, 125), TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
+end
+local protocolButton = reportAction("Protocol Extract")
+local copyProtocolButton = reportAction("Copy Protocol Report")
+rowOrder += 1
+local exportStatus = make("TextLabel", scroll, { Name = "ProtocolExportStatus", Text = "", Visible = false,
+	LayoutOrder = rowOrder, Size = UDim2.new(1, -6, 0, 32), AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(195, 230, 210), TextSize = 14, TextWrapped = true })
+local inspectButton = option("Full inventory (optional)", "Inspect")
+local sourceButton = option("Full source (optional)", "Inspect source")
 sourceButton.TextSize, sourceButton.TextWrapped = 12, true
 local sourceInspectionBusy = false
+local protocolReport, protocolExportBusy = nil, false
 local reportNav = make("Frame", scroll, { Name = "DiagnosticPages", Visible = false,
 	LayoutOrder = rowOrder + 1, Size = UDim2.new(1, -6, 0, 32), BackgroundTransparency = 1 })
 local reportPrevious = make("TextButton", reportNav, { Text = "Prev", Size = UDim2.fromOffset(70, 28),
@@ -962,10 +977,11 @@ function api.GetDiagnosticReport()
 	return table.concat(lines, "\n") .. "\n\n" .. descendantInventory(currentBucket, currentRemote)
 end
 
-function api.GetLocalScriptReport()
+local function buildSourceReport(compact)
 	-- Optional environment capability only. Never read Source/closures, execute the
 	-- returned text, require modules, invoke tool callbacks, or probe game remotes.
-	local heading = "PAINTBUCKET LOCALSCRIPT SOURCE\nSourceReportFormat=1\n"
+	local heading = compact and "PROTOCOL EXTRACT\nProtocolReportFormat=1\n"
+		or "PAINTBUCKET LOCALSCRIPT SOURCE\nSourceReportFormat=1\n"
 	if not alive then return heading .. "Status=unavailable; AutoPainter is closed" end
 	if not diagnosticOnly or not diagnosticLocked then
 		return heading .. "Status=refused; use LoaderDiagnostic.luau with diagnostics LOCKED ON"
@@ -985,6 +1001,90 @@ function api.GetLocalScriptReport()
 		local function fullPath(object)
 			local readable, name = pcall(function() return object:GetFullName() end)
 			return readable and name or "<unavailable>"
+		end
+		local remoteSummary, flowSummary, contextBlocks = {}, {}, {}
+		local blockCount, matchCount, callCount, flowCount = 0, 0, 0, 0
+		local protocolTerms = { "ServerControls", "ClientControls", "InvokeServer", "InvokeClient",
+			"FireServer", "FireClient", "PaintPart", "Peace", "Activated", "Equipped", "Unequipped",
+			"Color", "BrickColor", "RemoteFunction", "RemoteEvent", "mode", "state", "cooldown" }
+		local function extractProtocol(source, scriptPath)
+			local lines, starts, hits, calls, spans = {}, {}, {}, {}, {}
+			local first = 1
+			while first <= #source do
+				local newline = string.find(source, "\n", first, true)
+				table.insert(starts, first)
+				table.insert(lines, string.sub(source, first, newline and newline - 1 or #source))
+				if not newline then break end
+				first = newline + 1
+			end
+			for number, text in ipairs(lines) do
+				local lower, labels = string.lower(text), {}
+				for _, term in ipairs(protocolTerms) do
+					if string.find(lower, string.lower(term), 1, true) then table.insert(labels, term) end
+				end
+				if #labels > 0 then hits[number] = labels end
+			end
+			local function sourceLine(position)
+				local low, high = 1, #starts
+				while low < high do
+					local middle = math.ceil((low + high) / 2)
+					if starts[middle] <= position then low = middle else high = middle - 1 end
+				end
+				return low
+			end
+			-- Textual call sites, including whitespace/newlines and multiple calls on a line.
+			-- This never evaluates code or assumes a comment/string is an executed call.
+			for _, method in ipairs({ "InvokeServer", "FireServer", "InvokeClient", "FireClient" }) do
+				local cursor = 1
+				while true do
+					local position, last = string.find(source, ":%s*" .. method .. "%s*%(", cursor)
+					if not position then break end
+					local number = sourceLine(position)
+					table.insert(calls, { position = position, number = number, method = method })
+					if not hits[number] then hits[number] = { method .. " call" } end
+					cursor = last + 1
+				end
+			end
+			table.sort(calls, function(a, b) return a.position < b.position end)
+			for number = 1, #lines do
+				if hits[number] then
+					matchCount += 1
+					local from, to = math.max(1, number - CONFIG.ProtocolBefore), math.min(#lines, number + CONFIG.ProtocolAfter)
+					local previous = spans[#spans]
+					if previous and from <= previous.to + 1 then previous.to = math.max(previous.to, to)
+					else table.insert(spans, { from = from, to = to }) end
+				end
+			end
+			local blocksByHit = {}
+			for _, span in ipairs(spans) do
+				blockCount += 1
+				local id = string.format("B%04d", blockCount)
+				local output = { "\n[" .. id .. "] Script=" .. safeName(scriptPath),
+					string.format("Lines=L%d-L%d", span.from, span.to) }
+				for number = span.from, span.to do
+					local labels = hits[number]
+					if labels then blocksByHit[number] = id end
+					table.insert(output, (labels and "* " or "  ") .. "L" .. number
+						.. (labels and " [" .. table.concat(labels, ", ") .. "]" or "") .. " | " .. lines[number])
+				end
+				table.insert(contextBlocks, table.concat(output, "\n"))
+			end
+			if #calls > 0 then table.insert(remoteSummary, "\nScript=" .. safeName(scriptPath)) end
+			for _, call in ipairs(calls) do
+				callCount += 1
+				table.insert(remoteSummary, string.format("L%d:C%d :%s( Context=%s | %s", call.number,
+					call.position - starts[call.number] + 1, call.method, blocksByHit[call.number], lines[call.number]))
+			end
+			local flowHeader = false
+			for number, text in ipairs(lines) do
+				local lower = string.lower(text)
+				if string.find(lower, "paintpart", 1, true) or string.find(lower, "servercontrols", 1, true)
+					or string.find(lower, "clientcontrols", 1, true) then
+					if not flowHeader then table.insert(flowSummary, "\nScript=" .. safeName(scriptPath)); flowHeader = true end
+					flowCount += 1
+					table.insert(flowSummary, "L" .. number .. " Context=" .. blocksByHit[number] .. " | " .. text)
+				end
+			end
 		end
 		local inspectSource = decompile -- Optional global; no guessed aliases or fallback mechanisms.
 		local available = type(inspectSource) == "function"
@@ -1077,18 +1177,70 @@ function api.GetLocalScriptReport()
 					returned += 1
 					emit("Status=text returned; decompiler accuracy/completeness unverified\nSourceBytes=" .. #source)
 					emit("CurrentFullName=" .. safeName(fullPath(object)))
-					emit("BEGIN DECOMPILED SOURCE\n" .. source .. "\nEND DECOMPILED SOURCE")
-					searchText(source)
+					if compact then extractProtocol(source, candidate.path)
+					else
+						emit("BEGIN DECOMPILED SOURCE\n" .. source .. "\nEND DECOMPILED SOURCE")
+						searchText(source)
+					end
 				end
 			end
 		end
 		emit(string.format("\nTextReturned=%d Failures=%d Skipped=%d", returned, failures, skipped))
-		emit("END PAINTBUCKET LOCALSCRIPT SOURCE")
+		if compact then
+			emit(string.format("MatchLines=%d CallSites=%d FlowLines=%d MergedBlocks=%d", matchCount, callCount, flowCount, blockCount))
+			emit("\nREMOTE CALL SUMMARY")
+			emit(#remoteSummary > 0 and table.concat(remoteSummary, "\n") or "No matching colon-call text found.")
+			emit("\nPAINTPART FLOW")
+			emit(#flowSummary > 0 and table.concat(flowSummary, "\n") or "No PaintPart/ServerControls/ClientControls text found.")
+			emit("\nMERGED CONTEXT BLOCKS")
+			emit(string.format("Context=8 lines before / 12 after by default; current=%d/%d. Overlapping/adjacent windows merge per script.", CONFIG.ProtocolBefore, CONFIG.ProtocolAfter))
+			emit("Summary Context=Bxxxx references the surrounding code printed once below. * marks matching lines.")
+			emit("Text matches can occur in comments/strings or unused code; they do not prove execution order or server acceptance.")
+			emit(#contextBlocks > 0 and table.concat(contextBlocks, "\n") or "No matching context blocks.")
+			emit("END PROTOCOL EXTRACT")
+		else emit("END PAINTBUCKET LOCALSCRIPT SOURCE") end
 		return table.concat(output, "\n")
 	end)
 	sourceInspectionBusy = false
-	if not ok then return heading .. "Status=inspection failed; diagnostic lock remains enabled; retry Inspect source" end
+	if not ok then return heading .. "Status=inspection failed; diagnostic lock remains enabled; retry inspection", true end
+	return report, true
+end
+
+function api.GetLocalScriptReport()
+	local report = buildSourceReport(false)
 	return report
+end
+
+function api.GetProtocolReport()
+	if alive and diagnosticOnly and diagnosticLocked and not sourceInspectionBusy then protocolReport = nil end
+	local report, completed = buildSourceReport(true)
+	if completed and alive then protocolReport = report end
+	return report
+end
+
+function api.CopyProtocolReport()
+	if not alive then return false, "AutoPainter is closed." end
+	if not diagnosticOnly or not diagnosticLocked then return false, "Use the LOCKED diagnostic loader." end
+	if protocolExportBusy or sourceInspectionBusy then return false, "Inspection/export is busy; no new work started." end
+	protocolExportBusy = true
+	local ok, exported, message = pcall(function()
+		if not protocolReport then api.GetProtocolReport() end
+		if not alive or not protocolReport then return false, "No completed protocol report to export." end
+		local snapshot = protocolReport -- Export the entire compact snapshot, never the current page/raw report.
+		if type(setclipboard) == "function" then
+			local copied = pcall(setclipboard, snapshot)
+			if copied then return true, "Copied complete Protocol Report to clipboard." end
+		end
+		if not alive then return false, "AutoPainter closed before file export; no fallback write started." end
+		if type(writefile) == "function" then
+			local saved = pcall(writefile, "AutoPainterProtocolReport.txt", snapshot)
+			if saved then return true, "Saved AutoPainterProtocolReport.txt in the client environment's file area." end
+		end
+		return false, "Clipboard/file export unavailable or failed. Protocol Report remains available in pages."
+	end)
+	protocolExportBusy = false
+	if not ok then return false, "Protocol export failed; the diagnostic lock remains enabled." end
+	return exported, message
 end
 
 function api.Destroy(fromDestroying)
@@ -1096,6 +1248,7 @@ function api.Destroy(fromDestroying)
 	alive = false
 	selectionMode = nil
 	reportText = ""
+	protocolReport = nil
 	table.clear(reportOffsets)
 	disconnectAll(connections)
 	disconnectAll(cacheConnections)
@@ -1115,6 +1268,24 @@ connect(randomButton.Activated, randomize)
 connect(diagnosticButton.Activated, function() api.SetDiagnostic(not diagnosticOnly) end)
 connect(inspectButton.Activated, function()
 	showReport(api.GetDiagnosticReport())
+end)
+connect(protocolButton.Activated, function()
+	if sourceInspectionBusy or not alive then return end
+	exportStatus.Text, exportStatus.Visible = "Preparing compact Protocol Report...", true
+	local report = api.GetProtocolReport()
+	if alive then
+		showReport(report)
+		exportStatus.Text = "Report ready. Copy Protocol Report exports all pages."
+	end
+end)
+connect(copyProtocolButton.Activated, function()
+	if sourceInspectionBusy or protocolExportBusy or not alive then return end
+	exportStatus.Text, exportStatus.Visible = "Preparing Protocol Report export...", true
+	local _, message = api.CopyProtocolReport()
+	if alive then
+		if protocolReport then showReport(protocolReport) end
+		exportStatus.Text, exportStatus.Visible = message, true
+	end
 end)
 connect(sourceButton.Activated, function()
 	if sourceInspectionBusy or not alive then return end
@@ -1225,4 +1396,8 @@ connect(RunService.Heartbeat, function(dt)
 	end
 end)
 api.SetColor(color)
+if diagnosticOnly then
+	showReport("PROTOCOL EXTRACT\nUse Protocol Extract for merged code context, then Copy Protocol Report to export it in one click.\n"
+		.. "Diagnostics must remain LOCKED. Full inventory and raw source are optional separate actions. No inspection runs automatically.")
+end
 return api
