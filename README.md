@@ -1,6 +1,8 @@
 # AutoPainter
 
-**Current status: the normal PaintBucket protocol is unverified. The user reports a kick on the very first Safe-mode request. This revision adds diagnostics; it does not fix or live-validate that rejection.** The script now defaults to diagnostics ON, so selecting and committing provinces, equipping the bucket, and toggling painting produce zero AutoPainter game requests. Rate/concurrency values are unchanged.
+**Current status: diagnostics remain locked for investigation; no live fix is verified.** The real tool reportedly sends its genuine Mouse.Target and exposes GetMouseData through ClientControls. That makes off-cursor stored-target requests incompatible with the working normal-client contract, although the server's actual target comparison and kick cause are not yet proven. The normal flow also uses RemotesReady/IsBannable discovery, PaintBucketColor, Peace/War state and EquippedPaintCooldown. See the updated [A–D feasibility diagnosis](PROTOCOL_DIAGNOSIS.md) for what can work legitimately and what evidence is still missing.
+
+This latest revision updates analysis only. The runtime and loaders are unchanged; their legacy request path has not yet been corrected or enabled. Use the locked diagnostic loader below. No rate limits were lowered and no mouse/callback/moderation behavior is intercepted.
 
 For this investigation, close the older AutoPainter panel and run the locked diagnostic loader:
 
@@ -40,11 +42,11 @@ When upgrading from an older running version, close its panel before loading the
 
 ## Existing protocol
 
-The client only reads the equipped object path:
+The dormant legacy request path still reads the equipped object path:
 
 `Players.LocalPlayer.Character → PaintBucket → Remotes → ServerControls`
 
-Outside diagnostics, the retained legacy invocation has these arguments (not verified against the normal game client):
+Outside diagnostics, the retained legacy invocation has these arguments. This is recorded implementation history, not the newly identified normal targeting/discovery contract:
 
 ```lua
 ServerControls:InvokeServer("PaintPart", { Part = province, Color = desiredColor }, "Peace")

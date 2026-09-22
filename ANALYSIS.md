@@ -1,6 +1,8 @@
 # AutoPainter behavior and performance review
 
-**Latest live status:** the user reports that the first Safe-mode PaintPart request causes a moderation disconnect. Previous modeled throughput/correctness results do not establish protocol validity. The latest inventory names normal tool LocalScripts, but their source has not yet been supplied; no rate limits or protocol fields were guessed/changed. See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the investigation and new default-on, zero-request diagnostic mode. The live issue is unresolved.
+**Latest live status:** the user's real protocol findings identify genuine Mouse.Target painting, a GetMouseData client callback, RemotesReady/IsBannable remote selection, PaintBucketColor, Peace/War mode and EquippedPaintCooldown. The server's actual target comparison is a plausible explanation for the first-request kick, not a proven cause. Arbitrary off-cursor painting is unsupported under that working contract. The precise cooldown formula, color writer, mode lifecycle and validation timing remain missing. This revision changes documentation only and preserves the locked zero-request diagnostic build. See [PROTOCOL_DIAGNOSIS.md](PROTOCOL_DIAGNOSIS.md) for the A–D answers and replacement requirements.
+
+The scheduling/performance review below describes the existing dormant AutoPainter model. Its throughput results and old assumptions must not be treated as validation of the real game's input/cooldown contract. A legitimate current-target helper is a narrower future possibility; a fully arbitrary off-cursor list painter is not established as possible without violating the assumed target binding.
 
 ## Scope and evidence
 
@@ -165,8 +167,8 @@ Existing hard-cap, hung-request, 100-cycle cleanup, 700-step randomized state/ac
 
 A mock cannot validate the actual server's contribution rules, response contract, rate limits, replication timing, engine rendering or a particular external client execution environment. No live-game speed measurement has been performed. These results verify the intended bounded model and fault behavior, not universal optimal performance.
 
-## Practical follow-up measurements
+## Deferred performance measurements — after protocol validation
 
-Compare Normal and Fast in the actual game for both 100–500 selected provinces and one or a few heavily contested provinces. Use the same server, device, targets, initial ownership and opponents where possible. Record returned requests/sec, actual capture time, errors and RTT. Compare Fast per-province caps 4, 6 and 8 while preserving the global cap. Increase request-rate ceilings only when they are the bottleneck and the server continues to accept useful contributions without excessive latency or errors. Disable adaptation for controlled fixed-window comparisons.
+Only after a legitimate request path is understood and validated, reassess whether the game permits these modes at all. If it does, compare Normal and Fast in the actual game for both 100–500 selected provinces and one or a few heavily contested provinces. Use the same server, device, targets, initial ownership and opponents where possible. Record returned requests/sec, actual capture time, errors and RTT. Compare Fast per-province caps 4, 6 and 8 while preserving the global cap. Increase request-rate ceilings only when they are the bottleneck and the server continues to accept useful contributions without excessive latency or errors. Disable adaptation for controlled fixed-window comparisons.
 
 If a documented server return contract later becomes available, it can distinguish accepted contributions from non-throwing rejections. Until then, the script does not guess. No server modifications are needed for the current implementation.

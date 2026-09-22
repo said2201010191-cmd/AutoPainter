@@ -2,36 +2,61 @@
 
 The user reports that selection and committing while painting is OFF succeed, but the very first Safe-mode PaintPart request causes a disconnect. The selection fix and concurrency tests do not establish that the game's normal tool protocol is correct. No rate, burst or concurrency settings were reduced in this revision. **The live issue is not fixed or live-validated.**
 
-## Available evidence
+## Current evidence and confidence
 
-The supplied ZIP contains `AutoPainterOriginal.luau` and `AutoPainterFastClient.luau`. The repository additionally contains the final AutoPainter, loaders, documentation and mock tests. Neither the ZIP nor repository contains the game's normal PaintBucket LocalScript, its required modules, its color UI/controller, or the server callback/validation contract. There is no live Roblox engine bridge attached to this workspace. The latest user-supplied inventory identifies Backpack PaintBucket LocalScripts named LocalScript, RemoteScript and VipTextures, plus Remotes.ClientControls (RemoteFunction). Their source contents have not yet been supplied; names alone do not establish the protocol.
+The latest user-supplied findings from the real PaintBucket extract supersede several assumptions inherited from AutoPainterOriginal/FastClient. The workspace still does not contain the complete normal LocalScript/RemoteScript, its modules, the exact cooldown expression or the server validation handler. The two excerpts below were provided directly by the user; remote discovery, color, mode, cooldown and ancestry behavior were described as confirmed findings from their extract. They are not independently reproduced live by this workspace.
 
-The original constructs the same three arguments in `paintProvinceLoop`, and calls the equipped-character path directly. FastClient copies that call into `requestPaint`; the final version keeps it in `invoke`. There is no earlier game remote invocation in these supplied AutoPainter files. This establishes agreement between the three AutoPainter implementations, **not agreement with the normal game tool**.
+The normal RemoteScript exposes this callback behavior through `PaintBucket.Remotes.ClientControls`:
 
 ```lua
-ServerControls:InvokeServer(
+if command == "GetMouseData" then
+    return {
+        Position = Mouse.Hit.Position,
+        Target = Mouse.Target
+    }
+end
+```
+
+The reported normal client sends:
+
+```lua
+Remote:InvokeServer(
     "PaintPart",
-    { Part = province, Color = desiredColor },
-    "Peace"
+    { Part = Mouse.Target, Color = PaintBucketColor },
+    currentMode
 )
 ```
 
-| Question | What the available AutoPainter source establishes | What remains unknown about the normal tool/server |
-|---|---|---|
-| Earlier remote call or handshake? | AutoPainter makes no game remote call before PaintPart. | Whether normal initialization/equip/activation calls another remote or receives a setup callback first. |
-| Mode/state before painting? | AutoPainter changes its own UI/scheduler settings only. | Normal tool state transitions and whether the server requires them. |
-| Is `"Peace"` always correct? | It is an unconditional literal inherited from the original. | Its meaning, valid values, and when normal code chooses it. No alternate value was guessed. |
-| Where must Color come from? | A private AutoPainter Color3, or its per-province add-time snapshot. | Whether the normal bucket uses a value/attribute/module/GUI state, or whether the server constrains this argument. |
-| Must the tool be equipped? | Final resolves PaintBucket directly under current Character and checks Character is in Workspace. It does not verify Tool class, Enabled, Handle, or Humanoid in its request path. | Whether this is sufficient, whether normal equip handlers finish additional initialization, and what the server checks. Local ancestry alone is not proof of server acceptance. |
-| Token/session/state issued by server? | None is captured or sent by the supplied AutoPainter code. | Whether one exists, its legitimate lifecycle and how the normal client obtains/uses it. |
-| Cooldown/timestamp/state machine? | Only AutoPainter's own pacing, error cooldowns and request counters are implemented. | The game's own cooldown, timestamps, action sequencing and validation rules. |
-| Part representation? | The actual selected Workspace BasePart named Province is passed as `Part`; it is not a clone. | Whether the normal flow uses this Instance, an ID, a parent, a hit result, coordinates, or a different structure. |
-| Extra arguments/payload fields? | Exactly command, `{Part, Color}`, and `"Peace"`. | Normal argument order/types and optional/required additional fields. |
-| Property/attribute changed first? | No game-tool property/attribute is written by the final painter. | Whether a legitimate setter is part of the normal client flow and what its handlers do. |
-| Different remote? | AutoPainter resolves `LocalPlayer.Character.PaintBucket.Remotes.ServerControls` as a RemoteFunction. | Whether the current normal client uses that exact instance/path/direction, another remote, or a wrapper. |
-| Humanoid, ancestry, distance or other validation? | Final previously checked only Character in Workspace, the remote class, and province validity. | Exact server validation; client-visible metadata cannot prove or replace it. |
+The reported entry event is `Mouse.Button1Down`. RemoteFunction discovery waits for the tool's Remotes container and its `RemotesReady` attribute, then scans its children for a RemoteFunction with `IsBannable == true`. Color comes from `LocalPlayer:GetAttribute("PaintBucketColor")` with white fallback. The normal mode starts as `"Peace"` and can switch to `"War"`. The client checks `LocalPlayer.Upgrades.EquippedPaintCooldown` and requires the actual target's immediate parent to equal `workspace.Provinces`.
 
-The reported first-request failure directs investigation toward the normal call contract and legitimate preconditions. It does not identify which field/check caused the rejection. This revision deliberately makes no protocol repair claim and sends no exploratory variants.
+**Established by the supplied client evidence:** the normal request and mouse callback use the real mouse state. **Working hypothesis, not confirmed server behavior:** the server might compare the requested Part or hit position against a later GetMouseData response. The callback could also be used for another purpose. Its existence alone does not show when the server calls it, what validation it performs, or whether target mismatch caused this disconnect. Attribute-based remote discovery, color/mode/cooldown mismatches and additional preconditions remain possible contributors. No rate change or test request is appropriate for distinguishing these hypotheses in this revision.
+
+## A–D: feasibility and required corrections
+
+**A. A legitimate client-only helper is possible; the original arbitrary off-cursor painting objective is not established as possible.** Selection/highlights, current-target guidance and legitimate color controls can remain local. A future cursor-constrained request path might be possible after reconstructing all normal preconditions. Under the working assumption that the server binds PaintPart to the genuine mouse target, a stored province is eligible only while it is that real target. If that binding is enforced and no separate supported targeting mechanism exists, a fully arbitrary client-only AutoPainter cannot paint off-cursor stored provinces legitimately. This is conditional on the actual protocol, not a claim that the server handler has been inspected.
+
+**B. Sending an arbitrary stored province that differs from Mouse.Target departs from the normal client flow and violates the assumed real-target contract.** Selection/commit does not authorize it as a network target. Such requests must remain disabled. If a stored province happens to be the actual valid cursor target, it can satisfy this one target precondition; the rest of the normal flow still matters. A pre-send equality check alone cannot prove acceptance: the mouse may move before a later server-to-client callback reads it. Request lifetime and callback timing are still unknown.
+
+**C. Actual user aiming and normal bucket clicks are the strongest supported route.** A local assistant could identify whether the current genuine target belongs to the selected set while the normal tool handles its own click, color, mode, readiness and cooldown. It must not add a second PaintPart request to the same click. A later automated current-target path needs the exact normal cooldown/equip/state handling and an understood callback lifecycle; it cannot be treated as validated yet. Calling `Tool:Activate()` is not demonstrated to enter this particular `Mouse.Button1Down` handler, so it must not be substituted on assumption. No synthetic mouse events, callback replacement, callback invocation, Mouse.Target fabrication, camera/target-filter manipulation, or moderation interception is part of this approach. A helper limited to the real pointer is a narrower feature than autonomous painting of a stored list.
+
+**D. These inherited assumptions need replacement before any request path is considered:**
+
+| Area | Current AutoPainter behavior | Required normal-client matching / missing evidence |
+|---|---|---|
+| Remote discovery | `refreshCache` and the state report find a RemoteFunction named ServerControls. | Wait for Remotes and its real RemotesReady condition; scan direct children for RemoteFunction with IsBannable exactly true. Read these attributes; do not change them. Mirror the normal code's readiness predicate, selection/tie handling and replacement lifecycle. No guessed fallback remote or probe. The observed name may still happen to be ServerControls, but its name is not the selection rule. |
+| Mouse and callback | Scheduler sends stored `job.part` independently of the pointer. | Treat the actual `Mouse.Target` as the only potential request target. Leave ClientControls.OnClientInvoke and GetMouseData untouched. The precise callback timing/server comparison remains unknown. No queued stored target can override the actual pointer. |
+| Target ancestry | Any Workspace BasePart named Province qualifies. | Require non-nil target with `target.Parent == workspace.Provinces` exactly. A name test or IsDescendantOf(Workspace/Provinces) is not equivalent; nested descendants do not meet that immediate-parent condition. |
+| Color | Private global/per-province colors become request payloads. | Use the existing PaintBucketColor attribute as the normal shared current state, with white fallback. Confirm the normal picker/setter and its change handling before implementing two-way synchronization; the supplied GetAttribute expression confirms the read side only. A per-province Keep Territory Color target must not silently diverge from actual normal tool color. Client attribute writes do not by themselves establish server-observed state. |
+| Mode | Every request ends with literal Peace. | Start at Peace and honor legitimate switching to War. Read the actual mode-selection code and supported state exposure; do not invent extra modes, attributes or remote arguments. If currentMode is private to the normal LocalScript, let that normal flow own it rather than guessing or extracting closure state. |
+| Cooldown | AutoPainter's rate/burst/frame/window settings determine dispatch. | Reproduce the exact EquippedPaintCooldown calculation, default, units, clamping and debounce/timestamp update order. None of those arithmetic details are supplied yet. Do not interpret an upgrade level as seconds, guess a formula, or treat the current Safe/Normal/Fast settings as the game's cooldown. |
+| Activation/equip | Enabled scheduler dispatches when its own cached path exists. | Match the normal Mouse.Button1Down flow and equip/liveness checks, including any setup and preceding calls confirmed by source. Mere ancestry or RemotesReady is not proof that all server preconditions hold. Do not send duplicate work alongside the normal handler. |
+| Overlap/retries | Same-part overlap, adaptive windows and automatic retries are supported by the legacy scheduler. | These optimizations are subordinate to the genuine click/cooldown/target lifecycle. Their mock tests do not establish permission for overlap in the real game. No previously queued target or retry may survive loss of legitimate eligibility. Do not transplant the six-request Fast window into the normal flow by default. |
+
+## Decision for this revision
+
+This is an **analysis-only revision**. `AutoPainterFinal.luau`, both loaders, all request settings, protocol extraction and tests are unchanged. `LoaderDiagnostic.luau` continues to enforce `DiagnosticOnly = true` and `LockDiagnostics = true`. No AutoPainter request is enabled, no live test is proposed or performed, and no game color/mode/readiness property is written. The corrections above define what a later implementation must replace; they are not claims that the dormant legacy request path has already been corrected.
+
+The next evidence needed is the actual context blocks for readiness/IsBannable discovery, PaintBucketColor initialization and its legitimate setter, mode changes, the complete Mouse.Button1Down handler (including EquippedPaintCooldown arithmetic and debounce reset timing), and the full GetMouseData branch/call chain. Client source can establish what the legitimate client does; only available server handler/documented behavior can settle whether it checks target equality and which mismatch caused the kick. No successful single live request has been observed here.
 
 ## Diagnostic implementation
 
@@ -66,7 +91,7 @@ The only source-reading capability used is an existing global `decompile` functi
 
 `PAINTBUCKET LOCALSCRIPT SOURCE` includes each candidate's full path and complete returned UTF-8 text between source markers. Source text is preserved, including literals; the metadata report's credential redaction is unchanged. This raw-source action neither uploads nor copies its output; the separate compact export action is described below. Exceptions, invalid/empty/non-UTF-8 return values and scope changes have explicit status lines. Nonempty text is labeled **unverified decompiler output**, because a decompiler may return a partial listing or error comment as text. Original variable names, comments, control flow and correctness cannot be guaranteed by AutoPainter. The environment provider is responsible for the implementation of its optional decompiler; detecting a function does not certify its internals or prove that it is read-only.
 
-A case-insensitive textual index marks 1-based lines containing ServerControls, ClientControls, InvokeServer, FireServer, PaintPart, Peace, color terms, Equipped/Activated, tool/state/mode terms, client callbacks/return statements and timing/session terms. The complete surrounding source remains available to inspect preceding calls, callback responses and multiline argument construction. Matches include comments and unused code; this is not a call graph, runtime trace, proof of a handshake or inferred return contract. No normal protocol has been reconstructed from the actual source yet.
+A case-insensitive textual index marks 1-based lines containing ServerControls, ClientControls, InvokeServer, FireServer, PaintPart, Peace, color terms, Equipped/Activated, tool/state/mode terms, client callbacks/return statements and timing/session terms. The complete surrounding source remains available to inspect preceding calls, callback responses and multiline argument construction. Matches include comments and unused code; this is not a call graph, runtime trace, proof of a handshake or inferred return contract. The user-supplied findings above establish part of the normal client flow; the complete mode/color/cooldown and server validation contracts are still unresolved.
 
 Calls run serially under protected execution with one active inspection maximum and no spawned workers/retries/waiting queue. Reentrant API calls return busy; repeated UI clicks start no extra work. Failures release the busy flag. A yielded external decompiler cannot be canceled safely; if it never returns, the single inspection stays busy rather than launching replacements. Closing AutoPainter prevents further candidates and stale display writes when a pending call returns. The current view retains its latest text and page offsets; compact export retains one additional report string, using the same lossless Prev / Next pagination as the inventory. Existing Inspect continues to produce the complete descendant inventory without decompiling.
 
@@ -86,17 +111,18 @@ A fresh Protocol Extract replaces the compact snapshot; ordinary Copy reuses it 
 
 ## Exact evidence still needed
 
-1. The **current normal PaintBucket LocalScript**, including initialization, Equipped/Unequipped/Activated handlers, its remote wrappers and any OnClientEvent/OnClientInvoke handlers.
-2. Every **ModuleScript required by that client flow**, plus the normal color/mode picker code or an established documented setter. A hierarchy listing alone cannot reveal closure-local state or side effects.
-3. The diagnostic snapshot while unequipped and equipped, after selecting/committing a target. It is metadata evidence, not a replacement for the scripts above.
-4. Whether a **normal manual paint** succeeds in the same game context without AutoPainter, and the exact disconnect message for the AutoPainter request. Do not share credentials or token contents.
-5. For definitive server checks: a read-only copy of the relevant server `OnServerInvoke` handler/validation code, or the game's documented protocol. If only client code is available, server-only permission checks remain unverified.
+1. The **remote discovery block**: the exact RemotesReady condition, child scan, how multiple/missing IsBannable candidates are handled, and tool replacement/equip initialization.
+2. The **complete Mouse.Button1Down handler** and functions it calls, especially every read/calculation involving `LocalPlayer.Upgrades.EquippedPaintCooldown`, timing units, defaults, debounce acquisition and reset on errors/return.
+3. The **PaintBucketColor writer/picker and reader**, plus initialization and any attribute-change handlers. Reading that attribute is known; its legitimate update path has not been shown here.
+4. The **Peace/War switch code**, including how currentMode is stored and exposed to the rest of the normal tool. No other mode is assumed.
+5. The **full ClientControls.OnClientInvoke/GetMouseData implementation** and any source showing when the server requests it. Do not replace or call that handler for diagnosis.
+6. If available, the read-only server PaintPart validation handler or documented contract. This is needed to confirm a target comparison, its timing/tolerance and the exact first-request rejection cause. Client callback presence cannot establish these server checks.
 
-These sources can be supplied as ordinary files by someone authorized to share them; this does not require installing server scripts or giving friends game-project access. Runtime diagnostics remain client-only. No live request is needed to collect the read-only snapshot. No further AutoPainter live request is proposed until the normal contract is understood. Completion of a protocol fix requires a real, legitimate single request succeeding without a moderation disconnect; no such success has been observed here.
+The compact report's existing context blocks may already contain these sections; use those exact code blocks rather than another summary or token values. Incomplete snippets do not justify guessing a cooldown or additional remote call. Providing source excerpts requires no server installation or game-project permissions for friends. Keep the current diagnostic loader locked; do not perform another AutoPainter live request while this remains unresolved.
 
 ## Validation and API references
 
-The official Luau compiler checks runtime, loaders, all tests and FastClient directly. The preserved original reference has surrounding Markdown fences, so its Luau body is compiled separately without modifying that file. The full deterministic suite has **271 passing tests**: all 227 prior regressions plus 44 compact extraction/export checks under immediate/deferred signals. The older painting tests explicitly opt out of the new diagnostic default in the mock; new tests load the actual default and locked loader. They cover the reported UI sequence with zero game remote attempts, every mode/hotkey, commit/clear, cache replacement, missing/wrong-class objects, state reporting, redaction, bounded summary output, complete uncapped descendant output, deterministic sorting, all attribute metadata, safe value types, Handle-only summary regression, explicit read failures, exact UTF-8 pagination, no snapshot property writes/task creation/listener growth, queued work, real outstanding-call accounting, pre-invocation suppression, duplicate loaders and refusal of older UIs.
+The official Luau compiler checks runtime, loaders, all tests and FastClient directly. The preserved original reference has surrounding Markdown fences, so its Luau body is compiled separately without modifying that file. The unchanged runtime suite has **271 passing tests**: all 227 prior regressions plus 44 compact extraction/export checks under immediate/deferred signals. The older painting tests explicitly opt out of the new diagnostic default in the mock; new tests load the actual default and locked loader. They cover the reported UI sequence with zero game remote attempts, every mode/hotkey, commit/clear, cache replacement, missing/wrong-class objects, state reporting, redaction, bounded summary output, complete uncapped descendant output, deterministic sorting, all attribute metadata, safe value types, Handle-only summary regression, explicit read failures, exact UTF-8 pagination, no snapshot property writes/task creation/listener growth, queued work, real outstanding-call accounting, pre-invocation suppression, duplicate loaders and refusal of older UIs.
 
 Source-inspection regressions use injected mock decompilers to verify both Character/Backpack scope, complete returned text, unavailable/error returns, text indexing, no Source reads or target execution, zero property writes/remote calls/workers/listeners, lock refusal, yielded-call exclusion, stale-candidate skipping, shutdown and full UI page reconstruction. No actual game LocalScript was decompiled from this workspace.
 
@@ -105,3 +131,5 @@ Compact extraction/export regressions additionally verify all 18 terms, exact 8/
 The mock's historical remote accepts the inherited call shape by construction. It therefore **cannot validate the real game's protocol**, contribution acceptance, or moderation behavior. Passing these tests proves the diagnostic guard and client invariants in the modeled environment, not a live fix.
 
 The report uses documented read APIs: [Tool properties](https://create.roblox.com/docs/reference/engine/classes/Tool), [Instance hierarchy/attributes](https://create.roblox.com/docs/reference/engine/classes/Instance), [Humanoid state](https://create.roblox.com/docs/reference/engine/classes/Humanoid#GetState), and [read-only TextBox display](https://create.roblox.com/docs/reference/engine/classes/TextBox#TextEditable). The [RemoteFunction API](https://create.roblox.com/docs/reference/engine/classes/RemoteFunction#InvokeServer) describes invocation mechanics, not this game's custom PaintPart contract.
+
+The latest feasibility review also distinguishes the documented [Mouse.Button1Down event](https://create.roblox.com/docs/reference/engine/classes/Mouse#Button1Down), [Tool activation API](https://create.roblox.com/docs/reference/engine/classes/Tool#Activate), and [RemoteFunction.OnClientInvoke callback](https://create.roblox.com/docs/reference/engine/classes/RemoteFunction#OnClientInvoke). These APIs describe Roblox behavior, not this game's unobserved server validation.
