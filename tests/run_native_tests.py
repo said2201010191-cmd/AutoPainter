@@ -8,9 +8,10 @@ for forbidden in [".OnClientInvoke =", "hookmetamethod(", "hookfunction(", "fire
 assert not re.search(r"\b[Mm]ouse\.Target\s*=(?!=)", source)
 assert not re.search(r"[:.]\s*(InvokeServer|FireServer)\s*\(", source)
 assert not re.search(r"\brequire\s*\(", source)
+assert not re.search(r'player\s*:\s*SetAttribute\s*\(', source)
 with tempfile.NamedTemporaryFile("w",suffix=".luau",dir=root/"tests",delete=False) as f:
     path=Path(f.name)
-    f.write("local SOURCE = [======[\n"+source+"\n]======]\n"+"local LOADER_SOURCE = [======[\n"+(root/"LoaderPublic.luau").read_text()+"\n]======]\n"+(root/"tests/native.spec.luau").read_text()+"\n"+(root/"tests/native_extra.spec.luau").read_text()+'\nprint(string.format("%d native tests passed (mock engine; not live input/server verification)",passed))\n')
+    f.write("local SOURCE = [======[\n"+source+"\n]======]\n"+"local LOADER_SOURCE = [======[\n"+(root/"LoaderPublic.luau").read_text()+"\n]======]\n"+(root/"tests/native.spec.luau").read_text()+"\n"+(root/"tests/native_extra.spec.luau").read_text()+"\n"+(root/"tests/native_fast.spec.luau").read_text()+'\nprint(string.format("%d native tests passed (mock engine; not live input/server verification)",passed))\n')
 try:
     raise SystemExit(subprocess.call([sys.argv[1] if len(sys.argv)>1 else "luau",str(path)]))
 finally:

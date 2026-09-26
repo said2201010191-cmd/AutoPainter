@@ -1,94 +1,79 @@
-# Native-input architecture and limits
+# Fast native-input controller
 
-The user's completed game-only report covered 165 unique scripts/modules, with 165 returned texts and no failures, timeouts or skips. The two reported PaintPart call sites were the equipped and StarterPack copies of the normal PaintBucket client. No separate stored-target or batch path was found in that snapshot. This supports using the existing private-server hold behavior; it does not reveal hidden server checks.
+The user's completed game-only report returned 165 unique script/module texts without failures or timeouts. It found only equipped/template versions of the normal PaintBucket PaintPart call and its private-server hold loop. The user subsequently reported a successful native-input live test without a moderation kick. The faster controller in this revision has not yet been measured live.
 
-## Runtime responsibilities
+## Ownership and color authority
 
-AutoPainterFinal.luau contains no game remote invocation, callback replacement, source inspection, require, mouse-target assignment, synthetic event firing, moderation interception or tool-function invocation. LocalPlayer is resolved dynamically for each client.
+AutoPainterFinal.luau has no game remote calls, callback replacement, hooks, require, script inspection, fabricated mouse targets or native-tool function invocation. Each client uses its own Players.LocalPlayer and independent state. The ordinary tool alone chooses remotes, sends PaintPart, handles Peace/War, upgrade cooldowns, actual Mouse.Target/Hit and repeat-on-hold behavior.
 
-The native tool owns its real Mouse.Target/Hit, the PaintPart payload, remote discovery, Peace/War mode, upgrade cooldown and the private-server repeat loop. AutoPainter controls only its own UI/selections, the existing PaintBucketColor attribute, a real local camera when enabled, and the available native cursor/button APIs.
+Before starting, choose a color through the **normal PaintBucket palette** and verify it manually. Auto Paint snapshots the exposed PaintBucketColor as DesiredGlobalColor, falling back to white like the normal client. Every protected province uses that snapshot when Keep Territory Color is OFF. Start does not write an attribute or claim to refresh the equipped tool's cached local color. An attribute change during automation stops the session; finish choosing in the normal palette and explicitly restart.
 
-The old concurrency window, tokens, adaptive RPC tuning, per-province request limits and RPC retry workers are absent from the active native runtime. They do not fit this native hold model. Native tool/server concurrency is not observable or controlled by this script.
+Country Color/Pick, Randomize, R and api.SetColor now change a clearly labelled **preview swatch only**. api.GetColor returns that preview; api.GetDesiredColor and GetStats().DesiredGlobalColor return the actual target snapshot. Starting Auto Paint resets the preview to the palette snapshot. These controls cannot reliably select the normal tool's payload color through the currently confirmed protocol, so they no longer write PaintBucketColor. No game color property is written.
 
-The separate AutoPainterDiagnostics.luau keeps the read-only collector and historical selection/reporting scaffold. Its transport implementation is removed and its diagnostic lock is unconditional.
+Keep Territory Color ON preserves the palette color captured when each province was clicked, including pending selections. Later global palette changes do not replace those snapshots. A wrong-color saved target is serviced only when its saved color matches the current palette snapshot. Other saved colors remain dirty and appear as **Waiting for palette**; they receive no camera/cursor/hold work. Choose their color through the normal palette and restart to service them. Mixed-color automated native painting needs a confirmed legitimate cache-refresh route; attribute writes alone are insufficient.
 
-## Capabilities and explicit test
+## Strict eligibility and selection
 
-The controller checks these environment functions without calling them at startup:
+A target must be a committed protected BasePart with immediate Parent equal to workspace.Provinces, and its actual Color must differ from its desired color. A correct province is removed from the dirty set by its Color signal. New wrong colors enter immediately. The controller rechecks actual Color before selecting, aiming, moving the camera and pressing, covering delayed signal delivery. Pending and unprotected provinces never enter the automatic work set. The explicit input test also refuses an already-correct province.
 
-- mousemoverel, preferred for movement from the actual UserInputService mouse location.
-- mousemoveabs, fallback when relative movement is unavailable.
-- mouse1press and mouse1release.
-- isrbxactive, optional additional focus check.
+Protect only registers/highlights pending entries. Done/Cancel commits them together without turning Auto Paint on. Selection suspends existing automation and restores its camera. Escape stops and finishes the selection session. Remove disconnects the entry's listeners and clears its state; Clear stops and removes everything. Holster the normal bucket while manually selecting: AutoPainter cannot suppress legitimate clicks received independently by an equipped tool.
 
-No VirtualInputManager, fireclickdetector, firesignal, hook, debug callback access or invented fallback is used. Missing functions disable input. The Cursor API selector can explicitly choose Relative or Absolute for another manual test; changing it invalidates the previous input-test result. “Callable” reports only the exposed function types, not a verified implementation or an attestation of hardware input.
+Protected, Wrong Color and Correct Color count committed selections; Pending is separate. Dirty is the Wrong Color count, including any saved colors waiting for the normal palette. With no dirty entries there is no selection scan, cursor movement, camera movement or generated button input. The small status update and one central Heartbeat remain active.
 
-TEST NATIVE INPUT requires an explicitly chosen, committed, visible province and an equipped, enabled PaintBucket on a living character. It never rotates the camera. After moving the cursor it requires the exact actual Mouse.Target, a clear GUI location and a short stable-target period before pressing. The controller subscribes normally to Mouse.Button1Down/Button1Up to check delivery; it never invokes those event callbacks itself.
+## FAST and NORMAL
 
-PASS covers observed input events and AutoPainter's structural absence of game RPCs. It cannot prove the native tool received those same events, updated its cached color, painted successfully or drained a server call. AutoPainterRPCs=0 is not a network interception measurement. Native request counts, returns and failures remain explicitly unobserved.
+All timings below govern the controller's targeting/input, never the tool's paint cooldown.
 
-The environment owns the semantics of its input functions. An external input function that blocks the entire client cannot be interrupted by Luau. Verify the result in the real client before enabling automation.
+| Setting | FAST (default) | NORMAL |
+|---|---:|---:|
+| Ordinary TargetDwell | 0.45 s | 0.90 s |
+| PriorityDwellMultiplier | 1.75 | 1.75 |
+| MaxDwell | 2 s | 2 s |
+| ReleaseGap | 0.10 s | 0.25 s |
+| AimTimeout | 0.75 s | 1.50 s |
+| AimRetry | 0.20 s | 0.40 s |
+| CursorInterval | 0.025 s | 0.050 s |
+| TargetStableSeconds | 0.03 s | 0.08 s |
+| TargetStableFrames | 1 | 2 |
+| IdleRetry | 0.08 s | 0.20 s |
+| CandidatesPerFrame | 128 | 64 |
 
-## Selection and color
+The separate explicit test has a 0.35-second maximum hold. There is no ColorSettle delay because the controller no longer changes native color state between targets. Profile changes reset the editable base dwell. Dwell can be adjusted from 0.25 to 2 seconds in the menu.
 
-Add only creates a lookup entry, snapshot color and SelectionBox. Done/Cancel commits the current additions atomically. All selection tools suspend native input without changing the Auto Paint toggle. Escape is intentionally an emergency stop and also finishes the selection session.
+While holding, a Color signal that observes the desired result releases immediately. Otherwise the maximum is base dwell plus 0.25 seconds per decaying contention point, with the added amount capped at 1.05 seconds. Each wrong-color change adds a point; points decay over 20 seconds. Thus fresh contention produces approximately 0.70 / 0.95 / 1.20 / 1.45 / 1.50 second FAST caps. Priority multiplies that cap by 1.75, still bounded by 2 seconds. The cap is fixed at button-down so further events cannot extend one hold indefinitely. Priority never overrides correct-color exclusion or fairness.
 
-The normal target constraint is exact: a BasePart's immediate Parent must be workspace.Provinces. Its Name need not be Province. Nested descendants do not qualify.
+## Target choice and bounded work
 
-Keep Territory Color OFF: committed provinces follow the current global color. ON: each uses its registration color. A pending province retains the color selected when clicked, including when R is used between clicks. The global swatch and native manual bucket follow the global selected color while the controller is idle.
+Color/ancestry events maintain arrays plus identity/index maps; removal uses swap-remove. There is one Heartbeat controller and no per-target worker/task backlog. Each decision snapshots only dirty entries, processes at most the profile's candidate budget per frame, and shares a hard budget of **32 raycasts per frame** with aiming. Exhausting that budget yields the decision until the next frame; it does not masquerade as an occlusion or trigger camera movement.
 
-During a held per-province target, the existing PaintBucketColor attribute temporarily carries that target's saved color. After observed button-up it restores the global color. Do not manually paint while automation owns the cursor/button. Palette changes release the current hold before retargeting. No Color property on a game province is written.
+Visible means a candidate projects onscreen outside blocking UI and an unobstructed ray hits that exact part. Among visible candidates, cursor distance wins, then waiting time, then decayed contention, then stable registration order. After **4 seconds** of waiting, the oldest visible target overrides distance. This is a priority-aging threshold, not a universal service-time guarantee.
 
-The user supplied the normal palette's attribute writer. The exact native listener and local-variable refresh behavior still need live verification; attribute equality alone cannot prove the tool's cached payload color changed.
+An offscreen candidate normally waits while visible work exists. To avoid permanent starvation under continuous visible contention, after **8 visible visits**, an offscreen target that has waited at least 4 seconds receives an aging turn. When no visible target is eligible, camera alignment favors the smallest rotation. Visible Only disables all offscreen attempts, including aging turns. A priority target receives extended dwell rather than monopolizing selection.
 
-## Dirty set and priority
+Six surface offsets are transformed and cached per selected part, refreshed when CFrame or Size changes. The last successful offset is tried first; a failed ray invalidates that preference. Projection and ray hits are always revalidated for the current camera/occluders. Camera motion does not endlessly restart a large decision. A genuine Mouse.Target equal to the exact part, clear cursor location and stable-target interval are required immediately before down; ray/projection results alone cannot authorize it.
 
-Color/ancestry events maintain an array plus lookup map; no full-table polling is performed every frame. Pending/correct provinces do not enter the dirty set. Removal uses swap-remove and disconnects all selection listeners.
+Camera automation first rotates from the current camera position, then can try two bounded-distance viewpoints. It never moves the character or removes obstacles. The initial camera snapshot is retained across targets and Dirty=0 idle periods. Stop/off, emergency stop, selection, closure and lifecycle/error handling restore it when still owned. Explicitly disabling camera automation also relinquishes the camera. Visible Only keeps the current view rather than restoring between visits. A replacement or externally controlled camera is not overwritten during restoration.
 
-A selection decision takes a finite snapshot of dirty entries and evaluates at most 48 candidates per frame. Rapid color changes do not continuously restart that decision. Projection is a cheap visibility preference; actual aiming also checks ray hits and the real mouse target. Unreachable attempts get a short retry interval so one obstruction cannot monopolize the controller.
+## Menu and input ownership
 
-Scoring prefers the selected priority target, visible targets, recent changes, repeated contention, camera alignment and waiting time. After 12 seconds of eligibility, the oldest waiting candidate takes precedence over ordinary scores. A completed visit resets its waiting time. This prevents a permanent priority target from starving other eligible provinces; it is not a 12-second service guarantee for arbitrarily many targets.
+The full title bar and compact HUD title accept a left-button drag. Coordinates are clamped to the current viewport, respecting the top GUI inset; resizing reclamps the window. Position survives collapse/expand and duplicate loader calls in this session, but is not persisted to disk. **—** collapses and **+** expands. Auto Paint starts in the compact HUD, which shows AUTO, Protected, Dirty, Current Target and STOP.
 
-Camera Automation can first rotate from its existing position, then try two bounded-distance viewpoints near a target. It does not teleport the character, modify the tool, remove obstacles or fabricate raycast results. Visible Only prohibits those camera moves. Failed targeting remains a coverage/reachability issue, not permission to bypass it.
+Own-window hit testing blocks map selection regardless of whether Roblox marks the click as processed. Dragging/menu presses release owned input and suspend targeting until mouse-up plus the release gap. No task is spawned to wait for drag completion. Escape stops even if a menu processed the key. Dragging does not suppress the game's independent input handlers.
 
-## Settings near the top of AutoPainterFinal.luau
+Capabilities are detected without exercising them: mousemoverel (preferred), mousemoveabs, mouse1press, mouse1release, and optional isrbxactive. Missing functions disable automation; there is no hook/event-firing/VirtualInputManager fallback. Cursor API can explicitly choose Relative or Absolute, invalidating the previous test. The explicit test requires an equipped, enabled bucket and living character, an unlocked cursor, focus, no text input/menu, and a selected visible wrong-color test target. It never moves the camera.
 
-| Setting | Default | Meaning |
-|---|---:|---|
-| TargetDwell | 2.5 s | Maximum ordinary hold duration |
-| PriorityDwellMultiplier | 2 | Longer hold for the priority target |
-| MaxDwell | 12 s | Hard hold-duration clamp |
-| TestHold | 0.35 s | Explicit input-test hold |
-| ReleaseGap | 0.6 s | Minimum settling gap after up, not an RPC-drain guarantee |
-| InputEventTimeout | 0.6 s | Missing input acknowledgment detection |
-| AimTimeout | 2 s | Abandon an unsuccessful targeting attempt |
-| AimRetry | 1 s | Per-target delay after a visit/failure |
-| TargetStableSeconds / Frames | 0.10 s / 2 | Real-target stability before down |
-| ColorSettle | 0.10 s | Local color-listener settling margin |
-| CandidatesPerFrame | 48 | Bound on priority evaluation per frame |
-| AgingSeconds | 12 s | Threshold for oldest-eligible-first selection |
-| CameraAutomation | ON | Permit local camera control when Auto Paint starts |
-| VisibleOnly | OFF | With ON, leave the camera where it is and use visible targets |
-| CameraMinDistance / MaxDistance | 35 / 1200 studs | Candidate camera-to-target distance bounds |
+Native down/up event delivery is observed through ordinary event subscriptions. No callbacks are called by AutoPainter. Missing down acknowledgment stops even when FAST dwell is shorter than the acknowledgment timeout. Every next target waits for observed button-up and ReleaseGap. Failed release retries at most three times; unresolved up blocks further input. Closing normally disconnects everything and removes highlights. If release remains unresolved, one minimal manual-up guard blocks duplicate loads until release is observed.
 
-The UI controls Auto Paint, camera automation, visible-only, dwell, priority and emergency stop. Auto Paint remains OFF until the explicit input test passes. There is no public-server per-cooldown click fallback: where the native tool does not repeat on hold, a hold may produce only one paint.
+## Limits that remain
 
-## Release, cleanup and races
+AutoPainterRPCs=0 describes the controller's structural absence of game remote transport; native RPC counts, latency and completion are **unobserved**. The native tool may repeat only on private servers. This controller adds no public-server per-cooldown click fallback.
 
-One central Heartbeat state machine owns input; there are no per-province tasks or request workers. New target selection, camera movement and target-color changes wait for a real button-up observation and the release gap.
+An up observation plus any fixed gap is not proof that the native loop drained an outstanding InvokeServer. A native shared holding flag surrounding a yielded paint call could allow an earlier loop to resume after a later down. FAST's shorter gap intentionally reduces input dead time; it cannot settle that native-source/server timing question. The full loop and its sameMouse lifetime would be needed to prove otherwise. The normal tool's cached color similarly cannot be attested by attribute equality alone; use its real palette and manual verification.
 
-Failed release calls retry at most three times. Missing up acknowledgment or release failure prevents another press and asks for a manual release. Normal shutdown disconnects all listeners and removes highlights. If button release remains unresolved, a hidden controller with one manual-up listener prevents normal loader reruns until release is observed. Forced external destruction of that guard cannot be treated as a safe cancellation of native input.
-
-The controller releases when the target changes, the province is removed/destroyed, the tool is unequipped, the character dies/respawns, a menu/text box takes input, the cursor is locked, focus is lost or the user stops. It restores its camera when still owned and does not overwrite a replacement camera. Respawn can resume an already-enabled session only after a living character has the normal bucket equipped. It does not auto-equip the bucket.
-
-**Native-loop timing remains unresolved.** The supplied excerpt has a shared holding flag around a yielding doPaint. If that native doPaint is waiting inside InvokeServer when up occurs, and the flag is set true by a new down before the old call returns, the original loop might resume alongside a later loop. The 0.6-second gap reduces ordinary overlap risk but cannot prove drain or prevent it under arbitrarily long latency. AutoPainter cannot count/cancel those native calls without the forbidden interception or cooperation from the tool. The exact complete native loop, sameMouse handling and color listener are still needed to assess this fully.
-
-Likewise, a user moving the cursor can race the native tool's own task before AutoPainter observes target loss. This controller cannot make an atomic guarantee that the unmodified native tool never paints the new real target. Keep hands off the mouse during a hold and use Escape to stop. No server acceptance, moderation immunity or live throughput guarantee is claimed.
+User cursor motion can race the native tool's next repeat before the controller observes target loss. Leave the cursor alone during a hold and use Escape to stop. An external executor function that blocks the whole client cannot be interrupted by this Luau controller. No moderation immunity or live PPS increase is claimed.
 
 ## Validation
 
-344 tests pass: 98 exercise the actual native runtime with immediate/deferred event delivery, and 246 exercise the separate locked diagnostic collector. Tests cover capability absence, the exact UI selection/test path, genuine-target mismatch, native event acknowledgments, one down across native repeats, dwell/fairness, camera restore, occlusion, manual-button ownership, color/Keep semantics, late release, failures, cancellation, duplication, respawn, cleanup and zero direct game transport.
+**396 deterministic tests pass: 150 native-controller and 246 locked-diagnostic tests.** The native cases run with both immediate and deferred signals and include the input/UI selection path, strict dirty filtering, early release, profile bounds, visible/nearest selection, offscreen aging, ray budgets, moving-part caches, palette authority, no attribute writes, persistent camera, drag/resize/HUD, acknowledgment failures, respawn, cleanup and zero direct RPCs. All 19 Luau files compile. Geometry/input are mocks, not a live executor benchmark.
 
-Mock camera/raycast/input geometry verifies controller decisions, not Roblox rendering, OS coordinates or a particular executor implementation. A real live input test is required.
-
-API references: [Roblox Mouse](https://create.roblox.com/docs/reference/engine/classes/Mouse), [Camera projection](https://create.roblox.com/docs/reference/engine/classes/Camera#WorldToViewportPoint), [GUI hit testing](https://create.roblox.com/docs/reference/engine/classes/BasePlayerGui#GetGuiObjectsAtPosition). Candidate executor names follow the [UNC input names](https://github.com/unified-naming-convention/NamingStandard/blob/main/UNCCheckEnv.lua); they are detected locally rather than assumed available.
+See [README.md](README.md) for the exact live procedure. API references: [Mouse](https://create.roblox.com/docs/reference/engine/classes/Mouse), [Camera projection](https://create.roblox.com/docs/reference/engine/classes/Camera#WorldToViewportPoint), [GUI input events](https://create.roblox.com/docs/reference/engine/classes/GuiObject#InputBegan), [ScreenGui inset](https://create.roblox.com/docs/reference/engine/classes/ScreenGui#IgnoreGuiInset), [GUI hit testing](https://create.roblox.com/docs/reference/engine/classes/BasePlayerGui#GetGuiObjectsAtPosition).

@@ -1,23 +1,23 @@
 -- Smart native-input AutoPainter. No game remote calls, hooks, or fabricated mouse data.
 -- PaintBucket's existing client script is the sole sender of paint requests.
 -- Input API availability and delivery must be checked in the user's client.
+-- These profiles govern targeting/input only. The native tool owns its cooldown.
+local PROFILES = {
+	FAST = { TargetDwell = 0.45, PriorityDwellMultiplier = 1.75, MaxDwell = 2,
+		ReleaseGap = 0.10, AimTimeout = 0.75, AimRetry = 0.20, CursorInterval = 0.025,
+		TargetStableSeconds = 0.03, TargetStableFrames = 1, IdleRetry = 0.08, CandidatesPerFrame = 128 },
+	NORMAL = { TargetDwell = 0.9, PriorityDwellMultiplier = 1.75, MaxDwell = 2,
+		ReleaseGap = 0.25, AimTimeout = 1.5, AimRetry = 0.4, CursorInterval = 0.05,
+		TargetStableSeconds = 0.08, TargetStableFrames = 2, IdleRetry = 0.2, CandidatesPerFrame = 64 },
+}
 local CONFIG = {
-	NativeMoveMode = "Auto", -- Auto prefers relative; switch to Absolute if your input test needs it.
-	TargetDwell = 2.5,
-	PriorityDwellMultiplier = 2,
-	MaxDwell = 12,
+	SpeedMode = "FAST",
+	NativeMoveMode = "Auto", -- Prefers relative; Absolute is an explicit alternative.
 	TestHold = 0.35,
-	ReleaseGap = 0.6, -- Settling margin, NOT proof an outstanding native RPC has returned.
 	InputEventTimeout = 0.6,
-	AimTimeout = 2,
-	AimRetry = 1,
-	CursorInterval = 0.10,
-	TargetStableSeconds = 0.10,
-	TargetStableFrames = 2,
-	ColorSettle = 0.10,
-	IdleRetry = 0.5,
-	CandidatesPerFrame = 48,
-	AgingSeconds = 12, -- Oldest eligible target takes precedence after this wait.
+	MaxRaysPerFrame = 32, -- Bounds expensive visibility work, even with many selected parts.
+	AgingSeconds = 4, -- Oldest visible target overrides distance after this wait.
+	VisibleVisitsBeforeAgedOffscreen = 8, -- Bounded aging escape from perpetual visible contention.
 	ContestDecay = 20,
 	CameraAutomation = true,
 	VisibleOnly = false,
@@ -25,6 +25,8 @@ local CONFIG = {
 	CameraMaxDistance = 1200,
 	TelemetryInterval = 0.25,
 }
+local speedMode = CONFIG.SpeedMode
+local timing = PROFILES[speedMode]
 local options = ...
 if type(options) ~= "table" then options = {} end
 local locked = options.LockDiagnostics == true or options.DiagnosticOnly == true
@@ -36,7 +38,7 @@ local Workspace = game:GetService("Workspace")
 local player = assert(Players.LocalPlayer, "Run AutoPainter on your own client")
 local playerGui = player:WaitForChild("PlayerGui")
 local mouse = player:GetMouse()
-local GUI_NAME, VERSION = "AutoPainterFinalUI", 8
+local GUI_NAME, VERSION = "AutoPainterFinalUI", 9
 local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	assert(existing:GetAttribute("AutoPainterNativeVersion") == VERSION,
@@ -52,16 +54,21 @@ end
 local api = {}
 local alive, painting, keepColor = true, false, false
 local cameraAutomation, visibleOnly = CONFIG.CameraAutomation, CONFIG.VisibleOnly
-local dwell = CONFIG.TargetDwell
+local dwell = timing.TargetDwell
 local entries, lookup, dirty = {}, {}, {}
-local pendingCount, nextId = 0, 0
+local pendingCount, nextId, paletteBlocked = 0, 0, 0
 local selectionMode, priority, testTarget = nil, nil, nil
 local connections = {}
 local character, bucket, humanoid = nil, nil, nil
-local focused, ownColorWrite = true, false
+local focused = true
 local color = player:GetAttribute("PaintBucketColor")
 if typeof(color) ~= "Color3" then color = Color3.new(1, 1, 1) end
-local temporaryColor = nil
+-- Preview is intentionally separate: no known writer updates the native cached color.
+local desiredGlobalColor = color
+local collapsed, dragging, uiMouseDown = false, nil, false
+local dragResumeAt = 0
+local windowX, windowY = 8, 80
+local visibleVisits, rayBudget, holdLimit = 0, CONFIG.MaxRaysPerFrame, timing.TargetDwell
 local restoreAfterRelease = false
 local lastToolQuery = -math.huge
 local state, active, testing = "OFF", nil, false
@@ -69,7 +76,7 @@ local stateAt, lastPick, lastCursor, stableAt, stableFrames = 0, -math.huge, 0, 
 local held, releasing, downSeen, upSeen = false, false, 0, 0
 local pressBaseline, releaseBaseline = 0, 0
 local releaseAt, releaseFault, releaseAttempts = 0, false, 0
-local acquired, runColor, poseAttempt = 0, nil, 0
+local runColor, poseAttempt = nil, 0
 local decision, cameraSnapshot, nextPressAt = nil, nil, 0
 local tested, testSucceeded, testMessage = false, false, "Native input has not been tested."
 local holdDowns, holdUps, observed, inputErrors = 0, 0, 0, 0
@@ -78,8 +85,9 @@ local lastDisplay, stepping = 0, false
 local adapter = {}
 local moveMode = CONFIG.NativeMoveMode
 local ui, main, doneButton, mini, statusLabel, colorButton
-local paintButton, cameraButton, visibleButton, keepButton, capabilityLabel, testLabel, dwellBox, moveButton
-local stop, release, removeEntry, evaluate, setSelectionMode, updateUI
+local paletteLabel, countsLabel
+local paintButton, cameraButton, visibleButton, keepButton, capabilityLabel, testLabel, dwellBox, moveButton, speedButton, hudLabel
+local stop, release, removeEntry, evaluate, setSelectionMode, updateUI, layoutWindow, overOwnWindow
 
 local function connect(signal, callback, list)
 	local c = signal:Connect(callback)
@@ -110,20 +118,18 @@ local function valid(part)
 	local provinces = Workspace:FindFirstChild("Provinces")
 	return part ~= nil and part:IsA("BasePart") and provinces ~= nil and part.Parent == provinces
 end
-local function desired(entry) return keepColor and entry.savedColor or color end
-local function writeBucketColor(value)
-	if locked or not alive then return false end
-	if player:GetAttribute("PaintBucketColor") == value then return true end
-	ownColorWrite = true
-	local ok = pcall(function() player:SetAttribute("PaintBucketColor", value) end)
-	ownColorWrite = false
-	return ok and player:GetAttribute("PaintBucketColor") == value
+local function paletteColor()
+	local value = player:GetAttribute("PaintBucketColor")
+	return typeof(value) == "Color3" and value or Color3.new(1, 1, 1)
 end
-local function restoreColor(force)
-	if temporaryColor == nil then return end
-	temporaryColor = nil
-	if not locked and alive then writeBucketColor(color)
-	elseif force and not locked then pcall(function() player:SetAttribute("PaintBucketColor", color) end) end
+local function desired(entry) return keepColor and entry.savedColor or desiredGlobalColor end
+local function eligible(entry)
+	return entry and entry.active and entry.committed and valid(entry.part)
+		and entry.part.Color ~= desired(entry)
+end
+local function paintable(entry)
+	-- Mixed saved colors wait for the user to choose that color in the normal palette.
+	return eligible(entry) and desired(entry) == desiredGlobalColor
 end
 local function restoreCamera()
 	local saved = cameraSnapshot
@@ -149,19 +155,19 @@ local function addDirty(entry, now)
 	if entry.dirtyIndex or not entry.committed then return end
 	entry.waitSince, entry.dirtyIndex = now, #dirty + 1
 	dirty[entry.dirtyIndex] = entry
+	lastPick = -math.huge
 end
 local function presentation()
 	if not ui then return end
-	main.Visible = not selectionMode and not painting and not testing and not releasing
+	main.Visible = not selectionMode and not collapsed
 	doneButton.Visible = selectionMode ~= nil
-	mini.Visible = not main.Visible and not selectionMode
+	mini.Visible = collapsed and not selectionMode
 end
 local function finishRelease(now)
 	if restoreAfterRelease or not painting or selectionMode then restoreCamera() end
 	restoreAfterRelease = false
 	releasing, held, releaseFault = false, false, false
 	active = nil
-	restoreColor()
 	if testing then
 		testing = false
 		tested = testSucceeded
@@ -176,7 +182,7 @@ end
 release = function(reason)
 	if active and active.active then
 		active.waitSince = os.clock()
-		active.retryAt = os.clock() + CONFIG.AimRetry
+		active.retryAt = active.part.Color == desired(active) and 0 or os.clock() + timing.AimRetry
 	end
 	status = reason or status
 	if held or releasing then
@@ -196,7 +202,6 @@ release = function(reason)
 		end
 	else
 		active = nil
-		restoreColor()
 		if testing then testing, tested = false, false; testMessage = "FAILED: " .. testMessage end
 		state = painting and "IDLE" or "OFF"
 	end
@@ -230,9 +235,12 @@ evaluate = function(entry, changed)
 			removeDirty(entry)
 		else addDirty(entry, now) end
 	end
+	local blocked = entry.committed and not matched and desired(entry) ~= desiredGlobalColor
+	if blocked ~= (entry.paletteBlocked == true) then paletteBlocked += blocked and 1 or -1 end
+	entry.paletteBlocked = blocked
 	entry.matched = matched
 	if entry.box then entry.box.Color3 = desired(entry) end
-	if active == entry and matched and not testing then release("Target color observed") end
+	if active == entry and matched and not testing and not releasing then release("Target color observed") end
 end
 removeEntry = function(entry)
 	if not entry.active then return end
@@ -241,6 +249,7 @@ removeEntry = function(entry)
 		release("Province removed")
 	end
 	entry.active = false
+	if entry.paletteBlocked then paletteBlocked -= 1; entry.paletteBlocked = false end
 	removeDirty(entry)
 	if not entry.committed then pendingCount -= 1 end
 	if priority == entry then priority = nil end
@@ -256,10 +265,10 @@ function api.AddProvince(part)
 	if not alive or not valid(part) or lookup[part] then return false end
 	nextId += 1
 	local box = make("SelectionBox", ui, { Name = "ProtectedProvince", Adornee = part,
-		Color3 = color, SurfaceTransparency = 1, LineThickness = 0.025 })
-	local entry = { active = true, part = part, savedColor = color, committed = false, box = box,
+		Color3 = paletteColor(), SurfaceTransparency = 1, LineThickness = 0.025 })
+	local entry = { active = true, part = part, savedColor = paletteColor(), committed = false, box = box,
 		id = nextId, index = #entries + 1, connections = {}, contests = 0, contestAt = os.clock(),
-		changedAt = -math.huge, retryAt = 0, matched = part.Color == color }
+		changedAt = -math.huge, retryAt = 0, matched = part.Color == desiredGlobalColor }
 	entries[entry.index], lookup[part] = entry, entry
 	pendingCount += 1
 	connect(part:GetPropertyChangedSignal("Color"), function() evaluate(entry, true) end, entry.connections)
@@ -300,15 +309,29 @@ function api.CommitSelections() setSelectionMode(nil) end
 function api.SetColor(value)
 	assert(typeof(value) == "Color3", "Expected Color3")
 	if not alive then return false end
-	if active then release("Color changed; releasing before retarget") end
-	color = value
-	-- During release the old target color stays in place until real button-up.
-	if not releasing then writeBucketColor(value) end
-	reevaluate()
+	color = value -- Preview only; never writes tool state or changes a running target.
+	status = "Preview only. Choose this color in the normal PaintBucket palette, then start Auto Paint."
 	if updateUI then updateUI() end
 	return true
 end
 function api.GetColor() return color end
+function api.GetDesiredColor() return desiredGlobalColor end
+function api.SetSpeedMode(value)
+	if not alive or not PROFILES[value] then return false end
+	release("Speed mode changed")
+	speedMode, timing = value, PROFILES[value]
+	dwell = timing.TargetDwell
+	if dwellBox then dwellBox.Text = tostring(dwell) end
+	decision, lastPick = nil, -math.huge
+	return true
+end
+function api.GetTiming() return table.clone(timing) end
+function api.SetCollapsed(value)
+	if not alive then return end
+	collapsed = value == true
+	if layoutWindow then layoutWindow() end
+	presentation()
+end
 function api.SetKeepColor(value)
 	if not alive then return end
 	release("Keep Territory Color changed")
@@ -332,18 +355,20 @@ function api.SetDwell(value)
 	if not alive then return false end
 	value = tonumber(value)
 	if not value or value ~= value then return false end
-	dwell = math.clamp(value, 0.25, CONFIG.MaxDwell)
+	dwell = math.clamp(value, 0.25, timing.MaxDwell)
 	return true
 end
 function api.SetCameraAutomation(value)
 	if not alive then return false end
 	release("Camera option changed"); if releasing then restoreAfterRelease = true else restoreCamera() end
 	cameraAutomation = value == true; decision = nil
+	return true
 end
 function api.SetVisibleOnly(value)
 	if not alive then return false end
-	release("Visibility option changed"); if releasing then restoreAfterRelease = true else restoreCamera() end
+	release("Visibility option changed")
 	visibleOnly = value == true; decision = nil
+	return true
 end
 function api.EmergencyStop() if alive then stop("Emergency stop; press Auto Paint to resume") end end
 function api.LockDiagnostics()
@@ -366,7 +391,8 @@ local function toolReady()
 	return character and character:IsDescendantOf(Workspace) and bucket and bucket:IsA("Tool")
 		and bucket.Parent == character and bucket.Enabled ~= false and humanoid and humanoid.Health > 0
 end
-local function inputReady()
+local function inputReady(fromButton)
+	if dragging or (not fromButton and (uiMouseDown or os.clock() < dragResumeAt)) then return false end
 	if not focused or Input:GetFocusedTextBox() or not Input.MouseEnabled then return false end
 	if Input.MouseBehavior ~= Enum.MouseBehavior.Default then return false end
 	local menuOK, menuOpen = pcall(function() return GuiService.MenuIsOpen end)
@@ -379,6 +405,7 @@ local function inputReady()
 	return true
 end
 local function unobstructedGUI(point)
+	if overOwnWindow and overOwnWindow(point) then return false end
 	local inset = GuiService:GetGuiInset()
 	local ok, objects = pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X - inset.X, point.Y - inset.Y) end)
 	if not ok then return false end
@@ -396,30 +423,46 @@ local offsets = {
 }
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
+local rayCharacter = nil
 local function targetPoint(entry, cheap)
 	local camera = Workspace.CurrentCamera
 	if not camera or not entry.active or not valid(entry.part) then return nil end
 	local size = camera.ViewportSize
 	if size.X < 100 or size.Y < 100 then return nil end
-	if not cheap then rayParams.FilterDescendantsInstances = character and { character } or {} end
-	for i = 1, cheap and 1 or #offsets do
-		local worldPoint = entry.part.CFrame:PointToWorldSpace(offsets[i] * entry.part.Size)
+	if rayCharacter ~= character then
+		rayCharacter = character
+		rayParams.FilterDescendantsInstances = character and { character } or {}
+	end
+	local part = entry.part
+	if entry.pointFrame ~= part.CFrame or entry.pointSize ~= part.Size then
+		entry.pointFrame, entry.pointSize = part.CFrame, part.Size
+		entry.points, entry.goodPoint = {}, nil
+		for i, offset in ipairs(offsets) do entry.points[i] = part.CFrame:PointToWorldSpace(offset * part.Size) end
+	end
+	local first = entry.goodPoint or 1
+	for n = 1, cheap and 1 or #offsets do
+		local i = ((first + n - 2) % #offsets) + 1
+		local worldPoint = entry.points[i]
+		-- Projection/ray hits are revalidated, never assumed across camera/occluder changes.
 		local point, onScreen = camera:WorldToViewportPoint(worldPoint)
 		if onScreen and point.Z > 0 and point.X >= 8 and point.X < size.X - 8
 			and point.Y >= 60 and point.Y < size.Y - 8 then
 			if cheap then return point end
 			if unobstructedGUI(point) then
+				if rayBudget <= 0 then return nil, true end
+				rayBudget -= 1
 				local ray = camera:ViewportPointToRay(point.X, point.Y)
 				local hit = Workspace:Raycast(ray.Origin, ray.Direction * math.max(1, (worldPoint - ray.Origin).Magnitude + 10), rayParams)
-				if hit and hit.Instance == entry.part then return point end
+				if hit and hit.Instance == part then entry.goodPoint = i; return point end
 			end
 		end
 	end
+	entry.goodPoint = nil
 	return nil
 end
 local function cameraPose(entry)
 	local camera = Workspace.CurrentCamera
-	if not camera or not cameraAutomation or visibleOnly or testing then return false end
+	if not camera or not cameraAutomation or visibleOnly or testing or not paintable(entry) then return false end
 	if not cameraSnapshot then
 		cameraSnapshot = { object = camera, cframe = camera.CFrame, kind = camera.CameraType, focus = camera.Focus }
 	elseif cameraSnapshot.object ~= camera then return false end
@@ -436,43 +479,70 @@ local function cameraPose(entry)
 	camera.Focus = CFrame.new(center)
 	return true
 end
+local function older(a, b)
+	return not b or a.waitSince < b.waitSince or (a.waitSince == b.waitSince and a.id < b.id)
+end
+local function nearer(entry, best, distance, bestDistance, now)
+	if not best or distance ~= bestDistance then return distance < bestDistance end
+	if entry.waitSince ~= best.waitSince then return entry.waitSince < best.waitSince end
+	local contest = entry.contests * math.exp(-(now - entry.contestAt) / CONFIG.ContestDecay)
+	local other = best.contests * math.exp(-(now - best.contestAt) / CONFIG.ContestDecay)
+	if contest ~= other then return contest > other end
+	return entry.id < best.id
+end
 local function choose(now)
-	if not decision then decision = { index = 1, snapshot = table.clone(dirty), best = nil, score = -math.huge, oldest = nil } end
+	if not decision then
+		decision = { index = 1, snapshot = table.clone(dirty), distance = math.huge, alignment = -math.huge,
+			camera = Workspace.CurrentCamera }
+	end
 	local pick = decision
-	for _ = 1, CONFIG.CandidatesPerFrame do
+	-- Camera motion must not restart large scans forever. Every point is projected
+	-- against the current view; AIM revalidates the chosen point before movement/down.
+	if pick.camera ~= Workspace.CurrentCamera then decision = nil; return nil, false end
+	for _ = 1, timing.CandidatesPerFrame do
 		if pick.index > #pick.snapshot then break end
 		local entry = pick.snapshot[pick.index]
-		pick.index += 1
 		if entry.active and not valid(entry.part) then removeEntry(entry) end
-		if entry.active and entry.dirtyIndex and entry.committed and now >= entry.retryAt then
-			local point = targetPoint(entry, true)
-			if point or (cameraAutomation and not visibleOnly) then
-				local wait = now - entry.waitSince
-				if wait >= CONFIG.AgingSeconds and (not pick.oldest or entry.waitSince < pick.oldest.waitSince
-					or (entry.waitSince == pick.oldest.waitSince and entry.id < pick.oldest.id)) then pick.oldest = entry end
-				local camera = Workspace.CurrentCamera
-				local direction = entry.part.Position - camera.CFrame.Position
-				local alignment = direction.Magnitude > 0 and camera.CFrame.LookVector:Dot(direction.Unit) or 1
-				local score = (entry == priority and 100 or 0) + (point and 25 or 0) + 10 * alignment
-					+ 12 * math.exp(-(now - entry.changedAt) / 3)
-					+ 2 * entry.contests * math.exp(-(now - entry.contestAt) / CONFIG.ContestDecay)
-					+ math.min(30, wait * 2)
-				if score > pick.score or (score == pick.score and entry.id < pick.best.id) then pick.best, pick.score = entry, score end
+		if paintable(entry) and now >= entry.retryAt then
+			local point, exhausted = targetPoint(entry, false)
+			if exhausted then return nil, false end
+			local aged = now - entry.waitSince >= CONFIG.AgingSeconds
+			if point then
+				local cursor = Input:GetMouseLocation()
+				local distance = (point.X - cursor.X)^2 + (point.Y - cursor.Y)^2
+				if aged and older(entry, pick.oldVisible) then pick.oldVisible = entry end
+				if nearer(entry, pick.visible, distance, pick.distance, now) then
+					pick.visible, pick.distance = entry, distance
+				end
+			elseif cameraAutomation and not visibleOnly then
+				if aged and older(entry, pick.oldHidden) then pick.oldHidden = entry end
+				local delta = entry.part.Position - pick.camera.CFrame.Position
+				local alignment = delta.Magnitude > 0 and pick.camera.CFrame.LookVector:Dot(delta.Unit) or 1
+				if alignment > pick.alignment or (alignment == pick.alignment and older(entry, pick.hidden)) then
+					pick.hidden, pick.alignment = entry, alignment
+				end
 			end
+		elseif entry.active and entry.committed and entry.part.Color == desired(entry) then
+			evaluate(entry, false) -- Defensive check for a deferred Color notification.
 		end
+		pick.index += 1
 	end
 	if pick.index <= #pick.snapshot then return nil, false end
 	decision = nil
-	return pick.oldest or pick.best, true
+	local candidate = pick.oldVisible or pick.visible
+	if pick.oldHidden and (not candidate or visibleVisits >= CONFIG.VisibleVisitsBeforeAgedOffscreen) then
+		candidate, visibleVisits = pick.oldHidden, 0
+	elseif candidate then visibleVisits += 1
+	else candidate, visibleVisits = pick.oldHidden or pick.hidden, 0 end
+	return candidate, true
 end
 local function aim(entry, now)
+	if not testing and not paintable(entry) then return false end
 	active, state, stateAt, poseAttempt = entry, "AIM", now, 0
 	stableFrames, stableAt, lastCursor = 0, now, -math.huge
-	runColor = desired(entry)
-	temporaryColor = runColor
-	if not writeBucketColor(runColor) then stop("PaintBucketColor could not be synchronized"); return end
-	acquired = now
+	runColor = testing and paletteColor() or desired(entry)
 	presentation()
+	return true
 end
 function api.RefreshInputCapabilities()
 	if not alive then return false end
@@ -501,23 +571,32 @@ function api.SetPainting(value)
 	if locked then status = "Diagnostics locked: input disabled"; return false end
 	if not tested then status = "Run TEST NATIVE INPUT successfully before enabling Auto Paint"; return false end
 	if held or releasing or releaseFault or testing then return false end
-	painting, state, lastPick = true, "IDLE", -math.huge
+	if painting then return true end
+	desiredGlobalColor, color = paletteColor(), paletteColor()
+	reevaluate()
+	painting, state, lastPick, collapsed = true, "IDLE", -math.huge, true
+	layoutWindow()
 	presentation(); return true
 end
 function api.TestNativeInput()
 	if not alive or locked or painting or testing or held or releasing or releaseFault or selectionMode then return false end
 	if not capabilities() then status = "Required native input APIs unavailable"; return false end
 	if not testTarget or not testTarget.active or not testTarget.committed then status = "Choose a committed Test Province first"; return false end
+	if not eligible(testTarget) then status = "Choose a protected wrong-color province for the input test"; return false end
 	if not toolReady() then status = "Equip your normal PaintBucket and keep your character alive"; return false end
-	if not inputReady() then status = "Focus Roblox, close menus/text input and unlock the cursor"; return false end
+	if not inputReady(true) then status = "Focus Roblox, close menus/text input and unlock the cursor"; return false end
 	-- Test cannot move the camera or silently choose another province.
 	if not targetPoint(testTarget, true) then status = "Chosen test province is not visible"; return false end
-	tested, testing, testSucceeded = false, true, false
+	tested, testing, testSucceeded, collapsed = false, true, false, true
+	layoutWindow()
 	testMessage = "Test in progress; native PaintBucket may send legitimate paint requests."
 	aim(testTarget, os.clock()); return true
 end
 function api.GetStats()
 	return { Closed = not alive, Painting = painting, State = state, Held = held, Releasing = releasing,
+		Protected = #entries - pendingCount, WrongColor = #dirty, WaitingForPalette = paletteBlocked, CorrectColor = #entries - pendingCount - #dirty,
+		DesiredGlobalColor = desiredGlobalColor, SpeedMode = speedMode, Collapsed = collapsed, Dragging = dragging ~= nil,
+		WindowX = windowX, WindowY = windowY, HoldLimit = holdLimit,
 		Selected = #entries, PendingSelections = pendingCount, CommittedSelections = #entries - pendingCount,
 		Dirty = #dirty, SelectionMode = selectionMode, Target = active and active.part or nil,
 		Priority = priority and priority.part or nil, TestTarget = testTarget and testTarget.part or nil,
@@ -537,7 +616,10 @@ function api.GetNativeInputReport()
 		"Move=" .. cap.Move .. " Down=" .. tostring(cap.MouseDown) .. " Up=" .. tostring(cap.MouseUp),
 		"Callable=" .. tostring(cap.Callable) .. " InputTestPassed=" .. tostring(tested) .. " Locked=" .. tostring(locked),
 		"State=" .. state .. " Painting=" .. tostring(painting) .. " Held=" .. tostring(held) .. " Releasing=" .. tostring(releasing),
-		"Selected=" .. #entries .. " Pending=" .. pendingCount .. " Dirty=" .. #dirty,
+		"Protected=" .. (#entries - pendingCount) .. " Pending=" .. pendingCount .. " WrongColor=" .. #dirty
+			.. " CorrectColor=" .. (#entries - pendingCount - #dirty) .. " WaitingForPalette=" .. paletteBlocked,
+		"Speed=" .. speedMode .. " Dwell=" .. dwell .. " ReleaseGap=" .. timing.ReleaseGap,
+		"DesiredGlobalColor=" .. tostring(desiredGlobalColor) .. " (normal palette snapshot; no attribute writes)",
 		"ChosenTest=" .. path(testTarget) .. " Active=" .. path(active) .. " Priority=" .. path(priority),
 		"RealMouseTarget=" .. (mouse.Target and mouse.Target:GetFullName() or "<none>"),
 		"DownAttempts=" .. holdDowns .. " UpAttempts=" .. holdUps .. " ObservedMouseDown=" .. downSeen .. " ObservedMouseUp=" .. upSeen,
@@ -555,22 +637,27 @@ function api.CopyNativeInputReport()
 	return false
 end
 local function frame(now)
+	rayBudget = CONFIG.MaxRaysPerFrame
 	if releasing then
 		if releaseFault then
 			if now - releaseAt >= releaseAttempts * 0.1 and releaseAttempts < 3 then release(status) end
 			if releaseAttempts >= 3 then status = "Mouse release failed. Manually release Mouse1; automation is stopped." end
-		elseif upSeen > releaseBaseline and now >= releaseAt + CONFIG.ReleaseGap then
+		elseif upSeen > releaseBaseline and now >= releaseAt + timing.ReleaseGap then
 			nextPressAt = now
 			finishRelease(now)
-		elseif now - releaseAt > CONFIG.InputEventTimeout + CONFIG.ReleaseGap then
+		elseif now - releaseAt > CONFIG.InputEventTimeout + timing.ReleaseGap then
 			painting, tested, testSucceeded = false, false, false
 			testMessage = "Native button-up was not observed. Release Mouse1 manually."
 			status = testMessage -- Keep the guard; never move/press a new target.
 		end
-		return
+		if releasing then return end
 	end
 	if not painting and not testing then return end
-	if locked or selectionMode then release("Input suspended"); return end
+	if locked or selectionMode then
+		if active or held then release("Input suspended") end
+		return
+	end
+	if dragging or uiMouseDown or now < dragResumeAt then return end
 	if not toolReady() then
 		if testing then testMessage = "PaintBucket or live character unavailable"; stop(testMessage)
 		else release("Waiting for equipped PaintBucket"); if releasing then restoreAfterRelease = true else restoreCamera() end end
@@ -585,8 +672,20 @@ local function frame(now)
 		if invalid.active and not valid(invalid.part) then removeEntry(invalid) end
 		return
 	end
-	if active and desired(active) ~= runColor then release("Desired color changed"); return end
-	if active and player:GetAttribute("PaintBucketColor") ~= runColor then stop("Normal bucket color changed during targeting"); return end
+	if active and not testing and not paintable(active) then release("Target clean or palette does not match saved color"); return end
+	if active and not testing and desired(active) ~= runColor then release("Desired color changed"); return end
+	if active and paletteColor() ~= runColor then stop("Normal bucket color changed during targeting"); return end
+	if state == "IDLE" or state == "OFF" then
+		if #dirty == 0 then decision = nil; status = "All protected provinces match the desired color"; return end
+		if decision or now - lastPick >= timing.IdleRetry then
+			local nextEntry, finished = choose(now)
+			if finished then
+				lastPick = now
+				if paintable(nextEntry) then aim(nextEntry, now)
+				elseif paletteBlocked > 0 then status = tostring(paletteBlocked) .. " dirty saved colors await a matching normal palette" end
+			end
+		end
+	end
 	if state == "HOLD" then
 		if mouse.Target ~= active.part then
 			if testing then testSucceeded = false; testMessage = "Real mouse target changed during hold" end
@@ -597,8 +696,13 @@ local function frame(now)
 			testMessage = "Mouse-down API returned but no genuine Mouse.Button1Down was observed."
 			release(testMessage); return
 		end
-		local maximum = testing and CONFIG.TestHold or math.min(CONFIG.MaxDwell, dwell * (active == priority and CONFIG.PriorityDwellMultiplier or 1))
-		if (not testing and active.part.Color == runColor) or now - stateAt >= maximum then
+		local maximum = testing and CONFIG.TestHold or holdLimit
+		if active.part.Color == runColor or now - stateAt >= maximum then
+			if not testing and downSeen <= pressBaseline then
+				painting, tested = false, false
+				testMessage = "No native mouse-down event observed; automation stopped."
+				release(testMessage); return
+			end
 			if testing then
 				testSucceeded = downSeen > pressBaseline
 				if not testSucceeded then testMessage = "No native button-down event observed" end
@@ -606,24 +710,28 @@ local function frame(now)
 			release(testing and "Native input test releasing" or "Dwell complete"); return
 		end
 	elseif state == "AIM" then
-		if now - stateAt > CONFIG.AimTimeout then
+		if now - stateAt > timing.AimTimeout then
 			if testing then testMessage = "Could not acquire the exact real Mouse.Target"; stop(testMessage)
 			else release("Target not reachable; trying another province") end
 			return
 		end
-		local point = targetPoint(active, false)
+		local point, exhausted = targetPoint(active, false)
+		if exhausted then return end
 		if not point then
-			if now - lastCursor >= CONFIG.CursorInterval and cameraPose(active) then
+			if now - lastCursor >= timing.CursorInterval and cameraPose(active) then
 				lastCursor = now; stableAt, stableFrames = now, 0
 			end
 			return
 		end
-		if mouse.Target == active.part and unobstructedGUI(Input:GetMouseLocation()) and now - acquired >= CONFIG.ColorSettle then
+		if mouse.Target == active.part and unobstructedGUI(Input:GetMouseLocation()) then
 			stableFrames += 1
-			if stableFrames >= CONFIG.TargetStableFrames and now - stableAt >= CONFIG.TargetStableSeconds and now >= nextPressAt then
+			if stableFrames >= timing.TargetStableFrames and now - stableAt >= timing.TargetStableSeconds and now >= nextPressAt then
 				if Input:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then stop("Mouse1 is already held by the user"); return end
 				-- No yield between final real-target check and issuing native input.
-				if mouse.Target ~= active.part then return end
+				if mouse.Target ~= active.part or (not testing and not paintable(active)) then return end
+				local contest = active.contests * math.exp(-(now - active.contestAt) / CONFIG.ContestDecay)
+				holdLimit = math.min(timing.MaxDwell, dwell + math.min(1.05, contest * 0.25))
+				if active == priority then holdLimit = math.min(timing.MaxDwell, holdLimit * timing.PriorityDwellMultiplier) end
 				held, state, stateAt, pressBaseline = true, "HOLD", now, downSeen
 				holdDowns += 1
 				local ok = pcall(adapter.press)
@@ -631,7 +739,7 @@ local function frame(now)
 				return
 			end
 		else stableFrames, stableAt = 0, now end
-		if now - lastCursor >= CONFIG.CursorInterval then
+		if now - lastCursor >= timing.CursorInterval then
 			local location = Input:GetMouseLocation()
 			local ok
 			if adapter.relative then ok = pcall(adapter.move, math.round(point.X - location.X), math.round(point.Y - location.Y))
@@ -639,33 +747,30 @@ local function frame(now)
 			lastCursor = now
 			if not ok then inputErrors += 1; tested = false; stop("Native cursor move failed") end
 		end
-	elseif state == "IDLE" or state == "OFF" then
-		if #dirty == 0 then restoreCamera(); return end
-		if decision or now - lastPick >= CONFIG.IdleRetry then
-			local nextEntry, finished = choose(now)
-			if finished then
-				lastPick = now
-				if nextEntry and nextEntry.active and nextEntry.dirtyIndex then aim(nextEntry, now) end
-			end
-		end
+
 	end
 end
 
 -- All generated UI belongs to this client; no game tool properties are rewritten.
-ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
+ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false, IgnoreGuiInset = true,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
 ui:SetAttribute("AutoPainterNativeVersion", VERSION)
-main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
-	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
-	BackgroundColor3 = Color3.fromRGB(30, 34, 43), BorderSizePixel = 0 })
-make("UISizeConstraint", main, { MaxSize = Vector2.new(460, 640), MinSize = Vector2.new(280, 250) })
-make("TextLabel", main, { Text = "AutoPainter · native hold", Size = UDim2.new(1, -42, 0, 34),
-	TextSize = 22, TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 })
+main = make("Frame", ui, { Name = "Panel", Active = true, Position = UDim2.fromOffset(windowX, windowY),
+	Size = UDim2.fromOffset(420, 640), BackgroundColor3 = Color3.fromRGB(30, 34, 43), BorderSizePixel = 0 })
+local title = make("TextLabel", main, { Name = "DragTitle", Active = true,
+	Text = "AutoPainter · native hold", Size = UDim2.new(1, -80, 0, 34),
+	TextSize = 19, TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 })
+local collapse = make("TextButton", main, { Name = "Collapse", Text = "—", Size = UDim2.fromOffset(36, 32),
+	Position = UDim2.new(1, -76, 0, 0), TextSize = 24 })
 local close = make("TextButton", main, { Text = "×", Size = UDim2.fromOffset(36, 32),
 	Position = UDim2.new(1, -38, 0, 0), TextSize = 24 })
 statusLabel = make("TextLabel", main, { Name = "NativeStatus", Text = status, TextWrapped = true,
-	Size = UDim2.new(1, -16, 0, 60), Position = UDim2.fromOffset(8, 38), TextSize = 15,
+	Size = UDim2.new(1, -16, 0, 60), Position = UDim2.fromOffset(8, 76), TextSize = 15,
 	TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 })
-local scroll = make("ScrollingFrame", main, { Size = UDim2.new(1, -16, 1, -108), Position = UDim2.fromOffset(8, 100),
+countsLabel = make("TextLabel", main, { Name = "ProtectedCounts", Text = "", TextWrapped = true,
+	Size = UDim2.new(1, -16, 0, 38), Position = UDim2.fromOffset(8, 36), TextSize = 15,
+	TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1 })
+local scroll = make("ScrollingFrame", main, { Size = UDim2.new(1, -16, 1, -148), Position = UDim2.fromOffset(8, 140),
 	AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), BackgroundTransparency = 1, ScrollBarThickness = 5 })
 make("UIListLayout", scroll, { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder })
 local order = 0
@@ -680,8 +785,13 @@ paintButton = button("Auto Paint: OFF [Q]", function() api.SetPainting(not paint
 button("Protect Province", function() setSelectionMode("Add") end)
 button("Unprotect Province", function() setSelectionMode("Remove") end)
 button("Clear Provinces", api.Clear)
-colorButton = button("Country Color / Pick", function() setSelectionMode("Color") end)
-button("Randomize Color [R]", function() api.SetColor(Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))) end)
+colorButton = button("Country Color / Pick (preview only)", function() setSelectionMode("Color") end)
+button("Randomize Preview [R]", function() api.SetColor(Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))) end)
+speedButton = button("Speed Mode: FAST", function() api.SetSpeedMode(speedMode == "FAST" and "NORMAL" or "FAST") end)
+order += 1
+paletteLabel = make("TextLabel", scroll, { Name = "DesiredPaletteColor", LayoutOrder = order,
+	Text = "Desired color: normal PaintBucket palette", Size = UDim2.new(1, -8, 0, 48),
+	TextWrapped = true, TextSize = 14 })
 keepButton = button("Keep Territory Color: OFF", function() api.SetKeepColor(not keepColor) end)
 cameraButton = button("Camera Automation: ON", function() api.SetCameraAutomation(not cameraAutomation) end)
 visibleButton = button("Visible Only: OFF", function() api.SetVisibleOnly(not visibleOnly) end)
@@ -709,10 +819,73 @@ testLabel = make("TextLabel", scroll, { Name = "NativeTestResult", LayoutOrder =
 	TextWrapped = true, TextSize = 14, BackgroundTransparency = 1, TextColor3 = Color3.new(1, 1, 1) })
 doneButton = make("TextButton", ui, { Text = "Done / Cancel", Visible = false,
 	Position = UDim2.new(0.5, -140, 0, 0), Size = UDim2.fromOffset(280, 38), TextSize = 18 })
-mini = make("TextButton", ui, { Name = "EmergencyBar", Text = "STOP / Show panel [Escape]", Visible = false,
-	Position = UDim2.fromOffset(4, 0), Size = UDim2.fromOffset(260, 34), TextSize = 16,
-	BackgroundColor3 = Color3.fromRGB(180, 48, 65), TextColor3 = Color3.new(1, 1, 1) })
-connect(mini.Activated, api.EmergencyStop)
+mini = make("Frame", ui, { Name = "CombatHUD", Visible = false, Active = true,
+	Position = UDim2.fromOffset(windowX, windowY), Size = UDim2.fromOffset(320, 76),
+	BackgroundColor3 = Color3.fromRGB(30, 34, 43), BorderSizePixel = 0 })
+local miniTitle = make("TextLabel", mini, { Name = "HUDDragTitle", Text = "AutoPainter", Active = true,
+	Size = UDim2.new(1, -100, 0, 26), TextSize = 16, BackgroundTransparency = 1, TextColor3 = Color3.new(1, 1, 1) })
+local miniStop = make("TextButton", mini, { Text = "STOP", Position = UDim2.new(1, -98, 0, 0),
+	Size = UDim2.fromOffset(62, 26), TextSize = 16, BackgroundColor3 = Color3.fromRGB(180, 48, 65), TextColor3 = Color3.new(1, 1, 1) })
+local expand = make("TextButton", mini, { Name = "Expand", Text = "+", Position = UDim2.new(1, -34, 0, 0),
+	Size = UDim2.fromOffset(34, 26), TextSize = 20 })
+hudLabel = make("TextLabel", mini, { Name = "CombatStatus", Position = UDim2.fromOffset(4, 26),
+	Size = UDim2.new(1, -8, 0, 48), TextWrapped = true, TextSize = 14,
+	BackgroundTransparency = 1, TextColor3 = Color3.new(1, 1, 1) })
+local panelWidth, panelHeight, hudWidth = 420, 640, 320
+local lastLayout = nil
+layoutWindow = function()
+	local camera = Workspace.CurrentCamera
+	if not camera then return end
+	local size = camera.ViewportSize
+	local inset = GuiService:GetGuiInset()
+	panelWidth, panelHeight = math.min(420, size.X), math.min(640, math.max(0, size.Y - inset.Y))
+	hudWidth = math.min(320, size.X)
+	windowX = math.clamp(windowX, 0, math.max(0, size.X - (collapsed and hudWidth or panelWidth)))
+	windowY = math.clamp(windowY, inset.Y, math.max(inset.Y, size.Y - (collapsed and 76 or panelHeight)))
+	if lastLayout and lastLayout.x == windowX and lastLayout.y == windowY
+		and lastLayout.width == panelWidth and lastLayout.height == panelHeight and lastLayout.hud == hudWidth then return end
+	lastLayout = { x = windowX, y = windowY, width = panelWidth, height = panelHeight, hud = hudWidth }
+	doneButton.Position = UDim2.new(0.5, -140, 0, inset.Y)
+	main.Size, mini.Size = UDim2.fromOffset(panelWidth, panelHeight), UDim2.fromOffset(hudWidth, 76)
+	main.Position, mini.Position = UDim2.fromOffset(windowX, windowY), UDim2.fromOffset(windowX, windowY)
+end
+overOwnWindow = function(point)
+	if selectionMode then
+		local width = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X or 0
+		local top = GuiService:GetGuiInset().Y
+		return point.X >= width / 2 - 140 and point.X <= width / 2 + 140 and point.Y >= top and point.Y <= top + 38
+	end
+	return point.X >= windowX and point.X <= windowX + (collapsed and hudWidth or panelWidth)
+		and point.Y >= windowY and point.Y <= windowY + (collapsed and 76 or panelHeight)
+end
+local function beginDrag(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 or not alive or selectionMode then return end
+	local point = Input:GetMouseLocation()
+	dragging = { x = point.X, y = point.Y, startX = windowX, startY = windowY }
+	uiMouseDown = true
+	if active then release("Menu drag; native input suspended") end
+	decision = nil
+end
+connect(title.InputBegan, beginDrag)
+connect(miniTitle.InputBegan, beginDrag)
+connect(Input.InputChanged, function(input)
+	if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+	local point = Input:GetMouseLocation()
+	windowX, windowY = dragging.startX + point.X - dragging.x, dragging.startY + point.Y - dragging.y
+	layoutWindow()
+end)
+connect(Input.InputEnded, function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	if dragging or uiMouseDown then
+		dragging, uiMouseDown = nil, false
+		dragResumeAt = os.clock() + timing.ReleaseGap
+		lastPick = -math.huge
+	end
+end)
+connect(collapse.Activated, function() api.SetCollapsed(true) end)
+connect(expand.Activated, function() api.SetCollapsed(false) end)
+connect(miniStop.Activated, api.EmergencyStop)
+layoutWindow()
 connect(doneButton.Activated, function() setSelectionMode(nil) end)
 connect(dwellBox.FocusLost, function()
 	api.SetDwell(dwellBox.Text); dwellBox.Text = tostring(dwell)
@@ -720,16 +893,25 @@ end)
 
 updateUI = function()
 	if not alive then return end
+	layoutWindow()
+	speedButton.Text = "Speed Mode: " .. speedMode
 	moveButton.Text = "Cursor API: " .. moveMode
 	paintButton.Text = "Auto Paint: " .. (painting and "ON" or "OFF") .. " [Q]"
 	cameraButton.Text = "Camera Automation: " .. (cameraAutomation and "ON" or "OFF")
 	visibleButton.Text = "Visible Only: " .. (visibleOnly and "ON" or "OFF")
 	keepButton.Text = "Keep Territory Color: " .. (keepColor and "ON" or "OFF")
+	paletteLabel.BackgroundColor3 = desiredGlobalColor
+	paletteLabel.TextColor3 = desiredGlobalColor.R + desiredGlobalColor.G + desiredGlobalColor.B > 1.5 and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
+	paletteLabel.Text = "Desired color: normal palette snapshot\nChoose in PaintBucket before starting. Waiting for palette: " .. paletteBlocked
 	colorButton.BackgroundColor3 = color
 	colorButton.TextColor3 = color.R + color.G + color.B > 1.5 and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
-	statusLabel.Text = string.format("%s\n%d selected · %d pending · %d dirty · AutoPainter RPCs: 0", status, #entries, pendingCount, #dirty)
+	statusLabel.Text = status
+	countsLabel.Text = string.format("Protected: %d · Wrong Color: %d · Correct Color: %d · Pending: %d",
+		#entries - pendingCount, #dirty, #entries - pendingCount - #dirty, pendingCount)
+	hudLabel.Text = string.format("AUTO: %s · Protected: %d · Dirty: %d\nCurrent Target: %s",
+		painting and "ON" or "OFF", #entries - pendingCount, #dirty, active and active.part and active.part.Name or "—")
 	local cap = api.GetCapabilities()
-	capabilityLabel.Text = string.format("Move: %s · Down: %s · Up: %s\nCallable ≠ verified. Q toggle · R color · Escape stop", cap.Move, tostring(cap.MouseDown), tostring(cap.MouseUp))
+	capabilityLabel.Text = string.format("Move: %s · Down: %s · Up: %s\nCallable ≠ verified. Q toggle · R preview · Escape stop", cap.Move, tostring(cap.MouseDown), tostring(cap.MouseUp))
 	testLabel.Text = "Test province: " .. (testTarget and testTarget.part and testTarget.part:GetFullName() or "<choose one>") .. "\n" .. testMessage
 end
 local function selectPart(part)
@@ -749,7 +931,12 @@ connect(Input.InputBegan, function(input, processed)
 		if selectionMode then setSelectionMode(nil) end
 		return
 	end
-	if processed or Input:GetFocusedTextBox() then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 and overOwnWindow(Input:GetMouseLocation()) then
+		uiMouseDown = true
+		if active then release("Menu interaction; native input suspended") end
+		return
+	end
+	if dragging or uiMouseDown or os.clock() < dragResumeAt or processed or Input:GetFocusedTextBox() then return end
 	if input.KeyCode == Enum.KeyCode.Q then api.SetPainting(not painting)
 	elseif input.KeyCode == Enum.KeyCode.R then api.SetColor(Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255)))
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and selectionMode then selectPart(mouse.Target) end
@@ -769,18 +956,16 @@ connect(mouse.Move, function()
 		release("Real mouse target lost")
 	end
 end)
-connect(Input.WindowFocusReleased, function() focused = false; stop("Roblox lost focus") end)
+connect(Input.WindowFocusReleased, function() focused = false; dragging, uiMouseDown = nil, false; stop("Roblox lost focus") end)
 connect(Input.WindowFocused, function() focused = true end)
 connect(player:GetAttributeChangedSignal("PaintBucketColor"), function()
-	if ownColorWrite then return end
-	local value = player:GetAttribute("PaintBucketColor")
-	if typeof(value) ~= "Color3" then stop("PaintBucketColor became invalid"); return end
-	if temporaryColor and value == temporaryColor then return end
-	if value ~= color then
-		color = value
-		if active then release("Normal palette changed color") end
-		reevaluate(); updateUI()
-	end
+	local value = paletteColor()
+	if value == desiredGlobalColor then return end
+	-- An attribute notification is not proof of native-cache propagation. Stop and
+	-- require an explicit new start after the user finishes choosing in the palette.
+	if painting or testing then stop("Normal palette changed. Finish choosing its color, then restart Auto Paint.") end
+	desiredGlobalColor, color = value, value
+	reevaluate(); updateUI()
 end)
 connect(player:GetPropertyChangedSignal("Character"), function()
 	if active then release("Character changed") end
@@ -806,7 +991,7 @@ function api.Destroy()
 			released = true
 			if not alive then
 				held, releasing = false, false
-				restoreCamera(); restoreColor(true)
+				restoreCamera()
 				guard:Disconnect(); ui:Destroy()
 			end
 		end)
@@ -820,7 +1005,7 @@ function api.Destroy()
 		ui.Enabled = false -- Minimal guard until native/manual up; no more input scheduled.
 	else
 		if guard then guard:Disconnect() end
-		restoreCamera(); restoreColor(true); ui:Destroy()
+		restoreCamera(); ui:Destroy()
 	end
 end
 connect(close.Activated, api.Destroy)

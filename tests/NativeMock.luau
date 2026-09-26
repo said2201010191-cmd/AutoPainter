@@ -21,10 +21,11 @@ function NativeMock.new(deferred)
 	local function cf(pos,target)
 		return setmetatable({Position=pos,LookVector=target and (target-pos).Unit or v(0,-1,0),target=target}, {__index=Cf})
 	end
-	function Cf:PointToWorldSpace(offset) return self.Position+offset end
+	function Cf:PointToWorldSpace(offset) w.pointTransforms+=1;return self.Position+offset end
 	w.env.Vector3={new=v}
 	w.env.CFrame={new=function(pos) return cf(pos or v(0,0,0)) end,lookAt=cf}
 	w.v=v;w.cf=cf
+	w.rayCount=0;w.pointTransforms=0
 	w.parts={};w.nativeEvents={};w.nativePaints=0;w.button=false
 	w.mouse=w.instance("Mouse")
 	w.input.MouseEnabled=true;w.input.MouseBehavior=w.env.Enum.MouseBehavior.Default
@@ -69,6 +70,7 @@ function NativeMock.new(deferred)
 		return nil
 	end
 	rawset(w.workspace,"Raycast",function(_,origin,direction)
+		w.rayCount+=1
 		local hit=atScreen(direction.X/direction.Z,direction.Y/direction.Z)
 		return hit and {Instance=hit} or nil
 	end)
