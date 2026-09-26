@@ -1,14 +1,14 @@
-# Current outcome: FAST native hold and normal-palette authority
+# Current outcome: native-input reliability and performance pass
 
-The user reports that the native-input test works without a moderation kick. Their completed game-only scan returned 165/165 script texts without gaps and found only equipped/template copies of the ordinary PaintBucket paint call. The private-server native hold loop remains the only confirmed route used here.
+The user reports that the native-input test works without a moderation kick. Their completed game-only scan returned 165/165 script texts without reported gaps and found equipped/template copies of the ordinary PaintBucket call and its private-server hold loop. The normal native tool remains the only paint sender.
 
-AutoPainterFinal.luau now uses FAST dirty-only targeting, early release, bounded visible-first selection, cached surface points, persistent camera control and a draggable compact HUD. It still contains no game RPC implementation. The native tool owns real mouse data, PaintPart, mode and cooldown. The separate diagnostic collector remains unchanged and locked.
+AutoPainterFinal.luau now uses sticky acquisition, ordered and separately settled camera stages, bounded surface sampling, per-target unreachable cooldown, relative/absolute coordinate calibration and mode fallback, dedicated 1–3 dirty-target paths, pure next-target precomputation, optional bounded SMART contest grace, and timing/failure reports. ULTRA/FAST/NORMAL change input/target-management timing only. AutoPainter still contains no game RPC implementation, callback spoof, hook or native cooldown rewrite. Locked diagnostics and reference scripts are unchanged.
 
-The live client caches its palette color locally. This revision removes all AutoPainter PaintBucketColor writes: Auto Paint snapshots the normal palette's exposed color at start. Choose the real palette color before starting. Country Color, Randomize and R are preview-only. Keep Territory colors differing from the current palette wait instead of pretending attribute writes would change the native payload.
+Color authority remains the normal palette's exposed color snapshot. AutoPainter does not write PaintBucketColor or pretend an attribute write updates the normal tool's cached local variable. Preview controls remain preview-only; saved territory colors differing from the current palette wait.
 
-The user's successful test is evidence for the previous native-input path, not a throughput measurement of this faster revision. Native-loop/sameMouse lifetime and server-call timing remain unobserved. A release gap cannot prove native RPC drain. See [NATIVE_INPUT_GUIDE.md](NATIVE_INPUT_GUIDE.md) for limits, settings and the linked live procedure.
+468 deterministic tests pass and all 20 Luau files compile. The tests address the reported camera-thrash and unacquirable-target patterns; the exact original live province and new throughput still require user verification. Native-loop/sameMouse lifetime, server validation and native RPC timing remain unobserved. Neither an input PASS nor a release gap proves server acceptance or native-loop drain. See [NATIVE_INPUT_GUIDE.md](NATIVE_INPUT_GUIDE.md) and the [live procedure](README.md#live-test-procedure).
 
-The earlier analysis below is historical; its locked-only status and old hardcoded scheduler descriptions do not describe the new native runtime.
+The analysis below is historical; its locked-only status and old hardcoded scheduler descriptions do not describe the current native runtime.
 
 ---
 

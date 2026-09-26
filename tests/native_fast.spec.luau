@@ -11,10 +11,10 @@ for _,deferred in ipairs({false,true}) do
 	local prefix=deferred and "deferred fast: " or "immediate fast: "
 	test(prefix.."FAST is default and NORMAL changes only bounded input timings",function()
 		local w,api=start(deferred);local t=api.GetTiming()
-		assert(api.GetStats().SpeedMode=="FAST" and api.GetStats().Dwell==.45)
-		assert(t.ReleaseGap==.1 and t.AimTimeout==.75 and t.AimRetry==.2 and t.CursorInterval==.025)
-		assert(t.TargetStableSeconds==.03 and t.TargetStableFrames==1 and t.IdleRetry==.08 and t.CandidatesPerFrame==128 and t.MaxDwell==2)
-		t.ReleaseGap=100;assert(api.GetTiming().ReleaseGap==.1)
+		assert(api.GetStats().SpeedMode=="FAST" and api.GetStats().Dwell==.32)
+		assert(t.ReleaseGap==.05 and t.AimTimeout==1.05 and t.AimRetry==.12 and t.CursorInterval==.016)
+		assert(t.TargetStableSeconds==0 and t.TargetStableFrames==1 and t.IdleRetry==.03 and t.CandidatesPerFrame==128 and t.MaxDwell==2)
+		t.ReleaseGap=100;assert(api.GetTiming().ReleaseGap==.05)
 		button(w,"Speed Mode: FAST");assert(api.GetStats().SpeedMode=="NORMAL" and api.GetTiming().TargetStableFrames==2)
 		assert(not api.SetSpeedMode("unbounded") and #w.nativeEvents==0);zeroRPC(w,api);api.Destroy()
 	end)
@@ -40,7 +40,7 @@ for _,deferred in ipairs({false,true}) do
 	end)
 	test(prefix.."a target cleaned after selection but before press receives no down or camera move",function()
 		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
-		local downs=w.eventCount("down");api.SetPainting(true);w.step(.017)
+		local downs=w.eventCount("down");w.staleMouse=true;w.mouse.Target=nil;api.SetPainting(true);w.step(.017)
 		p.Color=api.GetDesiredColor();local camera=w.workspace.CurrentCamera.CFrame
 		w.flush();local moves=w.eventCount("move");w.step(3)
 		assert(w.eventCount("down")==downs and w.eventCount("move")==moves and w.workspace.CurrentCamera.CFrame==camera)
@@ -54,9 +54,9 @@ for _,deferred in ipairs({false,true}) do
 		assert(api.GetStats().Target~=target and w.now-at<.35)
 		zeroRPC(w,api);api.Destroy();w.flush()
 	end)
-	test(prefix.."visible dirty wins over nearer offscreen priority and avoids camera rotation",function()
+	test(prefix.."visible dirty wins over ordinary offscreen work and avoids camera rotation",function()
 		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
-		local far=w.province(2000);api.AddProvince(far);api.CommitSelections();api.SetPriority(far)
+		local far=w.province(2000);api.AddProvince(far);api.CommitSelections()
 		local frame=w.workspace.CurrentCamera.CFrame
 		api.SetPainting(true);waitHold(w,api)
 		assert(api.GetStats().Target==p and w.workspace.CurrentCamera.CFrame==frame)
@@ -92,10 +92,10 @@ for _,deferred in ipairs({false,true}) do
 	end)
 	test(prefix.."contention increases hold cap gradually but never above two seconds",function()
 		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
-		for i=1,5 do p.Color=w.Color3.new(i/10,0,0);w.flush() end
+		for i=1,5 do p.Color=api.GetDesiredColor();w.flush();p.Color=w.Color3.new(i/10,0,0);w.flush() end
 		api.SetPainting(true);waitHold(w,api);local cap=api.GetStats().HoldLimit
-		assert(cap>1.4 and cap<=1.5);api.EmergencyStop();w.step(.3)
-		api.SetPriority(p);api.SetPainting(true);waitHold(w,api);assert(api.GetStats().HoldLimit==2)
+		assert(cap>=.7 and cap<=1);api.EmergencyStop();w.step(.3)
+		api.SetPriority(p);api.SetPainting(true);waitHold(w,api);assert(api.GetStats().HoldLimit==1)
 		p.Color=api.GetDesiredColor();w.flush();assert(not w.button);zeroRPC(w,api);api.Destroy();w.flush()
 	end)
 	test(prefix.."bounded aging eventually services an offscreen province under visible contention",function()
@@ -111,7 +111,7 @@ for _,deferred in ipairs({false,true}) do
 		api.SetPainting(true);waitHold(w,api);assert(w.pointTransforms==transforms)
 		api.EmergencyStop();w.step(.3)
 		p.Position=w.v(150,0,0);p.CFrame=w.cf(p.Position);p.Size=w.v(40,1,40)
-		api.SetPainting(true);waitHold(w,api);assert(w.mouse.Target==p and w.pointTransforms==transforms+6)
+		api.SetPainting(true);waitHold(w,api);assert(w.mouse.Target==p and w.pointTransforms==transforms+api.GetTargetStats(p).SampleCount)
 		zeroRPC(w,api);api.Destroy();w.flush()
 	end)
 	test(prefix.."visibility rays are bounded per frame even across a large blocked selection",function()

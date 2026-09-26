@@ -82,7 +82,7 @@ for _,deferred in ipairs({false,true}) do
 		local w,api=start(deferred)
 		assert(not api.SetDwell("bad") and not api.SetDwell(0/0))
 		assert(api.SetDwell(1000) and api.GetStats().Dwell==2)
-		assert(api.SetDwell(-10) and api.GetStats().Dwell==0.25)
+		assert(api.SetDwell(-10) and api.GetStats().Dwell==0.15)
 		local field;for _,o in ipairs(w.objects) do if o.Name=="TargetDwell" then field=o end end
 		field.Text="1.5";field.FocusLost:Fire();w.flush();assert(api.GetStats().Dwell==1.5)
 		zeroRPC(w,api);api.Destroy()

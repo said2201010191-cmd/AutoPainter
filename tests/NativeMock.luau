@@ -26,14 +26,15 @@ function NativeMock.new(deferred)
 	w.env.CFrame={new=function(pos) return cf(pos or v(0,0,0)) end,lookAt=cf}
 	w.v=v;w.cf=cf
 	w.rayCount=0;w.pointTransforms=0
-	w.parts={};w.nativeEvents={};w.nativePaints=0;w.button=false
+	w.cameraEvents={};w.parts={};w.nativeEvents={};w.nativePaints=0;w.button=false
 	w.mouse=w.instance("Mouse")
 	w.input.MouseEnabled=true;w.input.MouseBehavior=w.env.Enum.MouseBehavior.Default
 	w.cursor=v(10,80);w.focus=true
 	rawset(w.input,"GetMouseLocation",function() return w.cursor end)
 	rawset(w.input,"IsMouseButtonPressed",function() return w.button end)
 	rawset(w.input,"GetFocusedTextBox",function() return w.textFocused end)
-	w.gui={MenuIsOpen=false,GetGuiInset=function() return v(0,36) end}
+	w.inset=v(0,36)
+	w.gui={MenuIsOpen=false,GetGuiInset=function() return w.inset end}
 	local originalGet=w.env.game.GetService
 	w.env.game.GetService=function(self,name)
 		if name=="GuiService" then return w.gui end
@@ -44,15 +45,27 @@ function NativeMock.new(deferred)
 		if w.blockedGUI then return {w.blockedGUI} end
 		return {}
 	end)
+	rawset(w.runService,"RenderStepped",w.signal())
+	w.step=function(seconds,fps)
+		local count=math.ceil(seconds*(fps or 60));local delta=seconds/count
+		for _=1,count do
+			w.now+=delta;w.flush();w.runService.RenderStepped:Fire(delta);w.flush()
+			local before=w.workspace.CurrentCamera and w.workspace.CurrentCamera.CFrame
+			w.runService.Heartbeat:Fire(delta);w.flush()
+			local after=w.workspace.CurrentCamera and w.workspace.CurrentCamera.CFrame
+			if before~=after then table.insert(w.cameraEvents,{at=w.now,frame=after}) end
+		end
+	end
 	local function newCamera()
 		local camera=w.instance("Camera")
 		camera.CFrame=cf(v(0,100,0));camera.Focus=cf(v(0,0,0));camera.CameraType=w.env.Enum.CameraType.Custom
-		camera.ViewportSize=v(800,600);camera.Parent=w.workspace
+		camera.ViewportSize=v(800,600);camera.FieldOfView=70;camera.Parent=w.workspace
 		rawset(camera,"WorldToViewportPoint",function(_,point)
 			local focus=camera.CFrame.target or v(0,0,0)
 			local p=v(point.X-focus.X+400, point.Z-focus.Z+300,1)
 			return p,p.X>=0 and p.X<800 and p.Y>=0 and p.Y<600
 		end)
+		rawset(camera,"WorldToScreenPoint",function(_,point) local p,on=camera:WorldToViewportPoint(point);return p-w.inset,on end)
 		rawset(camera,"ViewportPointToRay",function(_,x,y) return {Origin=camera.CFrame.Position,Direction=v(x,y,1)} end)
 		return camera
 	end
@@ -71,7 +84,9 @@ function NativeMock.new(deferred)
 	end
 	rawset(w.workspace,"Raycast",function(_,origin,direction)
 		w.rayCount+=1
-		local hit=atScreen(direction.X/direction.Z,direction.Y/direction.Z)
+		local x,y=direction.X/direction.Z,direction.Y/direction.Z
+		local hit=atScreen(x,y)
+		if w.rayRule then hit=w.rayRule(x,y,hit) end
 		return hit and {Instance=hit} or nil
 	end)
 	local originalEquip=w.equip
@@ -90,20 +105,33 @@ function NativeMock.new(deferred)
 	end
 	local function move(x,y)
 		if w.moveError then error("move failed") end
-		table.insert(w.nativeEvents,{kind="move",at=w.now})
+		table.insert(w.nativeEvents,{kind="move",at=w.now,x=x,y=y})
 		w.cursor=v(x,y)
-		if not w.staleMouse then w.mouse.Target=atScreen(x,y) end
-		w.mouse.Move:Fire()
+		local function propagate()
+			if not w.staleMouse then
+				local target=atScreen(x,y)
+				w.mouse.Target=w.noMouseTargets and w.noMouseTargets[target] and nil or target
+				if w.noMouseTargets and w.noMouseTargets[target] then w.mouse.Target=nil end
+			end
+			w.mouse.Move:Fire()
+		end
+		if w.moveDelay then w.schedule(w.moveDelay,propagate) else propagate() end
 	end
-	w.env.mousemoverel=function(dx,dy) move(w.cursor.X+dx,w.cursor.Y+dy) end
-	w.env.mousemoveabs=move
+	w.env.mousemoverel=function(dx,dy)
+		table.insert(w.nativeEvents,{kind="relative",at=w.now,dx=dx,dy=dy})
+		move(w.cursor.X+dx*(w.relativeGain or 1),w.cursor.Y+dy*(w.relativeGain or 1))
+	end
+	w.env.mousemoveabs=function(x,y)
+		table.insert(w.nativeEvents,{kind="absolute",at=w.now,x=x,y=y})
+		local offset=w.absoluteOffset or v(0,0);move(x+offset.X,y+offset.Y)
+	end
 	w.env.isrbxactive=function() return w.focus end
 	w.env.mouse1press=function()
 		table.insert(w.nativeEvents,{kind="down",at=w.now,part=w.mouse.Target,color=w.player:GetAttribute("PaintBucketColor")})
 		w.button=true
 		if w.pressError then error("press failed after changing input") end
 		if not w.suppressDown then
-			w.mouse.Button1Down:Fire()
+			if w.downDelay then w.schedule(w.downDelay,function() w.mouse.Button1Down:Fire() end) else w.mouse.Button1Down:Fire() end
 			if w.simulateNative then
 				local function tick()
 					if not w.button then return end
@@ -119,7 +147,9 @@ function NativeMock.new(deferred)
 		table.insert(w.nativeEvents,{kind="up",at=w.now})
 		if w.releaseError then error("release failed") end
 		w.button=false
-		if not w.suppressUp then w.mouse.Button1Up:Fire() end
+		if not w.suppressUp then
+			if w.upDelay then w.schedule(w.upDelay,function() w.mouse.Button1Up:Fire() end) else w.mouse.Button1Up:Fire() end
+		end
 	end
 	w.manualUp=function() w.button=false;w.mouse.Button1Up:Fire();w.flush() end
 	w.manualTarget=function(part) w.mouse.Target=part;w.mouse.Move:Fire();w.flush() end

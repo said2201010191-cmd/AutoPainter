@@ -1,0 +1,272 @@
+local function untilCondition(w,fn,seconds)
+	local deadline=w.now+(seconds or 5)
+	while not fn() and w.now<deadline do w.step(1/60) end
+	assert(fn(),"Timed out waiting for condition")
+end
+local function preparedWorld(deferred,n)
+	local w,api=start(deferred);local parts=add(w,api,n or 1);verify(w,api,parts[1]);api.ResetBenchmark()
+	return w,api,parts
+end
+for _,deferred in ipairs({false,true}) do
+	local prefix=deferred and "deferred reliability: " or "immediate reliability: "
+	test(prefix.."ULTRA waits for rendered propagation then takes the earliest valid target",function()
+		local w,api,parts=preparedWorld(deferred);api.SetSpeedMode("ULTRA")
+		w.moveDelay=1/60;w.mouse.Target=nil;w.cursor=w.v(650,420)
+		local n=w.eventCount("down");local at=w.now;api.SetPainting(true);w.step(1/60)
+		assert(w.eventCount("down")==n)
+		waitHold(w,api);assert(w.now-at<.08 and w.mouse.Target==parts[1])
+		assert(api.GetPerformanceStats().SchedulerScans==0 and api.GetPerformanceStats().TurboAcquisitions==1)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."correct single province stays dormant and a recolor wakes turbo without scans",function()
+		local w,api,parts=preparedWorld(deferred);local p=parts[1];p.Color=api.GetDesiredColor();w.flush()
+		api.SetSpeedMode("ULTRA");api.SetPainting(true);w.step(3);local events=#w.nativeEvents;local rays=w.rayCount
+		w.step(3);assert(#w.nativeEvents==events and w.rayCount==rays)
+		p.Color=w.Color3.new(1,0,0);w.flush();local at=w.now;waitHold(w,api)
+		assert(w.now-at<.06 and api.GetPerformanceStats().SchedulerScans==0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."one bad ray frame never changes target or camera",function()
+		local w,api,parts=preparedWorld(deferred);w.mouse.Target=nil;w.forceMiss=true
+		api.SetPainting(true);w.step(1/60);local camera=w.workspace.CurrentCamera.CFrame
+		assert(api.GetStats().Target==parts[1]);w.forceMiss=false;waitHold(w,api)
+		assert(api.GetStats().Target==parts[1] and w.workspace.CurrentCamera.CFrame==camera)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."priority changes cannot preempt an active acquisition",function()
+		local w,api,parts=preparedWorld(deferred,2);w.mouse.Target=nil;w.noMouseTargets={[parts[1]]=true}
+		api.SetPriority(parts[1]);api.SetPainting(true);w.step(1/60)
+		assert(api.GetStats().Target==parts[1]);api.SetPriority(parts[2]);w.step(.12)
+		assert(api.GetStats().Target==parts[1] and not api.GetStats().Held)
+		untilCondition(w,function() return api.GetStats().Held and api.GetStats().Target==parts[2] end,5)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."impossible singleton cools down and exhausted camera poses are not replayed",function()
+		local w,api,parts=preparedWorld(deferred);w.mouse.Target=nil;w.noMouseTargets={[parts[1]]=true}
+		local down=w.eventCount("down");api.SetPainting(true)
+		untilCondition(w,function() return api.GetTargetStats(parts[1]).State=="TEMP_UNREACHABLE" end,3)
+		local remaining=api.GetTargetStats(parts[1]).RetryRemaining;local moves=#w.cameraEvents
+		w.step(remaining*.8);assert(#w.cameraEvents==moves and w.eventCount("down")==down)
+		w.step(8);assert(#w.cameraEvents<=5 and api.GetPerformanceStats().AimFailures>=2)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	for _,badIndex in ipairs({1,2}) do
+		test(prefix.."two targets service the reachable one when target "..badIndex.." cannot be acquired",function()
+			local w,api,parts=preparedWorld(deferred,2);w.mouse.Target=nil;w.noMouseTargets={[parts[badIndex]]=true}
+			api.SetPriority(parts[badIndex]);api.SetPainting(true)
+			untilCondition(w,function() return api.GetStats().Held and api.GetStats().Target==parts[3-badIndex] end,5)
+			assert(api.GetTargetStats(parts[badIndex]).FailStreak>0)
+			zeroRPC(w,api);api.Destroy();w.flush()
+		end)
+	end
+	test(prefix.."two impossible targets have bounded failures and no rapid region ping-pong",function()
+		local w,api,parts=preparedWorld(deferred,2);w.mouse.Target=nil
+		w.noMouseTargets={[parts[1]]=true,[parts[2]]=true};api.SetPainting(true);w.step(8)
+		local stats=api.GetPerformanceStats();assert(stats.HoldAttempts==0 and stats.AimFailures>1 and stats.AimFailures<12)
+		for i=2,#w.cameraEvents do assert(w.cameraEvents[i].at-w.cameraEvents[i-1].at>=.079) end
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."three dirty provinces use direct scheduling and eventually service each",function()
+		local w,api,parts=preparedWorld(deferred,3);api.SetPainting(true);w.step(10)
+		local seen={};for _,event in ipairs(w.nativeEvents) do if event.kind=="down" then seen[event.part]=true end end
+		for _,p in ipairs(parts) do assert(seen[p]) end
+		local stats=api.GetPerformanceStats();assert(stats.SchedulerScans==0 and stats.TinySelections>0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."no-effect holds back off the target without moving the camera",function()
+		local w,api,parts=preparedWorld(deferred);api.SetPainting(true);waitHold(w,api)
+		untilCondition(w,function() return api.GetPerformanceStats().NoEffectHolds>=1 end,2)
+		assert(api.GetTargetStats(parts[1]).RetryRemaining>0)
+		w.step(3);local stats=api.GetPerformanceStats()
+		assert(stats.NoEffectHolds>=3 and stats.HoldAttempts<=9 and stats.CameraPoseChanges==0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."SMART contest grace is optional bounded and counts distinct observed corrections",function()
+		local w,api,parts=preparedWorld(deferred);local p=parts[1]
+		for _=1,5 do p.Color=api.GetDesiredColor();w.flush();p.Color=w.Color3.new(1,0,0);w.flush() end
+		api.SetContestHold("SMART");api.SetPainting(true);waitHold(w,api)
+		p.Color=api.GetDesiredColor();w.flush();assert(w.button)
+		w.step(.05);p.Color=w.Color3.new(1,0,0);w.flush();p.Color=api.GetDesiredColor();w.flush()
+		assert(w.button and api.GetPerformanceStats().SuccessfulCorrections==2)
+		w.step(.17);assert(not w.button and api.GetStats().Dirty==0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."SMART cannot prolong a correct target while another dirty province waits",function()
+		local w,api,parts=preparedWorld(deferred,2);local p=parts[1]
+		for _=1,5 do p.Color=api.GetDesiredColor();w.flush();p.Color=w.Color3.new(1,0,0);w.flush() end
+		api.SetContestHold(true);api.SetPriority(p);api.SetPainting(true);waitHold(w,api)
+		p.Color=api.GetDesiredColor();w.flush();assert(not w.button);waitHold(w,api)
+		assert(api.GetStats().Target==parts[2]);zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."relative failures use a bounded absolute fallback and remember success",function()
+		local w,api,parts=preparedWorld(deferred);w.relativeGain=0;w.mouse.Target=nil;w.cursor=w.v(650,400)
+		api.SetPainting(true);waitHold(w,api)
+		assert(api.GetMovementStats().Preferred=="Absolute")
+		api.EmergencyStop();w.step(.2);w.cursor=w.v(650,400);w.mouse.Target=nil
+		local relative=w.eventCount("relative");api.SetPainting(true);waitHold(w,api)
+		assert(w.eventCount("relative")==relative and api.GetMovementStats().Absolute.SuccessfulAcquisitions>=2)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."absolute GUI-relative coordinates are detected from genuine acquisition",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1]
+		w.absoluteOffset=w.inset;api.SetMoveMode("Absolute");verify(w,api,p)
+		local stats=api.GetMovementStats()
+		assert(stats.AbsoluteSpace=="Screen" and stats.Absolute.SuccessfulAcquisitions>=1)
+		assert(stats.Calibration:find("ProjectedScreenPoint",1,true) and stats.Calibration:find("GuiInset",1,true))
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."relative deltas use unadjusted viewport and mouse coordinates even with inset",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];w.inset=w.v(0,60)
+		w.cursor=w.v(100,100);api.SetMoveMode("Relative");verify(w,api,p)
+		local first;for _,e in ipairs(w.nativeEvents) do if e.kind=="relative" then first=e;break end end
+		assert(first.dx==300 and first.dy==200);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."explicit cursor-only calibration tests exposed modes with zero downs",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];api.SetTestTarget(p)
+		assert(api.CalibrateInput());w.step(2)
+		local stats=api.GetMovementStats()
+		assert(stats.Relative.Attempts>0 and stats.Absolute.Attempts>0 and w.eventCount("down")==0)
+		assert(not api.GetStats().Painting and not api.GetStats().Held)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	for _,shape in ipairs({"wide","thin","small","edge"}) do
+		test(prefix..shape.." geometry acquires with bounded adaptive samples",function()
+			local w,api=start(deferred);local p=w.province(shape=="edge" and 397 or 0)
+			p.Size=shape=="wide" and w.v(300,1,40) or shape=="thin" and w.v(5,1,300) or shape=="small" and w.v(1,1,1) or w.v(30,1,30)
+			api.AddProvince(p);api.CommitSelections();verify(w,api,p)
+			local stats=api.GetTargetStats(p);assert(stats.SampleCount<=64 and stats.LastGoodLocalPoint and stats.LastGoodOffsetIndex)
+			zeroRPC(w,api);api.Destroy()
+		end)
+	end
+	test(prefix.."center occlusion searches corners before considering a camera move",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];p.Size=w.v(100,1,100)
+		local blocker=w.instance("Part")
+		w.rayRule=function(x,y,hit) if math.abs(x-400)<35 and math.abs(y-300)<35 then return blocker end;return hit end
+		verify(w,api,p);assert(api.GetTargetStats(p).LastGoodOffsetIndex>2)
+		assert(api.GetPerformanceStats().CameraPoseChanges==0);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."cached genuine acquire point is reused without rebuilding geometry",function()
+		local w,api,parts=preparedWorld(deferred);local count=w.pointTransforms
+		api.SetPainting(true);waitHold(w,api)
+		assert(w.pointTransforms==count and api.GetPerformanceStats().CachedPointHits>0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."cosmetic labels do not block targeting but active controls do",function()
+		local w,api,parts=preparedWorld(deferred);local label=w.instance("TextLabel");label.Visible=true;label.Active=false
+		w.blockedGUI=label;api.SetPainting(true);waitHold(w,api);api.EmergencyStop();w.step(.2)
+		label.Active=true;api.SetVisibleOnly(true);local n=w.eventCount("down");api.SetPainting(true);w.step(2)
+		assert(w.eventCount("down")==n);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."camera poses respect minimum intervals and rendered settling",function()
+		local w,api,parts=preparedWorld(deferred);parts[1].Color=api.GetDesiredColor();w.flush()
+		local far=w.province(2000);api.AddProvince(far);api.CommitSelections();w.forceMiss=true
+		api.SetPainting(true);w.step(2)
+		assert(#w.cameraEvents>1)
+		for i=2,#w.cameraEvents do assert(w.cameraEvents[i].at-w.cameraEvents[i-1].at>=api.GetTiming().CameraPoseMinInterval-.001) end
+		assert(w.eventCount("down")==1);zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."next acquisition waits for up but need not wait for the next-down gap",function()
+		local w,api,parts=preparedWorld(deferred,2);api.SetSpeedMode("NORMAL");api.SetPriority(parts[1]);api.SetPainting(true);waitHold(w,api)
+		w.upDelay=.05;local moves=w.eventCount("move");local releaseAt=w.now
+		parts[1].Color=api.GetDesiredColor();w.flush();w.step(.03)
+		assert(w.eventCount("move")==moves)
+		untilCondition(w,function() return w.eventCount("move")>moves end,.3)
+		assert(w.now-releaseAt<.15);waitHold(w,api)
+		assert(w.now-releaseAt>=.15 and api.GetStats().Target==parts[2])
+		zeroRPC(w,api);api.Destroy();w.step(.1)
+	end)
+	test(prefix.."ULTRA shorter gap is gated on observed repeated input cycles",function()
+		local w,api,parts=preparedWorld(deferred);api.SetSpeedMode("ULTRA")
+		assert(api.GetPerformanceStats().EffectiveReleaseGap>=.05)
+		api.SetPainting(true)
+		for _=1,9 do
+			waitHold(w,api);parts[1].Color=api.GetDesiredColor();w.flush();w.step(.07)
+			parts[1].Color=w.Color3.new(1,0,0);w.flush()
+		end
+		assert(api.GetPerformanceStats().VerifiedInputCycles>=8 and api.GetPerformanceStats().EffectiveReleaseGap<.05)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."benchmark reports observations without creating input and resets independently",function()
+		local w,api,parts=preparedWorld(deferred);api.SetPainting(true);waitHold(w,api)
+		w.step(.03);parts[1].Color=api.GetDesiredColor();w.flush();w.step(.1)
+		local m=api.GetPerformanceStats();assert(m.SuccessfulCorrections==1 and m.HoldAttempts==1 and m.AverageHoldMs>0 and m.Runtime>0)
+		local count=#w.nativeEvents;local report=api.GetBenchmarkReport()
+		assert(report:find("AutoPainterRPCs=0",1,true) and report:find("P95Acquire",1,true))
+		local text;w.env.setclipboard=function(value) text=value end;api.CopyBenchmarkReport();assert(text==report and #w.nativeEvents==count)
+		api.ResetBenchmark();assert(api.GetPerformanceStats().SuccessfulCorrections==0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."failure reports are bounded include exact targeting evidence and export without scanning",function()
+		local w,api,parts=preparedWorld(deferred);w.mouse.Target=nil;w.noMouseTargets={[parts[1]]=true}
+		api.SetPainting(true);w.step(105,30);api.EmergencyStop()
+		local report=api.GetTargetFailureReport();assert(report:find("Last 20 acquisition failures",1,true))
+		for _,key in ipairs({"Target=","Part.Size=","CameraCFrame=","PoseStage=","CandidatePointIndex=","RaycastHitFullName=","RealMouseTarget=","GuiInset=","MoveMode=","AttemptDuration="}) do assert(report:find(key,1,true),key) end
+		local calls=#w.nativeEvents;w.env.setclipboard=nil;local saved
+		w.env.writefile=function(name,text) assert(name=="AutoPainterTargetFailures.txt");saved=text end
+		assert(api.CopyTargetFailureReport() and saved==report and #w.nativeEvents==calls)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."snap controls and profile cycle retain the compact session HUD",function()
+		local w,api=start(deferred);api.SetCollapsed(true);button(w,"Snap Right")
+		assert(api.GetStats().WindowX==480);button(w,"Snap Left");assert(api.GetStats().WindowX==0)
+		api.SetSpeedMode("NORMAL");w.step(.3);button(w,"Speed Mode: NORMAL");assert(api.GetStats().SpeedMode=="ULTRA")
+		assert(#w.nativeEvents==0);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."yielding native down serializes an emergency up instead of overlapping input APIs",function()
+		local w=Mock.new(deferred);local base=w.env.mouse1press
+		w.env.mouse1press=function() base();if w.yieldPress then w.env.task.wait(.1) end end
+		local api=w.load(SOURCE);local p=add(w,api,1)[1];verify(w,api,p)
+		w.yieldPress=true;api.SetPainting(true);w.step(.02);local ups=w.eventCount("up")
+		api.EmergencyStop();assert(w.eventCount("up")==ups)
+		w.step(.2);assert(w.eventCount("up")==ups+1 and not w.button and not api.GetStats().Painting)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."reentrant stop during native up cannot recursively generate more ups",function()
+		local w=Mock.new(deferred);local base=w.env.mouse1release;local api
+		w.env.mouse1release=function() base();if w.reentrantUp then api.EmergencyStop() end end
+		api=w.load(SOURCE);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);waitHold(w,api);w.reentrantUp=true;local ups=w.eventCount("up")
+		api.EmergencyStop();w.step(.2);assert(w.eventCount("up")==ups+1 and not w.button)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."projections and rays remain bounded through many fully occluded shapes",function()
+		local w,api,parts=preparedWorld(deferred);parts[1].Color=api.GetDesiredColor();w.flush()
+		for i=1,12 do local p=w.province(i*20);p.Size=w.v(500,1,300);api.AddProvince(p) end
+		api.CommitSelections();w.forceMiss=true;api.SetPainting(true)
+		for _=1,40 do
+			local before=api.GetPerformanceStats();w.step(1/60);local after=api.GetPerformanceStats()
+			assert(after.Raycasts-before.Raycasts<=32 and after.Projections-before.Projections<=96)
+		end
+		assert(api.GetStats().Target~=nil or api.GetPerformanceStats().AimFailures>0)
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."stop and idle time do not inflate next-target dead-time measurements",function()
+		local w,api,parts=preparedWorld(deferred);api.SetPainting(true);waitHold(w,api)
+		parts[1].Color=api.GetDesiredColor();w.flush();w.step(5);parts[1].Color=w.Color3.new(1,0,0);w.flush();waitHold(w,api)
+		assert(api.GetPerformanceStats().AverageDeadTimeMs<500)
+		api.EmergencyStop();w.step(10);api.SetPainting(true);waitHold(w,api)
+		assert(api.GetPerformanceStats().AverageDeadTimeMs<500);zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+
+	test(prefix.."tiny offscreen sets choose smaller camera rotation regardless of insertion order",function()
+		local w,api,parts=preparedWorld(deferred);parts[1].Color=api.GetDesiredColor();w.flush()
+		local far=w.province(2000);local near=w.province(500)
+		api.AddProvince(far);api.AddProvince(near);api.CommitSelections();api.SetPainting(true);waitHold(w,api)
+		assert(api.GetStats().Target==near);zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+	test(prefix.."an exposed mover throwing an error can fall back without a fake target",function()
+		local w=Mock.new(deferred);w.env.mousemoverel=function() error("relative unsupported") end
+		local api=w.load(SOURCE);local p=add(w,api,1)[1];verify(w,api,p)
+		assert(w.mouse.Target==p and api.GetStats().InputErrors>0 and api.GetMovementStats().Absolute.SuccessfulAcquisitions>0)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."closing during a yielding down still releases once and cleans the guard",function()
+		local w=Mock.new(deferred);local base=w.env.mouse1press
+		w.env.mouse1press=function() base();if w.yieldPress then w.env.task.wait(.1) end end
+		local api=w.load(SOURCE);local p=add(w,api,1)[1];verify(w,api,p)
+		w.yieldPress=true;api.SetPainting(true);w.step(.02);api.Destroy();w.step(.2)
+		assert(not w.button and w.connections==0 and not w.playerGui:FindFirstChild("AutoPainterFinalUI"))
+		zeroRPC(w,api)
+	end)
+
+end

@@ -1,47 +1,71 @@
-# AutoPainter — fast native hold
+# AutoPainter — native hold, bounded targeting
 
-AutoPainterFinal.luau is a **client-only native-input controller**. AutoPainter sends **zero game RPCs**. The existing normal PaintBucket owns all paint requests, mode, cooldown and mouse callbacks. Auto Paint starts OFF; the native input test never runs automatically. No Studio, server changes, account-specific values or secrets are required.
+`AutoPainterFinal.luau` is a **client-only native-input controller**. It sends **zero game RPCs**. The existing normal PaintBucket owns every paint request, mouse callback, mode and cooldown. No Studio, server changes, account-specific values or secrets are required. Auto Paint starts OFF; the native input test runs only when explicitly requested.
 
 ## Public loader
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterFinal.luau", true))()
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterFinal.luau", true))()
+```
 
-The file must be publicly readable. LoaderPublic.luau is equivalent with explicit download/compile errors. Close the previous AutoPainter panel before loading this UI version. No private credentials belong in either loader.
+The repository/file must be publicly readable. `LoaderPublic.luau` is equivalent with explicit download/compile errors. Close the older AutoPainter panel before loading this UI version (10). No private credentials belong in the loader.
 
-## Live procedure
+## Reliability and speed changes
 
-1. Join the private server normally. In the **normal PaintBucket palette**, choose the desired color. Manually paint one tile to verify the actual bucket uses that color. AutoPainter never rewrites PaintBucketColor.
-2. Holster the bucket while selecting: an equipped native tool can respond to ordinary selection clicks. Click **Protect Province**, select several provinces, then **Done / Cancel**. Include a province already matching the chosen color. Pending selections produce no automated input.
-3. Leave **Keep Territory Color OFF**, use **Speed Mode: FAST**, and initially enable **Visible Only**. Choose a committed, visible, wrong-color province using **Choose Test Province**, then Done. Equip PaintBucket.
-4. Click **TEST NATIVE INPUT**. Leave the cursor alone. The test aims at that exact real target, holds briefly and releases. Confirm the bucket paints the chosen color and the client remains connected. A PASS checks native input-event delivery, not server acceptance or native request completion.
-5. Press **Q / Auto Paint**. Start snapshots the normal palette's exposed color. Only wrong-color protected provinces should be visited; correct and unprotected provinces should receive no automated input. Correcting the held province should release immediately, before its maximum dwell.
-6. After all selected provinces match, verify **Dirty: 0** and no further cursor/button activity. Have a friend repaint one selected province: Dirty should rise and that province should be serviced again.
-7. Disable Visible Only and enable Camera Automation to test offscreen targets. The camera should move directly between dirty targets and stay in place between visits, including when all are clean. **Escape / STOP** releases input and restores the saved camera when AutoPainter still owns it.
-8. Drag the full title bar or collapsed HUD to an edge. Check **— / +**, counts, current target and STOP. Dragging suspends automated input until mouse-up. To change the palette, stop first, choose through the normal palette, then restart. An external palette change also stops automation.
+- One sticky target owns acquisition, camera, cursor, hold and release. Other priority changes choose the next target; they cannot cause mid-acquisition ping-pong.
+- Camera fallback proceeds through ordered, separately settled poses: existing view, rotation, small translation, elevated, overhead, then one side angle. Unreachable targets receive bounded exponential retry delays; an exhausted camera sequence is not replayed from the same pose.
+- A bounded surface solver handles wide/thin parts and blocked centers, remembers successful local points, and retries nearby points first. Genuine `Mouse.Target == province` remains required before down.
+- Cursor fallback compares exposed relative/absolute APIs and viewport/screen conventions using real target observations. An explicit **CALIBRATE INPUT (cursor only)** button generates no button press.
+- One dirty province bypasses general scheduling; two/three use direct references. Larger sets prefer nearby visible work with aging and offscreen fairness. Next-target precomputation during hold does not move input or camera.
+- Matching color releases immediately by default. **Contest Hold: SMART** optionally allows a short, bounded grace for a heavily contested singleton. No-effect holds back off that target without claiming the server rejected anything.
+- **Copy Target Failure Report**, **Copy Benchmark Report**, **Reset Benchmark**, **Snap Left/Right**, a draggable collapsed HUD and detailed timing/counter APIs support live diagnosis.
 
-**Q** toggles Auto Paint. **R**, Randomize and Country Color/Pick are now explicitly **preview-only**: their swatch does not claim to change the normal bucket's cached color or a running target. Choose the desired color through the real palette before starting.
+Correct, unprotected and pending provinces receive no automated targeting/input. Color signals maintain the dirty set; there is no patrol of clean provinces. Selection pauses automation and commits on Done / Cancel without changing the Auto Paint toggle. Escape finishes selection and stops automation.
 
-## What changed
+## Profiles
 
-- FAST defaults: 0.45 s ordinary maximum hold, 0.10 s release gap, 0.025 s cursor interval, 0.03 s stable target, 0.75 s acquisition timeout. NORMAL provides gentler targeting timings. Neither profile changes native cooldown.
-- Color signals maintain a dirty set. Correct/unprotected/pending provinces are excluded; there is no periodic clean-province patrol.
-- Ray-verified visible dirty targets come first, normally by smallest cursor movement. Aging prevents starvation; offscreen choices minimize camera rotation. Surface points are cached, with bounded per-frame ray work.
-- Contention increases dwell gradually; priority extends it, capped at 2 seconds. Matching color always releases early. A held input is never carried to the next target.
-- The camera remains active between targets. A draggable full panel and compact HUD show Protected / Wrong Color / Correct Color or Auto / Protected / Dirty / Current Target / STOP.
-- **Keep Territory Color** saves the real palette color at selection time. A saved color different from the current palette remains dirty but waits, with a visible count. Automatic switching of the native tool's cached color is not claimed or attempted.
+| Setting | ULTRA | FAST (default) | NORMAL |
+|---|---:|---:|---:|
+| Ordinary maximum hold | 0.24 s | 0.32 s | 0.90 s |
+| Next-down gap after observed up | 0.025 s* | 0.05 s | 0.15 s |
+| Acquisition deadline | 0.80 s | 1.05 s | 2.40 s |
+| Minimum camera-pose interval | 0.07 s | 0.08 s | 0.15 s |
+| Camera settle time | 0.035 s | 0.04 s | 0.08 s |
+| Genuine target confirmation | 1 rendered frame | 1 rendered frame | 2 frames + 0.05 s |
+| Initial unreachable retry | 0.30 s | 0.40 s | 0.75 s |
 
-See [NATIVE_INPUT_GUIDE.md](NATIVE_INPUT_GUIDE.md) for settings, fairness and native timing limits. The user's prior native-input live test worked without a kick; this faster revision has deterministic tests, not a new live throughput measurement.
+\* ULTRA retains at least 0.05 s until eight down/up cycles have been observed. Measured up latency and reliability adjustments may increase the effective gap. Acquisition begins as soon as up is observed; only the next down waits. Deadlines permit staged recovery and do not delay a successful visible acquisition. Profiles never change the native tool cooldown.
 
-## Locked diagnostics
+## Live test procedure
 
-The separate read-only scanner remains unchanged and permanently locked:
+1. Close the old panel and run the loader. Choose the desired color through the **normal PaintBucket palette**, then manually paint a tile to verify the bucket's actual cached color. AutoPainter does not write `PaintBucketColor`.
+2. Holster the bucket while selecting; the equipped native tool independently responds to ordinary clicks. Protect a visible wrong-color province and one already-correct province, then **Done / Cancel**. Leave **Keep Territory Color OFF**, **Contest Hold OFF**, **Speed Mode FAST** and **Visible Only ON**.
+3. Choose the committed wrong-color province using **Choose Test Province**, then Done. Equip PaintBucket. If cursor placement seems offset, run **CALIBRATE INPUT (cursor only)** first. It tests exposed coordinate variants without pressing Mouse1.
+4. Explicitly run **TEST NATIVE INPUT**. Verify the real pointer hits the chosen province, the bucket uses the expected color, down/up occurs, and the client remains connected. A displayed PASS verifies input observations, not server acceptance or native request completion.
+5. Click **Reset Benchmark**, then **Auto Paint / Q**. Leave the cursor alone. The wrong province should be serviced; the already-correct province must never be visited. After correction, check Dirty=0 and no continuing input. Have a friend recolor the protected province repeatedly to test immediate singleton reacquisition.
+6. Add a second, then a third visible dirty province (holster while selecting). Check quick switching, early release and absence of left/right oscillation. Test **ULTRA** next; compare benchmark acquire/dead-time values and actual observed corrections. Use FAST if ULTRA is less reliable in your environment.
+7. Turn Visible Only OFF with Camera Automation ON. Include the previously troublesome province and a reachable province. A failed target should show a retry cooldown while the other is serviced. Camera stages should settle individually. If the original province still fails, click **Copy Target Failure Report**; it includes its exact path, geometry, ray hit, genuine mouse target and both coordinate projections.
+8. Optionally enable **Contest Hold SMART** for a repeatedly recolored singleton. It may hold for up to 0.15 s after a correction, bounded by the original dwell deadline, and yields when another dirty target needs service. Turn it OFF for immediate-release behavior.
+9. After a comparable run, **Copy Benchmark Report**. Check Snap Left/Right, title-bar drag, collapse/expand and HUD counts. **Escape / STOP** must release Mouse1 and restore the saved camera. Also check removal, Clear, unequip and respawn before relying on unattended targeting.
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/LoaderDiagnostic.luau", true))()
+Clipboard exports fall back to `AutoPainterTargetFailures.txt` / `AutoPainterBenchmark.txt` when `writefile` is available. Copy does not generate input or paint requests.
 
-Original and FastClient reference scripts remain unchanged.
+Choose colors in the normal palette before starting. **R / Randomize / Country Color** are explicitly preview-only. Keep Territory Color saves each selection's real palette color; a saved color differing from the current palette waits. AutoPainter does not pretend an attribute write updates the tool's cached local variable.
 
-## Validation
+## Measurement and limits
 
-    python3 tests/run_tests.py /path/to/luau
+Corrections are desired-color transitions observed while holding the exact target, not proof that this client caused them. The prior native-input live test worked without a kick; this revision has not been benchmarked or verified against the two original live failures. Native cooldown, server behavior, input delivery and frame propagation remain limiting factors. No moderation immunity or ability to exceed native limits is claimed.
 
-**396 deterministic tests pass: 150 native-controller tests and 246 diagnostic tests. All 19 repository Luau files compile**, with only the original reference's Markdown wrapper removed in a temporary compile copy. Historical direct-RPC test files remain references and are not active-runtime tests.
+See [NATIVE_INPUT_GUIDE.md](NATIVE_INPUT_GUIDE.md) for coordinate handling, timing definitions, cleanup and native-loop limits.
+
+## Locked diagnostics and validation
+
+The separate scanner is unchanged and locked:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/LoaderDiagnostic.luau", true))()
+```
+
+Run `python3 tests/run_tests.py /path/to/luau`.
+
+**468 deterministic tests pass: 222 native-controller and 246 diagnostic tests. All 20 repository Luau files compile**, removing only the original reference's Markdown wrapper in a temporary compile copy. Native scenarios run with immediate and deferred events. Original/FastClient source and locked diagnostics remain unchanged; retired direct-RPC tests are retained as historical references, not active-runtime tests.
