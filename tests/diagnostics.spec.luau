@@ -13,7 +13,7 @@ local function contains(text, value) assert(string.find(text, value, 1, true), "
 local function installLoaderMock(world)
 	local downloads = 0
 	world.env.game.HttpGet = function(_, url, flag)
-		assert(url == "https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterFinal.luau" and flag == true)
+		assert(url == "https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterDiagnostics.luau" and flag == true)
 		downloads += 1; return SOURCE
 	end
 	world.env.loadstring = function(source, name)
@@ -28,7 +28,7 @@ for _, deferred in ipairs({ false, true }) do
 	local prefix = deferred and "deferred diagnostics: " or "immediate diagnostics: "
 	test(prefix .. "default UI Add, Done and first Safe enable sequence remain zero traffic", function()
 		local world, api = diagnosticStart(deferred)
-		assert(api.GetStats().DiagnosticOnly and not api.GetStats().DiagnosticLocked)
+		assert(api.GetStats().DiagnosticOnly and api.GetStats().DiagnosticLocked)
 		world.bucket.Parent = nil; world.flush()
 		key(world, "Q"); press(world, "Add"); selectMany(world, 20); finishSelection(world, api)
 		world.bucket.Parent = world.character; world.flush()
@@ -161,39 +161,12 @@ for _, deferred in ipairs({ false, true }) do
 		noTraffic(deepWorld, deepApi); deepApi.Destroy()
 	end)
 
-	test(prefix .. "turning diagnostics on clears unsent queue while real calls retain honest accounting", function()
-		local world, api = start(deferred); api.SetFast(true); world.behavior = { noPaint = true, latency = 0.3 }
-		add(world, api, 100); world.step(0.02)
-		local sent = #world.calls; assert(sent > 0 and api.GetStats().Ready > 0)
-		api.SetDiagnostic(true)
-		assert(api.GetStats().Ready == 0 and api.GetStats().Delayed == 0 and api.GetStats().InFlight == sent)
-		contains(api.GetDiagnosticReport(), "Already-sent operations cannot be canceled")
-		world.step(2); assert(#world.calls == sent and api.GetStats().InFlight == 0 and api.GetStats().Returned == sent)
-		api.Destroy()
-	end)
-
-	test(prefix .. "diagnostics clears error retry timers; exiting leaves paint OFF until explicit resume", function()
-		local world, api = start(deferred); world.behavior = { errors = true, latency = 0.05 }
-		add(world, api, 1); world.step(0.1); assert(api.GetStats().Delayed > 0)
-		api.SetDiagnostic(true); local sent = #world.calls; world.step(3)
-		assert(api.GetStats().Delayed == 0 and #world.calls == sent)
-		world.behavior = {}; api.SetDiagnostic(false); world.step(1)
-		assert(not api.GetStats().DiagnosticOnly and not api.GetStats().Painting and #world.calls == sent)
-		key(world, "Q"); world.step(1); assert(#world.calls > sent)
-		api.Destroy()
-	end)
-
-	test(prefix .. "transport guard suppresses reserved but not-yet-started workers without counting a request", function()
-		local world, api = start(deferred); api.SetFast(true)
-		local workers = {}
-		world.env.task.spawn = function(fn, ...) world.taskSpawns += 1; table.insert(workers, { fn = fn, args = table.pack(...) }) end
-		add(world, api, 1); world.step(0.02)
-		assert(#workers == 6 and world.networkAttempts == 0 and api.GetStats().InFlight == 6)
-		api.SetDiagnostic(true)
-		for _, worker in ipairs(workers) do worker.fn(table.unpack(worker.args, 1, worker.args.n)) end
-		local s = api.GetStats()
-		assert(world.networkAttempts == 0 and s.Attempted == 0 and s.Suppressed == 6 and s.InFlight == 0 and s.PendingProvinces == 0)
-		assert(s.Failures == 0 and s.Returned == 0); api.Destroy()
+	test(prefix .. "diagnostic collector cannot be unlocked even with explicit false options", function()
+		local world, api = diagnosticStart(deferred, { DiagnosticOnly = false, LockDiagnostics = false })
+		assert(api.GetStats().DiagnosticOnly and api.GetStats().DiagnosticLocked)
+		assert(not api.SetDiagnostic(false))
+		add(world, api, 20); api.SetPainting(true); world.step(10)
+		noTraffic(world, api); api.Destroy()
 	end)
 
 	test(prefix .. "locked diagnostic loader defaults to zero calls and Q/settings cannot unlock it", function()

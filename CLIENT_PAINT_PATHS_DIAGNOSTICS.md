@@ -1,3 +1,11 @@
+# Collector location after the native-input revision
+
+The collector now lives in **AutoPainterDiagnostics.luau** and LoaderDiagnostic.luau fetches that file. It is permanently locked even if false diagnostic options are passed. Its direct game-remote transport was removed. The native-input runtime has a separate entry point, AutoPainterFinal.luau. Close one panel before opening the other.
+
+The current collector has **246 passing diagnostic regressions**. The native runtime has **98 additional tests**; historical direct-RPC scheduler tests are no longer active-runtime tests. Earlier validation counts below describe prior builds.
+
+---
+
 # Game-only, incremental, locked paint-path diagnostics
 
 This revision changes diagnostic inspection, UI and export only. The painting scheduler, remote protocol, colors and selection behavior are unchanged and stay disabled by the locked diagnostic loader.
@@ -47,7 +55,7 @@ API: StartDiagnosticScan("Quick") or StartDiagnosticScan("GameOnly"). The legacy
 
 ## Timeout and strict task bounds
 
-Important parameters near the top of AutoPainterFinal.luau:
+Important parameters near the top of AutoPainterDiagnostics.luau:
 
 | Parameter | Default | Meaning |
 |---|---:|---|

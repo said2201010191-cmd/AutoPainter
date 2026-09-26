@@ -1,0 +1,136 @@
+for _,deferred in ipairs({false,true}) do
+	local prefix=deferred and "deferred native review: " or "immediate native review: "
+	test(prefix.."actual loader downloads native file paused without inspecting or clicking",function()
+		local w=Mock.new(deferred);local downloads=0
+		w.env.game.HttpGet=function(_,url,flag)
+			assert(url=="https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterFinal.luau" and flag==true)
+			downloads+=1;return SOURCE
+		end
+		w.env.loadstring=function(source,name)
+			local chunk,problem=loadstring(source,name);if chunk then setfenv(chunk,w.env) end;return chunk,problem
+		end
+		local api=w.load(LOADER_SOURCE)
+		assert(downloads==1 and not api.GetStats().Painting and #w.nativeEvents==0)
+		assert(w.load(LOADER_SOURCE)==api and #w.nativeEvents==0);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."copy only exports collected native state with file fallback",function()
+		local w,api=start(deferred);local copied
+		w.env.setclipboard=function() error("denied") end
+		w.env.writefile=function(name,text) assert(name=="AutoPainterNativeInputReport.txt");copied=text end
+		button(w,"Copy Native Input Report")
+		assert(copied:find("AutoPainterRPCs=0",1,true) and copied:find("InputTestPassed=false",1,true))
+		assert(#w.nativeEvents==0);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."preexisting user-held Mouse1 prevents test from moving the cursor",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1]
+		api.SetTestTarget(p);w.button=true
+		assert(not api.TestNativeInput() and #w.nativeEvents==0)
+		w.manualUp();verify(w,api,p);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."R during selection changes local color without native painting",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);button(w,"Protect Province")
+		local extra=w.province(250);api.AddProvince(extra)
+		local count=w.eventCount("down")
+		w.input.InputBegan:Fire({KeyCode=w.env.Enum.KeyCode.R},false);w.flush();w.step(2)
+		assert(w.eventCount("down")==count and api.GetStats().PendingSelections==1)
+		assert(w.player:GetAttribute("PaintBucketColor")==api.GetColor())
+		api.EmergencyStop();api.Destroy();w.flush();zeroRPC(w,api)
+	end)
+	test(prefix.."current color and camera never switch before observed native up",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);waitHold(w,api)
+		local old=w.player:GetAttribute("PaintBucketColor")
+		w.suppressUp=true
+		local red=w.Color3.new(1,0,0);api.SetColor(red);w.step(0.5)
+		assert(w.player:GetAttribute("PaintBucketColor")==old and api.GetColor()==red)
+		local moves=w.eventCount("move");w.step(1);assert(w.eventCount("move")==moves)
+		w.manualUp();w.step(0.7);assert(w.player:GetAttribute("PaintBucketColor")==red)
+		api.EmergencyStop();api.Destroy();w.flush();zeroRPC(w,api)
+	end)
+	test(prefix.."external palette changes synchronize global state and terminate owned hold",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);waitHold(w,api)
+		local red=w.Color3.new(1,0,0);w.player:SetAttribute("PaintBucketColor",red);w.flush()
+		assert(api.GetColor()==red and not w.button)
+		api.EmergencyStop();w.step(1);assert(w.player:GetAttribute("PaintBucketColor")==red)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."Escape stops even when processed by a game menu and finishes pending selection",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);button(w,"Protect Province");api.AddProvince(w.province(250))
+		w.input.InputBegan:Fire({KeyCode=w.env.Enum.KeyCode.Escape},true);w.flush();w.step(1)
+		assert(not api.GetStats().Painting and not api.GetStats().SelectionMode and api.GetStats().PendingSelections==0)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."camera replacement pauses without overwriting the new game's camera",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		api.SetPainting(true);waitHold(w,api)
+		local replacement=w.newCamera();local original=replacement.CFrame
+		w.workspace.CurrentCamera=replacement;w.flush();w.step(1)
+		assert(not w.button and not api.GetStats().Painting and replacement.CFrame==original)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."a removed target during a multi-frame selection pass does not crash or spin",function()
+		local w,api=start(deferred);local first=add(w,api,1)[1];verify(w,api,first)
+		for i=1,100 do local p=w.province(2000+i*50);api.AddProvince(p) end
+		api.CommitSelections();api.SetPainting(true)
+		w.step(0.017)
+		api.RemoveProvince(first);api.Clear();w.step(2)
+		assert(api.GetStats().Selected==0 and api.GetStats().Dirty==0)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."settings remain bounded and unsupported inputs do not change dwell",function()
+		local w,api=start(deferred)
+		assert(not api.SetDwell("bad") and not api.SetDwell(0/0))
+		assert(api.SetDwell(1000) and api.GetStats().Dwell==12)
+		assert(api.SetDwell(-10) and api.GetStats().Dwell==0.25)
+		local field;for _,o in ipairs(w.objects) do if o.Name=="TargetDwell" then field=o end end
+		field.Text="1.5";field.FocusLost:Fire();w.flush();assert(api.GetStats().Dwell==1.5)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."repeated aim cancellation and loader reuse allocate no waiting tasks",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1];verify(w,api,p)
+		local connections=w.connections
+		for _=1,30 do
+			api.SetPainting(true);api.EmergencyStop();assert(w.load(SOURCE)==api)
+		end
+		assert(w.connections==connections and not api.GetStats().Held)
+		zeroRPC(w,api);api.Destroy();w.flush();assert(w.connections==0)
+	end)
+	test(prefix.."selection entry destroyed during test releases with failed result and cleaned state",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1]
+		api.SetTestTarget(p);api.TestNativeInput();waitHold(w,api)
+		p:Destroy();w.flush();w.step(1)
+		assert(not w.button and not api.GetStats().Tested and api.GetStats().Selected==0)
+		zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."selection exactly enforces the normal immediate Provinces parent constraint",function()
+		local w,api=start(deferred)
+		local nested=w.instance("Folder");nested.Parent=w.provinces
+		local p=w.province();p.Parent=nested;assert(not api.AddProvince(p))
+		p.Parent=w.workspace;assert(not api.AddProvince(p))
+		p.Parent=w.provinces;p.Name="RegionNotNamedProvince";assert(api.AddProvince(p))
+		assert(not api.AddProvince(p));api.CommitSelections()
+		assert(api.GetStats().Selected==1);zeroRPC(w,api);api.Destroy()
+	end)
+	test(prefix.."selection interruption before test down cannot later resume a stray test",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1]
+		api.SetTestTarget(p);assert(api.TestNativeInput())
+		button(w,"Protect Province");button(w,"Add · Done / Cancel");w.step(4)
+		assert(w.eventCount("down")==0 and not api.GetStats().Tested and not api.GetStats().Painting)
+		zeroRPC(w,api);api.Destroy()
+	end)
+
+	test(prefix.."explicit cursor API choice retries support without automatic test input",function()
+		local w,api=start(deferred);local p=add(w,api,1)[1]
+		assert(api.SetMoveMode("Absolute") and api.GetCapabilities().Move=="mousemoveabs")
+		assert(#w.nativeEvents==0);verify(w,api,p)
+		assert(api.SetMoveMode("Relative") and not api.GetStats().Tested)
+		assert(api.GetCapabilities().Move=="mousemoverel");verify(w,api,p)
+		assert(not api.SetMoveMode("unknown"));api.SetPainting(true)
+		assert(not api.SetMoveMode("Absolute"));api.EmergencyStop()
+		zeroRPC(w,api);api.Destroy();w.flush()
+	end)
+
+end

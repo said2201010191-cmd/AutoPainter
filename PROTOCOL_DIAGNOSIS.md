@@ -1,3 +1,15 @@
+# Current outcome: native-input controller, with server timing still unverified
+
+The user's completed game-only scan reports 165/165 returned script texts, zero read failures/timeouts/skips, and only the runtime/template copies of the ordinary PaintBucket PaintPart call. The reported private-server client repeats doPaint while the real mouse button is held. No separate stored-target or batch route was found in that client snapshot.
+
+AutoPainterFinal.luau now drives genuine cursor/button input and optional local camera movement, with no game RPC implementation. The native tool retains its target, mode, cooldown and remote handling. Its input test is explicit, never automatic; Auto Paint starts off. The previous collector is preserved in permanently locked AutoPainterDiagnostics.luau with its remote transport removed.
+
+This is an implementation, not live proof of server acceptance. The complete native hold-loop/sameMouse lifetime and color listener still matter: a shared holding flag around a yielding server call can potentially revive an earlier loop when a later down occurs. Observed up plus a release gap cannot prove native RPC drain. See [NATIVE_INPUT_GUIDE.md](NATIVE_INPUT_GUIDE.md) for these limitations and the live procedure.
+
+The earlier analysis below is historical; its locked-only status and old hardcoded scheduler descriptions do not describe the new native runtime.
+
+---
+
 # Latest diagnostic build: Game-Only Full Scan
 
 **Game-Only Full Scan** replaces the unrestricted Full Client Scan. The scanner now uses only LocalPlayer.PlayerScripts/Backpack/Character/PlayerGui, ReplicatedStorage, ReplicatedFirst, Workspace, StarterGui, StarterPlayer (including StarterPlayerScripts), and StarterPack. It never enumerates all DataModel services.

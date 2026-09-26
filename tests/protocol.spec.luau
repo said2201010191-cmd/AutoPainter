@@ -219,13 +219,13 @@ for _, deferred in ipairs({ false, true }) do
 		noTraffic(world, api); api.Destroy()
 	end)
 
-	test(prefix .. "unlocked and closed instances refuse both extraction and export without side effects", function()
+	test(prefix .. "locked defaults allow explicit extraction and closed instances refuse export", function()
 		local world, api = diagnosticStart(deferred)
 		world.env.decompile = function() error("must refuse") end
 		world.env.setclipboard = function() error("must refuse") end
 		world.env.writefile = function() error("must refuse") end
 		local writes = world.propertyWrites
-		contains(api.GetProtocolReport(), "Status=refused"); assert(not api.CopyProtocolReport())
+		assert(api.GetStats().DiagnosticLocked); contains(api.GetProtocolReport(), "LocalScriptsFound=0"); assert(not api.CopyProtocolReport())
 		assert(world.propertyWrites == writes)
 		api.Destroy(); contains(api.GetProtocolReport(), "AutoPainter is closed"); assert(not api.CopyProtocolReport())
 		noTraffic(world, api)

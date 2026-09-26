@@ -49,6 +49,7 @@ function Mock.new(deferredSignals)
 		end
 		return event
 	end
+	world.signal = signal
 	local methods = {}
 	local mt = {}
 	function mt.__index(object, key)
@@ -90,7 +91,8 @@ function Mock.new(deferredSignals)
 		local object = setmetatable({ _props = { ClassName = class, Name = class },
 			_children = {}, _signals = {}, _changed = {}, _attributes = {}, _destroyed = false }, mt)
 		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantRemoving",
-			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat" }) do
+			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat",
+			"Button1Down", "Button1Up", "Move", "WindowFocused", "WindowFocusReleased", "FocusLost" }) do
 			object._signals[name] = signal()
 		end
 		table.insert(world.objects, object)
@@ -143,7 +145,14 @@ function Mock.new(deferredSignals)
 	end
 	function methods:SetAttribute(name, value)
 		world.attributeWrites += 1
+		local before = self._attributes[name]
 		self._attributes[name] = value
+		if before ~= value and self._attributeSignals and self._attributeSignals[name] then self._attributeSignals[name]:Fire() end
+	end
+	function methods:GetAttributeChangedSignal(name)
+		if not self._attributeSignals then rawset(self, "_attributeSignals", {}) end
+		if not self._attributeSignals[name] then self._attributeSignals[name] = signal() end
+		return self._attributeSignals[name]
 	end
 	function methods:GetAttribute(name) return self._attributes[name] end
 	function methods:GetAttributes()

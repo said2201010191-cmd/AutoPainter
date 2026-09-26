@@ -145,13 +145,14 @@ for _, deferred in ipairs({ false, true }) do
 		noTraffic(world, api); api.Destroy()
 	end)
 
-	test(prefix .. "source API refuses unlocked diagnostics without changing toggles properties or invoking decompile", function()
-		local world, api = diagnosticStart(deferred)
-		world.env.decompile = function() error("Must refuse unlocked session") end
-		local before = world.propertyWrites; local painting = api.GetStats().Painting
-		contains(api.GetLocalScriptReport(), "Status=refused; use LoaderDiagnostic.luau")
-		assert(world.propertyWrites == before and api.GetStats().Painting == painting)
-		assert(not api.GetStats().DiagnosticLocked); noTraffic(world, api); api.Destroy()
+	test(prefix .. "source API defaults to locked diagnostics and no implicit source reads", function()
+		local world, api = diagnosticStart(deferred, { DiagnosticOnly = false })
+		local calls = 0; world.env.decompile = function() calls += 1; return "PaintPart" end
+		assert(api.GetStats().DiagnosticLocked and not api.SetDiagnostic(false))
+		local before = world.propertyWrites
+		contains(api.GetLocalScriptReport(), "LocalScriptsFound=0")
+		assert(calls == 0 and world.propertyWrites == before)
+		noTraffic(world, api); api.Destroy()
 	end)
 
 	test(prefix .. "missing tool no scripts and enumeration failure are explicit and recoverable", function()
