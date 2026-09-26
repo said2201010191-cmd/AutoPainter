@@ -5,7 +5,7 @@ function Mock.new(deferredSignals)
 		connections = 0, errors = {}, behavior = {}, objects = {}, activeParts = {},
 		activeColors = {}, peakParts = {}, contributions = {}, perPartLimit = 6,
 		taskSpawns = 0, taskDefers = 0, networkAttempts = 0,
-		propertyWrites = 0, attributeWrites = 0, descendantReads = 0, writeLog = {}, waits = 0 }
+		propertyWrites = 0, attributeWrites = 0, descendantReads = 0, childrenReads = {}, writeLog = {}, waits = 0 }
 	local function resume(thread, ...)
 		local ok, err = coroutine.resume(thread, ...)
 		if not ok then table.insert(world.errors, tostring(err)) end
@@ -114,6 +114,8 @@ function Mock.new(deferredSignals)
 		return nil
 	end
 	function methods:GetChildren()
+		world.childrenReads[self] = (world.childrenReads[self] or 0) + 1
+		if world.childrenError == self then error("Injected GetChildren read failure") end
 		if world.childrenView and world.childrenView[self] then return table.clone(world.childrenView[self]) end
 		return table.clone(self._children)
 	end
@@ -284,7 +286,16 @@ function Mock.new(deferredSignals)
 		local category = setmetatable({}, { __index = function(_, member) return key .. "." .. member end })
 		rawset(self, key, category); return category
 	end })
-	local services = { Players = { LocalPlayer = world.player }, RunService = world.runService,
+	world.otherPlayers = {}
+	local services = { Players = { LocalPlayer = world.player,
+		GetPlayers = function()
+			local result = table.clone(world.otherPlayers); table.insert(result, world.player); return result
+		end,
+		GetPlayerFromCharacter = function(_, character)
+			if world.player.Character == character then return world.player end
+			for _, other in ipairs(world.otherPlayers) do if other.Character == character then return other end end
+			return nil
+		end }, RunService = world.runService,
 		UserInputService = world.input, Workspace = world.workspace }
 	world.env = setmetatable({
 		game = { GetService = function(_, name) return assert(services[name]) end },

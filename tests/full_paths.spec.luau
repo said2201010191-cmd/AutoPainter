@@ -74,8 +74,8 @@ for _, deferred in ipairs({ false, true }) do
 		press(world, "Quick Paint Path Scan"); waitForScan(world, api); assert(#reads == 1)
 		local copied; world.env.setclipboard = function(value) copied = value end
 		press(world, "Copy Current Report"); assert(#reads == 1)
-		contains(copied, "FullPaintPathsReportFormat=2")
-		press(world, "Full Client Scan"); press(world, "CANCEL SCAN"); waitForScan(world, api)
+		contains(copied, "FullPaintPathsReportFormat=3")
+		press(world, "Game-Only Full Scan"); press(world, "CANCEL SCAN"); waitForScan(world, api)
 		assert(api.GetDiagnosticScanState().Status:find("CANCELLED"))
 		api.Destroy()
 	end)
@@ -274,7 +274,7 @@ for _, deferred in ipairs({ false, true }) do
 		local world, api, roots, _, reads = fullFixture(deferred)
 		local total = 0
 		for name, root in pairs(roots) do
-			for _, class in ipairs({ "LocalScript", "ModuleScript" }) do child(world, class, name .. class, root); total += 1 end
+			for _, class in ipairs({ "LocalScript", "ModuleScript" }) do child(world, class, name .. class, root); if name ~= "Extra" then total += 1 end end
 		end
 		local report = scanReport(world, api)
 		assert(#reads == total and api.GetDiagnosticScanState().Discovered == total)
@@ -286,7 +286,7 @@ for _, deferred in ipairs({ false, true }) do
 	test(prefix .. "metadata roots enumeration errors exclusions and duplicate paths are explicit", function()
 		local world, api, roots, _, reads = fullFixture(deferred)
 		roots.PlayerScripts:Destroy(); roots.StarterPlayerScripts:Destroy()
-		world.descendantError = roots.ReplicatedStorage
+		world.childrenError = roots.ReplicatedStorage
 		child(world, "ModuleScript", "Hidden", roots.ReplicatedStorage)
 		child(world, "LocalScript", "Same", roots.Character); child(world, "LocalScript", "Same", roots.Character)
 		child(world, "Script", "Excluded", roots.Workspace)
@@ -295,8 +295,8 @@ for _, deferred in ipairs({ false, true }) do
 		assert(#reads == 2 and reads[1] ~= reads[2])
 		contains(report, "LocalPlayer.PlayerScripts: absent/not replicated")
 		contains(report, "StarterPlayer.StarterPlayerScripts: absent/not replicated")
-		contains(report, "ReplicatedStorage: GetDescendants failed")
-		contains(report, "Excluded: CoreGui")
+		contains(report, "ReplicatedStorage: GetChildren failed")
+		contains(report, "Excluded: CorePackages, CoreGui")
 		api.Destroy()
 	end)
 
@@ -496,10 +496,10 @@ for _, deferred in ipairs({ false, true }) do
 		assert(files == 0 and world.connections == 0)
 	end)
 
-	test(prefix .. "version five panel is refused before invoking its old controller", function()
+	test(prefix .. "version six panel is refused before invoking its old controller", function()
 		local world, api = sourceFixture(deferred)
 		local ui = world.playerGui:FindFirstChild("AutoPainterFinalUI")
-		ui:SetAttribute("AutoPainterDiagnosticsVersion", 5)
+		ui:SetAttribute("AutoPainterDiagnosticsVersion", 6)
 		local called = false; ui:FindFirstChild("Controller").OnInvoke = function() called = true end
 		assert(not pcall(function() world.load(SOURCE, { LockDiagnostics = true }) end))
 		assert(not called); api.Destroy()

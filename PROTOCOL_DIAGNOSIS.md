@@ -1,12 +1,14 @@
-# Latest diagnostic build: incremental scans with bounded decompile watchdogs
+# Latest diagnostic build: Game-Only Full Scan
 
-**Quick Paint Path Scan**, **Full Client Scan**, **CANCEL SCAN**, and **Copy Current Report** are separate actions. The UI shows current path and counts. Copy never starts inspection; completed results are cached for reruns.
+**Game-Only Full Scan** replaces the unrestricted Full Client Scan. The scanner now uses only LocalPlayer.PlayerScripts/Backpack/Character/PlayerGui, ReplicatedStorage, ReplicatedFirst, Workspace, StarterGui, StarterPlayer (including StarterPlayerScripts), and StarterPack. It never enumerates all DataModel services.
 
-Each decompile has a six-second cooperative deadline. At most two calls may remain unreturned, including timed-out/cancelled calls. One stalled call allows continued inspection; two cause remaining uncached scripts to be marked SKIPPED_CAPACITY so the report can finish. A decompiler that freezes the entire client/native VM cannot be interrupted by an in-client watchdog. Restart the client once if the previous build is already hung.
+CorePackages, CoreGui, engine/server-only containers, other players' containers/characters and default PlayerModule camera/control/bootstrap subtrees are excluded before traversal. Only individually referenced default ModuleScripts with statically resolvable game-source paths can be admitted; unresolved/dynamic references are coverage gaps. Overlapping roots deduplicate by Instance identity.
 
-Use **LoaderDiagnostic.luau**; diagnostics remain LOCKED. The current UI capability version is 6. Only diagnostic/UI/export behavior changed; the paint runtime and protocol remain unchanged. **337 deterministic tests pass**. No live scan or paint test was performed here.
+**Quick Paint Path Scan**, **CANCEL SCAN**, **Copy Current Report**, progress, the six-second watchdog, two-unreturned-call cap and cached reruns remain available. Copy never starts inspection. The old API mode "Full" now aliases "GameOnly"; it cannot run the broad scan. If the old scan is still stalled, restart the Roblox client before upgrading.
 
-See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for exact ordering, cache behavior, bounds, loader and limitations. Descriptions of synchronous inspection, implicit-copy scanning and earlier UI versions below are historical and superseded by this section.
+Use **LoaderDiagnostic.luau**; diagnostics remain LOCKED with zero AutoPainter game requests. UI capability version is 7. Painting behavior/protocol is unchanged and disabled. **377 deterministic tests pass; all 14 Luau files compile.** No live scan or paint test was performed here.
+
+See [CLIENT_PAINT_PATHS_DIAGNOSTICS.md](CLIENT_PAINT_PATHS_DIAGNOSTICS.md) for the exact scope, exclusions, static-reference limits, loader and watchdog behavior. Earlier scan/UI descriptions below are historical and superseded by this section.
 
 ---
 

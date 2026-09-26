@@ -55,7 +55,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 6 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 7 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -544,7 +544,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 6)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 7)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -622,7 +622,7 @@ local function reportAction(text)
 		BackgroundColor3 = Color3.fromRGB(60, 100, 125), TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 })
 end
 local quickPathsButton = reportAction("Quick Paint Path Scan")
-local fullPathsButton = reportAction("Full Client Scan")
+local fullPathsButton = reportAction("Game-Only Full Scan")
 local cancelScanButton = reportAction("CANCEL SCAN")
 local copyFullPathsButton = reportAction("Copy Current Report")
 local protocolButton = reportAction("Protocol Extract")
@@ -1448,6 +1448,78 @@ local function analyzePaintSource(source, id, path, checkpoint)
 	return { sections = sections, blocks = blocks, calls = calls, paint = paint }
 end
 
+-- Static require-path candidates only. This lexer never evaluates source or calls require.
+-- String/comment bodies cannot grant a PlayerModule exception. Dynamic expressions are gaps.
+local function moduleReferencePaths(source: string, checkpoint)
+	if not source:find("require", 1, true) then return { paths = {}, unresolved = 0 } end
+	local tokens, at = {}, 1
+	while at <= #source do
+		if not checkpoint() then return nil end
+		local start, char = at, source:sub(at, at)
+		local comment = source:sub(at, at + 1) == "--"
+		if comment then at += 2; char = source:sub(at, at) end
+		local equals = char == "[" and source:match("^%[(=*)%[", at)
+		if equals then
+			local close = source:find("]" .. equals .. "]", at + #equals + 2, true)
+			at = close and (close + #equals + 2) or (#source + 1)
+			if not comment then table.insert(tokens, { kind = "opaque", value = "<long string>" }) end
+		elseif comment then
+			at = source:find("\n", at, true) or (#source + 1)
+		elseif char == '"' or char == "'" or char == "`" then
+			local quote, escaped = char, false
+			at += 1
+			while at <= #source and source:sub(at, at) ~= quote do
+				if not checkpoint() then return nil end
+				if source:sub(at, at) == "\\" then escaped = true; at += 1 end
+				at += 1
+			end
+			local value = source:sub(start + 1, at - 1)
+			table.insert(tokens, { kind = (quote ~= "`" and not escaped) and "string" or "opaque", value = value })
+			at += 1
+		elseif char:match("[%a_]") then
+			local value = source:match("^[%w_]+", at)
+			table.insert(tokens, { kind = "id", value = value }); at += #value
+		elseif char:match("%s") then at += 1
+		else table.insert(tokens, { kind = "symbol", value = char }); at += 1 end
+	end
+	local aliases = { game = { "game" }, workspace = { "workspace" }, script = { "script" } }
+	local function is(index, value) return tokens[index] and tokens[index].value == value and tokens[index].kind ~= "string" and tokens[index].kind ~= "opaque" end
+	local function expression(index)
+		local first = tokens[index]
+		local base = first and first.kind == "id" and aliases[first.value]
+		if not base then return nil, index end
+		local path = table.clone(base); index += 1
+		while tokens[index] do
+			if not checkpoint() then return nil, index end
+			if is(index, ".") and tokens[index + 1] and tokens[index + 1].kind == "id" then
+				table.insert(path, { kind = "property", name = tokens[index + 1].value }); index += 2
+			elseif is(index, "[") and tokens[index + 1] and tokens[index + 1].kind == "string" and is(index + 2, "]") then
+				table.insert(path, { kind = "property", name = tokens[index + 1].value }); index += 3
+			elseif is(index, ":") and tokens[index + 1] and is(index + 2, "(")
+				and tokens[index + 3] and tokens[index + 3].kind == "string" and is(index + 4, ")") then
+				local method = tokens[index + 1].value
+				if method ~= "GetService" and method ~= "WaitForChild" and method ~= "FindFirstChild" then return nil, index end
+				table.insert(path, { kind = method == "GetService" and "service" or "child", name = tokens[index + 3].value }); index += 5
+			else break end
+		end
+		return path, index
+	end
+	local paths, unresolved = {}, 0
+	for index, token in ipairs(tokens) do
+		if not checkpoint() then return nil end
+		if token.kind == "id" then
+			-- Simple local aliases cover common decompiler output. Reassignments invalidate them.
+			if is(index - 1, "local") and is(index + 1, "=") then aliases[token.value] = expression(index + 2)
+			elseif is(index + 1, "=") and not is(index + 2, "=") then aliases[token.value] = nil end
+			if token.value == "require" and not is(index - 1, ".") and not is(index - 1, ":") and is(index + 1, "(") then
+				local path, after = expression(index + 2)
+				if path and is(after, ")") then table.insert(paths, path) else unresolved += 1 end
+			end
+		end
+	end
+	return { paths = paths, unresolved = unresolved }
+end
+
 -- Incremental scans collect immutable report fragments; getters/copy never start reads.
 local scan = nil
 local function scanCounts(run)
@@ -1498,7 +1570,8 @@ local function runPaintScan(run)
 		end
 		return alive and not run.cancelled
 	end
-	local roots, seenRoots, seenScripts = {}, {}, {}
+	local roots, seenRoots, seenScripts, visitedNodes = {}, {}, {}, {}
+	local exceptions, excludedLog, gameRows = {}, {}, {}
 	local function gap(message) table.insert(run.gaps, message) end
 	local function find(parent, name, label)
 		local ok, value = pcall(function() return parent and parent:FindFirstChild(name) end)
@@ -1524,18 +1597,63 @@ local function runPaintScan(run)
 			root(object, "LocalPlayer." .. name, rank, function() return player:FindFirstChild(name) == object end)
 		end
 	end
+	local otherCharacters = {}
+	local rosterOK, roster = pcall(function() return Players:GetPlayers() end)
+	if rosterOK then
+		for _, other in ipairs(roster) do
+			if other ~= player and other.Character then otherCharacters[other.Character] = true end
+		end
+	else gap("Other-player character roster unavailable; Workspace character exclusion coverage incomplete.") end
+	local internalNames = { CorePackages = true, CoreGui = true, RobloxReplicatedStorage = true,
+		RobloxPluginGuiService = true, ServerScriptService = true, ServerStorage = true }
+	local defaultNames = { PlayerModule = true, PlayerScriptsLoader = true, CameraScript = true, ControlScript = true }
+	local function defaultModuleRoot(object)
+		local parent = object.Parent
+		if not parent or not defaultNames[object.Name] then return false end
+		return (parent == player:FindFirstChild("PlayerScripts"))
+			or (parent.Name == "StarterPlayerScripts" and parent.Parent == game:FindFirstChild("StarterPlayer"))
+	end
+	local function exclusion(object, allowDefault)
+		local current = object
+		while current and current ~= game do
+			if internalNames[current.Name] or internalNames[current.ClassName] then return "engine/internal or server-only subtree", current end
+			if (current.ClassName == "Player" and current ~= player) or otherCharacters[current] then return "other player's container/character", current end
+			if current.ClassName == "Model" then
+				local owner = Players:GetPlayerFromCharacter(current)
+				if owner and owner ~= player then return "other player's current character", current end
+			end
+			if defaultModuleRoot(current) and not allowDefault then return "default PlayerModule/camera/control/bootstrap (direct game reference required)", current end
+			current = current.Parent
+		end
+		return nil
+	end
+	local function inScope(object, allowDefault)
+		local ok, yes = pcall(function()
+			if exclusion(object, allowDefault) then return false end
+			for _, item in ipairs(roots) do
+				if item.current() and object:IsDescendantOf(item.object) then return true end
+			end
+			return false
+		end)
+		return ok and yes
+	end
 	local keywords = { "paint", "province", "territory", "country", "map", "bucket", "war", "peace", "remote", "admin", "capture", "color" }
 	local function relevant(path)
 		local lower = string.lower(path)
 		for _, term in ipairs(keywords) do if string.find(lower, term, 1, true) then return true end end
 		return false
 	end
-	local function inScope(object)
-		for _, item in ipairs(roots) do
-			local ok, yes = pcall(function() return item.current() and object:IsDescendantOf(item.object) end)
-			if ok and yes then return true end
-		end
-		return false
+	local function addCandidate(object, rank, batch, reference)
+		if seenScripts[object] then return false end
+		local class = object.ClassName
+		if class ~= "LocalScript" and class ~= "ModuleScript" then return false end
+		seenScripts[object] = true
+		local path = safePath(object)
+		local row = { object = object, path = path, class = class, rank = rank, relevant = relevant(path), reference = reference }
+		table.insert(run.rows, row); table.insert(batch, row)
+		if not reference then table.insert(gameRows, row) end
+		run.discovered += 1
+		return true
 	end
 	local function finishRow(row, record, cached)
 		row.record, row.cached = record, cached == true
@@ -1546,38 +1664,7 @@ local function runPaintScan(run)
 		elseif record.status == "TIMED_OUT" then run.timedOut += 1; run.lastTimeout = row.path
 		else run.skipped += 1 end
 	end
-	local function phase(firstRoot)
-		run.status = firstRoot == 1 and "DISCOVERING HIGH-PRIORITY ROOTS" or "DISCOVERING BROAD ROOTS"
-		updateScanProgress()
-		local batch = {}
-		for rootIndex = firstRoot, #roots do
-			if not checkpoint(true) then return end
-			local item = roots[rootIndex]
-			run.path = "Enumerating " .. item.label; updateScanProgress()
-			local ok, objects = pcall(function() return item.object:GetDescendants() end)
-			if not ok then
-				gap(item.label .. ": GetDescendants failed")
-				table.insert(run.rootLog, item.label .. " | ENUMERATION FAILED")
-			else
-				local visited, found = 0, 0
-				for _, object in ipairs(objects) do
-					if not checkpoint() then break end
-					visited += 1
-					local metadataOK, class = pcall(function() return object.ClassName end)
-					if not metadataOK then gap(item.label .. ": unreadable ClassName")
-					elseif (class == "LocalScript" or class == "ModuleScript") and not seenScripts[object] then
-						seenScripts[object] = true
-						found += 1
-						local path = safePath(object)
-						local row = { object = object, path = path, class = class, rank = item.rank, relevant = relevant(path) }
-						table.insert(run.rows, row); table.insert(batch, row)
-						run.discovered += 1
-					end
-				end
-				table.insert(run.rootLog, string.format("%s | Descendants=%d Visited=%d NewScripts=%d", item.label, #objects, visited, found))
-				if visited < #objects then gap(item.label .. ": enumeration interrupted") end
-			end
-		end
+	local function inspectBatch(batch)
 		table.sort(batch, function(a, b)
 			if a.relevant ~= b.relevant then return a.relevant end
 			if a.rank ~= b.rank then return a.rank < b.rank end
@@ -1588,21 +1675,24 @@ local function runPaintScan(run)
 			if not checkpoint(true) then return end
 			run.current, run.path, run.status = run.processed + 1, row.path, "INSPECTING " .. run.mode
 			updateScanProgress() -- Publish exact path BEFORE entering external code.
-			if run.mode == "Quick" and not row.relevant then
-				finishRow(row, { status = "SKIPPED_QUICK", detail = "Non-relevant path; Full Client Scan includes it." })
-			elseif not inScope(row.object) then
-				finishRow(row, { status = "SKIPPED_SCOPE", detail = "Script left current visible scope." })
+			if run.mode == "Quick" and not row.relevant and not row.reference then
+				finishRow(row, { status = "SKIPPED_QUICK", detail = "Non-relevant path; Game-Only Full Scan includes it." })
+			elseif not inScope(row.object, exceptions[row.object]) then
+				finishRow(row, { status = "SKIPPED_SCOPE", detail = "Script left current allowed game scope." })
 			else
 				local wasCached = readCache[row.object] ~= nil
 				local record = inspectWithWatchdog(row.object, decompile, function() return run.cancelled end)
 				if record.status == "TEXT_RETURNED_UNVERIFIED" then
-					if not inScope(row.object) then
+					if not inScope(row.object, exceptions[row.object]) then
 						record = { status = "SKIPPED_SCOPE", detail = "Script left scope during read; cached text is not evidence of current scope." }
 					elseif not record.analysis then
-						-- Cache raw returned text immediately in the broker. Cancellation during
-						-- indexing therefore needs no second decompile on the next scan.
-						local analysis = analyzePaintSource(record.source, record.id, row.path, checkpoint)
-						if analysis then record.analysis, record.source, record.sourcePath = analysis, nil, row.path end
+						-- Cache text before indexing. Store symbolic references, never source Instances.
+						local references = record.references or moduleReferencePaths(record.source, checkpoint)
+						if references then
+							record.references = references
+							local analysis = analyzePaintSource(record.source, record.id, row.path, checkpoint)
+							if analysis then record.analysis, record.source, record.sourcePath = analysis, nil, row.path end
+						end
 					end
 				end
 				finishRow(row, record, wasCached)
@@ -1610,34 +1700,106 @@ local function runPaintScan(run)
 			updateScanProgress()
 		end
 	end
-	phase(1)
-	if run.mode == "Full" and checkpoint() then
-		local firstBroad = #roots + 1
-		root(player, "LocalPlayer additional descendants", 6, function() return Players.LocalPlayer == player end)
-		for index, name in ipairs({ "ReplicatedFirst", "StarterPlayer", "StarterGui", "StarterPack", "Workspace" }) do
-			local object = find(game, name, name)
-			root(object, name, index + 6, function() return game:FindFirstChild(name) == object end)
-			if name == "StarterPlayer" then find(object, "StarterPlayerScripts", "StarterPlayer.StarterPlayerScripts") end
-		end
-		local excluded = { Players = true, CoreGui = true, ServerScriptService = true, ServerStorage = true }
-		local listed, children = pcall(function() return game:GetChildren() end)
-		if not listed then gap("Additional DataModel roots: GetChildren failed; discovery incomplete")
-		else
-			table.sort(children, function(a, b) return a.Name < b.Name end)
-			for _, object in ipairs(children) do
-				local name = object.Name
-				if not excluded[name] then root(object, "Additional root: " .. name, 20, function() return game:FindFirstChild(name) == object end) end
+	local function phase(firstRoot)
+		run.status = firstRoot == 1 and "DISCOVERING HIGH-PRIORITY GAME ROOTS" or "DISCOVERING REMAINING GAME ROOTS"
+		updateScanProgress()
+		local batch = {}
+		for rootIndex = firstRoot, #roots do
+			if not checkpoint(true) then return end
+			local item = roots[rootIndex]
+			run.path = "Enumerating " .. item.label; updateScanProgress()
+			-- GetChildren prunes before enumerating excluded descendants. Shared
+			-- visited state avoids even re-traversing Character under Workspace.
+			local stack, visited, found, pruned = { item.object }, 0, 0, 0
+			while #stack > 0 do
+				if not checkpoint() then break end
+				local object = table.remove(stack)
+				if not visitedNodes[object] then
+					visitedNodes[object] = true; visited += 1
+					local ok, reason, excluded = pcall(exclusion, object, false)
+					if not ok then gap(safePath(object) .. ": ancestry/metadata read failed; subtree skipped")
+					elseif reason then
+						pruned += 1
+						if not excludedLog[excluded] then
+							excludedLog[excluded] = true
+							table.insert(run.rootLog, "EXCLUDED SUBTREE: " .. safePath(excluded) .. " | " .. reason)
+						end
+					else
+						if object ~= item.object and not inScope(object, false) then
+							gap(safePath(object) .. ": moved outside current game roots; subtree skipped")
+						else
+							if addCandidate(object, item.rank, batch) then found += 1 end
+							local listed, children = pcall(function() return object:GetChildren() end)
+							if not listed then gap(safePath(object) .. ": GetChildren failed; subtree unreadable")
+							else
+								for _, child in ipairs(children) do
+									if not checkpoint() then break end
+									table.insert(stack, child)
+								end
+							end
+						end
+					end
+				end
 			end
+			table.insert(run.rootLog, string.format("%s | UniqueNodesVisited=%d NewScripts=%d PrunedSubtrees=%d", item.label, visited, found, pruned))
+			if not alive or run.cancelled then gap(item.label .. ": enumeration interrupted") end
+		end
+		inspectBatch(batch)
+	end
+	phase(1)
+	if run.mode == "GameOnly" and checkpoint() then
+		local firstBroad = #roots + 1
+		-- Explicit allowlist only. Never enumerate game:GetChildren() or all Players.
+		for index, name in ipairs({ "ReplicatedFirst", "Workspace", "StarterGui", "StarterPlayer", "StarterPack" }) do
+			local object = find(game, name, name)
+			root(object, name, index + 5, function() return game:FindFirstChild(name) == object end)
+			if name == "StarterPlayer" then find(object, "StarterPlayerScripts", "StarterPlayer.StarterPlayerScripts") end
 		end
 		phase(firstBroad)
 	elseif run.mode == "Quick" then
-		gap("QUICK scope: broad roots and non-relevant high-priority paths intentionally excluded; use Full Client Scan for remaining coverage.")
+		gap("QUICK scope: remaining game roots and non-relevant high-priority paths intentionally excluded; use Game-Only Full Scan for remaining coverage.")
 	end
+	-- Only game-source references open exceptions. Admitted default modules cannot
+	-- recursively open their dependency trees or reach excluded services.
+	local referenced = {}
+	for _, row in ipairs(gameRows) do
+		if not checkpoint() then return end
+		local refs = row.record and row.record.references
+		if refs and inScope(row.object, false) then
+			if refs.unresolved > 0 then gap(row.path .. ": unresolved/dynamic require expressions=" .. refs.unresolved .. "; PlayerModule dependencies may be missing.") end
+			for _, path in ipairs(refs.paths) do
+				if not checkpoint() then return end
+				local ok, target = pcall(function()
+					local object = path[1] == "game" and game or path[1] == "workspace" and Workspace or row.object
+					for i = 2, #path do
+						if not checkpoint() then return nil end
+						if not object then return nil end
+						local segment = path[i]
+						if segment.kind == "service" and object ~= game then return nil end
+						if segment.kind == "property" and segment.name == "Parent" then object = object.Parent
+						elseif segment.kind == "property" and segment.name == "LocalPlayer" and object == game:FindFirstChild("Players") then object = player
+						elseif segment.kind == "property" and segment.name == "Character" and object == player then object = player.Character
+						else object = object:FindFirstChild(segment.name) end
+					end
+					return object
+				end)
+				if not ok or not target then gap(row.path .. ": static require path absent/unreadable (snapshot; no waiting).")
+				elseif inScope(target, true) and not inScope(target, false) and target.ClassName == "ModuleScript" then
+					exceptions[target] = true
+					if addCandidate(target, 20, referenced, row.path) then
+						table.insert(run.rootLog, "DIRECT GAME REFERENCE: " .. row.path .. " -> " .. safePath(target) .. " | only this module admitted; source text is unverified")
+					end
+				end
+			end
+		end
+	end
+	inspectBatch(referenced)
 end
 function api.StartDiagnosticScan(modeName)
 	if not alive then return false, "AutoPainter is closed." end
 	if not diagnosticOnly or not diagnosticLocked then return false, "Use the LOCKED diagnostic loader." end
-	if modeName ~= "Quick" and modeName ~= "Full" then return false, "Scan mode must be Quick or Full." end
+	if modeName == "Full" then modeName = "GameOnly" end -- legacy API is now restricted too.
+	if modeName ~= "Quick" and modeName ~= "GameOnly" then return false, "Scan mode must be Quick or GameOnly." end
 	if sourceInspectionBusy then return false, "Inspection is already running/stopping; no extra coordinator started." end
 	scan = { mode = modeName, status = "QUEUED " .. modeName, running = true, cancelled = false,
 		discovered = 0, processed = 0, returned = 0, failed = 0, timedOut = 0, skipped = 0, cached = 0,
@@ -1666,7 +1828,7 @@ function api.StartDiagnosticScan(modeName)
 	return true, "Scan started; progress updates separately. Copy Current Report never starts a scan."
 end
 function api.GetFullPaintPathsReport()
-	local heading = "CLIENT_PAINT_PATHS_FULL_REPORT\nFullPaintPathsReportFormat=2\n"
+	local heading = "CLIENT_PAINT_PATHS_FULL_REPORT\nFullPaintPathsReportFormat=3\n"
 	if not alive then return heading .. "Status=closed" end
 	if not diagnosticOnly or not diagnosticLocked then return heading .. "Status=refused; diagnostics must be LOCKED" end
 	if not scan then return heading .. "Status=NOT_STARTED; run Quick Paint Path Scan first." end
@@ -1676,7 +1838,10 @@ function api.GetFullPaintPathsReport()
 			run.discovered, run.returned, run.failed, run.timedOut, run.skipped, run.cached, unreturnedReads, CONFIG.DiagnosticMaxUnreturned),
 		"Current path=" .. run.path,
 		"Scope is a client-visible snapshot. Missing/failed/timed-out reads never prove absence.",
-		"Excluded: CoreGui engine internals, other players' Players containers, server-only containers and Script class.",
+		"Scope allowlist: LocalPlayer.PlayerScripts/Backpack/Character/PlayerGui, ReplicatedStorage; GameOnly also ReplicatedFirst, Workspace, StarterGui, StarterPlayer (including StarterPlayerScripts), StarterPack.",
+		"Excluded: CorePackages, CoreGui, other engine/internal services, server-only containers, other players' containers/characters and Script class. No additional DataModel roots.",
+		"Default PlayerModule/camera/control/bootstrap subtrees are pruned before enumeration. Only directly referenced ModuleScripts in statically resolvable game-source require paths are admitted individually.",
+		"Reference detection supports simple aliases and literal child paths only; dynamic/complex expressions, shadowing and unrecognized engine copies need manual review. Source provenance is not provable from names alone.",
 		"All categories are CANDIDATES. Comments/strings/dead code can match. Method aliases and dynamic calls need manual tracing.",
 		"Timeouts do not cancel native work. Unreturned calls keep their slots; capacity-blocked candidates are explicitly skipped.",
 		"An external decompiler that blocks the whole VM cannot be preempted by this cooperative watchdog.",
@@ -1791,7 +1956,7 @@ connect(quickPathsButton.Activated, function()
 	if alive then exportStatus.Text, exportStatus.Visible = message, true end
 end)
 connect(fullPathsButton.Activated, function()
-	local _, message = api.StartDiagnosticScan("Full")
+	local _, message = api.StartDiagnosticScan("GameOnly")
 	if alive then exportStatus.Text, exportStatus.Visible = message, true end
 end)
 connect(cancelScanButton.Activated, function() api.CancelDiagnosticScan() end)
@@ -1913,7 +2078,7 @@ connect(RunService.Heartbeat, function(dt)
 end)
 api.SetColor(color)
 if diagnosticOnly then
-	showReport("PROTOCOL EXTRACT\nRun Quick Paint Path Scan first. Full Client Scan is optional. CANCEL SCAN stops new reads; Copy Current Report exports collected data only.\n"
+	showReport("PROTOCOL EXTRACT\nRun Quick Paint Path Scan first. Game-Only Full Scan is optional. CANCEL SCAN stops new reads; Copy Current Report exports collected data only.\n"
 		.. "Diagnostics must remain LOCKED. Full inventory and raw source are optional separate actions. No inspection runs automatically.")
 end
 return api

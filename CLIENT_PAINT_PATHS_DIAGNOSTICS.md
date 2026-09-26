@@ -1,4 +1,4 @@
-# Incremental, locked paint-path diagnostics
+# Game-only, incremental, locked paint-path diagnostics
 
 This revision changes diagnostic inspection, UI and export only. The painting scheduler, remote protocol, colors and selection behavior are unchanged and stay disabled by the locked diagnostic loader.
 
@@ -9,7 +9,7 @@ If the previous build is already stuck inside a decompiler call, restart the Rob
 Run the public diagnostic loader, then use these separate buttons:
 
 - **Quick Paint Path Scan**: recommended first. Enumerates the five high-priority roots and reads only likely relevant paths.
-- **Full Client Scan**: optional. Reads all high-priority candidates first, then enumerates and inspects the broader roots.
+- **Game-Only Full Scan**: optional. Reads all allowed game scripts/modules, starting with the high-priority roots. It never falls back to enumerating the entire DataModel.
 - **CANCEL SCAN**: immediately stops scheduling new reads; the coordinator finishes with partial results.
 - **Copy Current Report**: exports only collected results, including partial results while a scan is active. It never starts or resumes inspection.
 
@@ -27,9 +27,23 @@ The UI shows scripts discovered, current script index/total, text returned, fail
 
 High-priority roots are LocalPlayer.PlayerScripts, Backpack, Character, PlayerGui and ReplicatedStorage. Names/full paths containing Paint, Province, Territory, Country, Map, Bucket, War, Peace, Remote, Admin, Capture or Color are prioritized, case-insensitively. Within the relevant and remaining groups, the listed root order takes precedence over path order.
 
-Quick mode skips non-relevant paths and does not enumerate broad roots. Full mode processes all five high-priority roots before broad-root discovery: other LocalPlayer descendants, ReplicatedFirst, StarterPlayer (including readable StarterPlayerScripts), StarterGui, StarterPack, Workspace and additional readable DataModel containers. Overlapping roots deduplicate by Instance identity; identical paths can still be distinct Instances.
+Quick mode skips non-relevant paths and does not enumerate remaining roots. Game-Only Full Scan processes all five high-priority roots before continuing to ReplicatedFirst, Workspace, StarterGui, StarterPlayer (including readable StarterPlayerScripts) and StarterPack. These are the only roots. Additional LocalPlayer descendants, arbitrary DataModel services and nonallowlisted top-level folders are not included.
 
-CoreGui engine internals, other players' containers under Players, server-only containers and the Script class are excluded and disclosed. Workspace-visible tools/controllers remain included. Absent/unreplicated roots and enumeration failures are explicit gaps.
+Discovery now walks **GetChildren incrementally**, pruning excluded subtrees before enumerating their contents. A shared Instance-identity visited set deduplicates traversal and inspection (including Character under Workspace). Identical full paths can represent different Instances and are not incorrectly merged. Missing/unreplicated roots, unreadable subtrees and moved scripts are explicit gaps. The report includes per-root unique-node/script counts and excluded subtree paths, without traversing excluded trees to count their contents.
+
+Excluded: CorePackages, CoreGui, RobloxReplicatedStorage, RobloxPluginGuiService, ServerScriptService, ServerStorage, other engine services outside the allowlist, other players' containers/characters, and the Script class. Other players' current characters are checked during traversal so joins/respawns do not reopen that scope. Game-owned folders named Packages, or PlayerModule outside the standard player-script locations, remain eligible.
+
+### PlayerModule exceptions
+
+In the standard LocalPlayer.PlayerScripts and StarterPlayer.StarterPlayerScripts locations, PlayerModule and legacy CameraScript/ControlScript subtrees are pruned. PlayerScriptsLoader is also excluded so the engine bootstrap does not itself re-enable the default module tree.
+
+A read-only source tokenizer looks for direct require-path candidates from **inspected game scripts**. It supports literal dot/index paths, simple local aliases, script.Parent, game:GetService, LocalPlayer, and literal WaitForChild/FindFirstChild paths. Those method names are parsed as text: resolution uses existing children only, without waiting, executing source, calling require or invoking inspected functions.
+
+Only the explicitly referenced ModuleScript is admitted, under the same watchdog/cache limits. Its entire subtree is not admitted; default modules cannot recursively enable their own dependencies. References never override CorePackages/CoreGui/server/other-player exclusions. Duplicate references still result in one inspection per Instance.
+
+Comments and ordinary string bodies cannot grant exceptions. Dynamic expressions, require aliases, complex shadowing, interpolated strings, escaped/long-string paths, nonliteral arguments and more complex data flow are not fully resolved; explicit unresolved expressions and absent literal paths are coverage gaps. Symbolic references are cached with completed source results so reruns do not lose exceptions. This is static candidate evidence, not proof that a branch executes. Default-script provenance cannot be proven from names alone: renamed engine copies may look like game content, and a custom replacement in the default PlayerModule location follows the same conservative exclusion rule.
+
+API: StartDiagnosticScan("Quick") or StartDiagnosticScan("GameOnly"). The legacy "Full" mode is a compatibility alias for **GameOnly**; it cannot invoke the old unrestricted scan. GetDiagnosticScanState().Mode returns "GameOnly" for either spelling. UI capability version is now 7.
 
 ## Timeout and strict task bounds
 
@@ -63,7 +77,7 @@ Instances are weak cache keys; completed report rows retain text/metadata rather
 
 ## Report and read-only contract
 
-CLIENT_PAINT_PATHS_FULL_REPORT format 2 preserves all nine requested sections. Each discovered script/module has FullName, ClassName, status and byte count when available. Call sites, PaintPart occurrences and candidate categories reference shared merged context, with eight preceding and twelve following lines. Script-specific block IDs prevent collisions when cached fragments are reused. No source/count cap silently truncates the report.
+CLIENT_PAINT_PATHS_FULL_REPORT format 3 preserves all nine requested sections. Each discovered script/module has FullName, ClassName, status and byte count when available. Call sites, PaintPart occurrences and candidate categories reference shared merged context, with eight preceding and twelve following lines. Script-specific block IDs prevent collisions when cached fragments are reused. No source/count cap silently truncates the report.
 
 The collector calls only the environment-provided decompile function. It does not require/execute modules, execute inspected source, call target functions, send game remotes, paint, hook callbacks, spoof state or change game properties/attributes. Progress/report rendering changes only AutoPainter's own local UI. Clipboard/file export occurs only on explicit Copy. The decompiler provider remains responsible for the implementation of that external function.
 
@@ -71,6 +85,8 @@ The report distinguishes pending, failed, timed-out, unavailable, quick-mode-ski
 
 ## Validation
 
-337 deterministic tests pass, including 66 tests for the new incremental full/quick scanner and the existing 271 tests adapted where source workers/copy semantics intentionally changed. Coverage includes an indefinitely yielded decompiler, one-stall continuation, two-stall capacity exhaustion, progress/full paths, cancellation/resume, cached success/failure/late returns, copying during a stall, UI buttons, close/reload guarding, root priority, source/context extraction, cleanup and a 300-module corpus.
+377 deterministic tests pass: the existing 337 plus 40 game-only regressions (20 scenarios with both immediate and deferred signals). Coverage includes all allowed roots; a simulated thousand-script engine corpus excluded without enumeration; nested internal trees; other players and late character arrival; overlapping roots; duplicate paths; default controls/bootstrap exclusions; literal/alias reference exceptions; strings/comments/dynamic gaps; cache reuse; watchdog and cancel behavior; moved scripts; subtree failures; exact UI actions; and zero game requests or game-state writes.
 
-These are mock-engine tests and Luau compilation checks, not live executor or game validation. No real paint request or live source scan is performed from this workspace.
+All 14 Luau files compile. The original reference file has Markdown fences; only a temporary compile copy strips those fences, leaving the reference itself unchanged.
+
+These are mock-engine tests and Luau compilation checks, not live executor or game validation. No real paint request or live source scan is performed from this workspace. API reference: [Instance child enumeration](https://create.roblox.com/docs/reference/engine/classes/Instance#GetChildren), [Players character lookup](https://create.roblox.com/docs/reference/engine/classes/Players#GetPlayerFromCharacter).
