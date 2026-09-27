@@ -1,11 +1,4 @@
 -- Civil War selector for the legacy fully automatic AutoPainter.
--- Hard-locked to the requested Roblox experience.
-
-local ALLOWED_GAME_ID = 126330684723008
-if game.GameId ~= ALLOWED_GAME_ID then
-	warn("Civil War AutoPainter disabled: wrong game.")
-	return
-end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
