@@ -92,7 +92,7 @@ title.BorderSizePixel = 0
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 18
-title.Text = "Civil War Mode"
+title.Text = "Civil War Mode · FAST"
 title.Active = true
 title.Parent = frame
 
@@ -121,7 +121,7 @@ local function button(text, x, width)
 end
 
 local newButton = button("NEW", 8, 82)
-local startButton = button("START", 98, 92)
+local startButton = button("START FAST", 98, 92)
 local cancelButton = button("CANCEL", 198, 94)
 
 local countLabel = Instance.new("TextLabel")
@@ -141,13 +141,20 @@ local function resetCivilState()
 	countLabel.Text = "Selected: 0"
 end
 
+local function enableFastMode()
+	-- Use the legacy controller's built-in Fast profile instead of its default Normal profile.
+	api.SetSafe(false)
+	api.SetFast(true)
+end
+
 local function beginCivilWar()
 	api.SetPainting(false)
+	enableFastMode()
 	api.Clear()
 	api.SetKeepColor(true)
 	resetCivilState()
 	selecting = true
-	status.Text = "SELECTING: click every province you want in the civil war, then press START."
+	status.Text = "SELECTING: click every province you want, then START FAST."
 	newButton.BackgroundColor3 = Color3.fromRGB(35, 145, 110)
 end
 
@@ -173,8 +180,9 @@ local function startCivilWar()
 	selecting = false
 	api.CommitSelections()
 	api.SetKeepColor(true)
+	enableFastMode()
 	api.SetPainting(true)
-	status.Text = "RUNNING: every selected province keeps its own unique random color."
+	status.Text = "RUNNING FAST: every selected province keeps its own unique random color."
 	newButton.BackgroundColor3 = Color3.fromRGB(75, 75, 95)
 end
 
