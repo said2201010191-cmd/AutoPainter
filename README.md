@@ -1,3 +1,17 @@
+# Current Hands Free activation fix (v4)
+
+The `Acquire: Real Mouse.Target acquired` / `Automatic Mouse1 did not reach the normal PaintBucket input loop` issue is addressed in **AutoPainterHandsFree.luau**. Its working camera/acquisition code is unchanged. START now runs bounded, sequential input trials and reports input observations separately from color effects. NORMAL and optional CIVIL WAR remain available.
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
+```
+
+Close the older Hands Free panel first. No manual input is required after START if a method is confirmed. A no-op mouse1press can fall back to the documented VirtualInput API when available, then the tool's public Activate/Deactivate path. No game remote calls, hooks or fabricated mouse data are added. Exhausted/unconfirmed methods stop clearly; no live success is claimed yet.
+
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact verification, limits and live steps. **534 tests pass**, including 66 new activation tests. The older Final controller and its loader below remain available unchanged; they are separate from the Hands Free build and should not be run concurrently.
+
+---
+
 # AutoPainter — native hold, bounded targeting
 
 `AutoPainterFinal.luau` is a **client-only native-input controller**. It sends **zero game RPCs**. The existing normal PaintBucket owns every paint request, mouse callback, mode and cooldown. No Studio, server changes, account-specific values or secrets are required. Auto Paint starts OFF; the native input test runs only when explicitly requested.
@@ -69,3 +83,4 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/Au
 Run `python3 tests/run_tests.py /path/to/luau`.
 
 **468 deterministic tests pass: 222 native-controller and 246 diagnostic tests. All 20 repository Luau files compile**, removing only the original reference's Markdown wrapper in a temporary compile copy. Native scenarios run with immediate and deferred events. Original/FastClient source and locked diagnostics remain unchanged; retired direct-RPC tests are retained as historical references, not active-runtime tests.
+
