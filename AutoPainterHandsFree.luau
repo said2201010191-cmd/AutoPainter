@@ -1,0 +1,658 @@
+-- Hands-free native AutoPainter.
+-- No direct PaintPart remote calls, no Mouse.Target/GetMouseData spoofing, no hooks.
+-- The normal PaintBucket LocalScript remains the only sender of paint requests.
+-- NORMAL mode keeps one real palette color. CIVIL WAR assigns a unique color per selected province.
+-- Civil War changes the normal local palette attribute and re-equips the bucket so its Equipped path can reload that color.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local player = assert(Players.LocalPlayer, "Run AutoPainter on the client")
+local playerGui = player:WaitForChild("PlayerGui")
+local backpack = player:WaitForChild("Backpack")
+local mouse = player:GetMouse()
+
+local GUI_NAME = "AutoPainterHandsFreeUI"
+local old = playerGui:FindFirstChild(GUI_NAME)
+if old then old:Destroy() end
+
+local CONFIG = {
+	AcquireTimeout = 0.65,
+	AcquireSettle = 0.035,
+	PaintTimeout = 0.75,
+	NoEffectRetry = 0.30,
+	UnreachableRetry = 0.55,
+	IdleSleep = 0.04,
+	SwitchSleep = 0.015,
+	ColorEquipSettle = 0.09,
+	MaxColorPrepareAttempts = 2,
+	CameraHeightMin = 65,
+	CameraHeightScale = 5,
+	StatusInterval = 0.15,
+}
+
+local alive = true
+local running = false
+local selecting = nil
+local mode = "NORMAL"
+local entries = {}
+local lookup = {}
+local usedColors = {}
+local nextId = 0
+local currentEntry = nil
+local workerToken = 0
+local held = false
+local inputErrors = 0
+local pressAttempts = 0
+local releaseAttempts = 0
+local corrections = 0
+local aimFailures = 0
+local noEffect = 0
+local cameraSnapshot = nil
+local savedMouseBehavior = nil
+local savedMouseIcon = nil
+local lastStatusAt = 0
+local lastMessage = "Ready"
+local normalTarget = nil
+
+local function validProvince(part)
+	local provinces = Workspace:FindFirstChild("Provinces")
+	return part ~= nil and part:IsA("BasePart") and provinces ~= nil and part.Parent == provinces
+end
+
+local function paletteColor()
+	local c = player:GetAttribute("PaintBucketColor")
+	return typeof(c) == "Color3" and c or Color3.new(1, 1, 1)
+end
+
+local function colorKey(c)
+	return string.format("%02X%02X%02X",
+		math.clamp(math.round(c.R * 255), 0, 255),
+		math.clamp(math.round(c.G * 255), 0, 255),
+		math.clamp(math.round(c.B * 255), 0, 255))
+end
+
+local hueSeed = math.random()
+local colorIndex = 0
+local function uniqueRandomColor(current)
+	for _ = 1, 4096 do
+		colorIndex += 1
+		local h = (hueSeed + colorIndex * 0.618033988749895) % 1
+		local s = 0.72 + math.random() * 0.28
+		local v = 0.82 + math.random() * 0.18
+		local c = Color3.fromHSV(h, s, v)
+		local k = colorKey(c)
+		local d = current and ((c.R-current.R)^2 + (c.G-current.G)^2 + (c.B-current.B)^2)^0.5 or 1
+		if not usedColors[k] and d >= 0.18 then
+			usedColors[k] = true
+			return c
+		end
+	end
+	while true do
+		local c = Color3.fromRGB(math.random(0,255), math.random(0,255), math.random(0,255))
+		local k = colorKey(c)
+		if not usedColors[k] then usedColors[k] = true; return c end
+	end
+end
+
+local function targetColor(entry)
+	return mode == "CIVIL WAR" and entry.civilColor or normalTarget
+end
+
+local function findBucket()
+	local character = player.Character
+	if character then
+		local tool = character:FindFirstChild("PaintBucket")
+		if tool and tool:IsA("Tool") then return tool end
+	end
+	local tool = backpack:FindFirstChild("PaintBucket")
+	return tool and tool:IsA("Tool") and tool or nil
+end
+
+local function getHumanoid()
+	local character = player.Character
+	return character and character:FindFirstChildOfClass("Humanoid") or nil
+end
+
+local function ensureBucketEquipped()
+	local tool = findBucket()
+	local humanoid = getHumanoid()
+	local character = player.Character
+	if not tool or not humanoid or not character or humanoid.Health <= 0 then return nil end
+	if tool.Parent ~= character then
+		local ok = pcall(function() humanoid:EquipTool(tool) end)
+		if not ok then inputErrors += 1; return nil end
+		local deadline = os.clock() + 0.35
+		while alive and os.clock() < deadline and tool.Parent ~= character do RunService.Heartbeat:Wait() end
+	end
+	return tool.Parent == character and tool or nil
+end
+
+local function pressMouse()
+	if held then return true end
+	if type(mouse1press) ~= "function" then lastMessage = "mouse1press unavailable"; return false end
+	pressAttempts += 1
+	local ok = pcall(mouse1press)
+	if not ok then inputErrors += 1; lastMessage = "Mouse1 press failed"; return false end
+	held = true
+	return true
+end
+
+local function releaseMouse()
+	if not held then return true end
+	releaseAttempts += 1
+	local ok = type(mouse1release) == "function" and pcall(mouse1release) or false
+	-- Do not poison the controller just because Button1Up is not observable in the executor.
+	-- Make one bounded second attempt, then continue with local state released.
+	if not ok then
+		inputErrors += 1
+	elseif alive then
+		task.delay(0.04, function()
+			if alive and held and type(mouse1release) == "function" then pcall(mouse1release) end
+		end)
+	end
+	held = false
+	return ok
+end
+
+local function saveView()
+	if cameraSnapshot then return true end
+	local camera = Workspace.CurrentCamera
+	if not camera then return false end
+	cameraSnapshot = { camera = camera, kind = camera.CameraType, cframe = camera.CFrame, focus = camera.Focus }
+	savedMouseBehavior = UserInputService.MouseBehavior
+	savedMouseIcon = UserInputService.MouseIconEnabled
+	pcall(function()
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		UserInputService.MouseIconEnabled = false
+		camera.CameraType = Enum.CameraType.Scriptable
+	end)
+	return true
+end
+
+local function restoreView()
+	local saved = cameraSnapshot
+	cameraSnapshot = nil
+	if saved then
+		pcall(function()
+			if Workspace.CurrentCamera == saved.camera then
+				saved.camera.CFrame = saved.cframe
+				saved.camera.Focus = saved.focus
+				saved.camera.CameraType = saved.kind
+			end
+		end)
+	end
+	if savedMouseBehavior ~= nil then pcall(function() UserInputService.MouseBehavior = savedMouseBehavior end) end
+	if savedMouseIcon ~= nil then pcall(function() UserInputService.MouseIconEnabled = savedMouseIcon end) end
+	savedMouseBehavior, savedMouseIcon = nil, nil
+end
+
+local function cameraPoses(part)
+	local p = part.Position
+	local mag = math.max(part.Size.X, part.Size.Y, part.Size.Z)
+	local h = math.max(CONFIG.CameraHeightMin, mag * CONFIG.CameraHeightScale)
+	local function look(origin)
+		return CFrame.lookAt(origin, p, Vector3.new(0,1,0))
+	end
+	return {
+		part._hfCachedCamera,
+		look(p + Vector3.new(0, h, h * 0.18)),
+		look(p + Vector3.new(h * 0.45, h * 0.85, h * 0.45)),
+		look(p + Vector3.new(-h * 0.45, h * 0.85, h * 0.45)),
+		look(p + Vector3.new(h * 0.45, h * 0.85, -h * 0.45)),
+		look(p + Vector3.new(-h * 0.45, h * 0.85, -h * 0.45)),
+	}
+end
+
+-- Lua Instances cannot hold arbitrary fields, so cache camera poses separately.
+local cameraCache = setmetatable({}, {__mode = "k"})
+local function acquireTarget(entry)
+	if not saveView() then return false end
+	local camera = Workspace.CurrentCamera
+	if not camera or not validProvince(entry.part) then return false end
+	local p = entry.part.Position
+	local mag = math.max(entry.part.Size.X, entry.part.Size.Y, entry.part.Size.Z)
+	local h = math.max(CONFIG.CameraHeightMin, mag * CONFIG.CameraHeightScale)
+	local cached = cameraCache[entry.part]
+	local poses = {
+		cached,
+		CFrame.lookAt(p + Vector3.new(0, h, h * 0.18), p),
+		CFrame.lookAt(p + Vector3.new(h * 0.45, h * 0.85, h * 0.45), p),
+		CFrame.lookAt(p + Vector3.new(-h * 0.45, h * 0.85, h * 0.45), p),
+		CFrame.lookAt(p + Vector3.new(h * 0.45, h * 0.85, -h * 0.45), p),
+		CFrame.lookAt(p + Vector3.new(-h * 0.45, h * 0.85, -h * 0.45), p),
+	}
+	for _, pose in ipairs(poses) do
+		if pose then
+			camera.CFrame = pose
+			camera.Focus = CFrame.new(p)
+			local deadline = os.clock() + CONFIG.AcquireTimeout / #poses
+			while alive and running and os.clock() < deadline do
+				RunService.RenderStepped:Wait()
+				if mouse.Target == entry.part then
+					cameraCache[entry.part] = camera.CFrame
+					task.wait(CONFIG.AcquireSettle)
+					return mouse.Target == entry.part
+				end
+			end
+		end
+	end
+	aimFailures += 1
+	return false
+end
+
+local function prepareCivilColor(entry)
+	local target = entry.civilColor
+	if not target then return false end
+	for _ = 1, CONFIG.MaxColorPrepareAttempts do
+		releaseMouse()
+		local tool = findBucket()
+		local humanoid = getHumanoid()
+		if not tool or not humanoid then return false end
+		pcall(function() humanoid:UnequipTools() end)
+		player:SetAttribute("PaintBucketColor", target)
+		task.wait(0.02)
+		local equipped = ensureBucketEquipped()
+		if equipped then
+			task.wait(CONFIG.ColorEquipSettle)
+			if paletteColor() == target then return true end
+		end
+	end
+	return false
+end
+
+local function chooseDirty(now)
+	local best, bestScore = nil, -math.huge
+	for _, entry in ipairs(entries) do
+		if entry.active and validProvince(entry.part) and now >= entry.retryAt then
+			local target = targetColor(entry)
+			if target and entry.part.Color ~= target then
+				local score = now - entry.waitSince
+				if entry == currentEntry then score += 0.15 end
+				if score > bestScore then best, bestScore = entry, score end
+			end
+		end
+	end
+	return best
+end
+
+local function markCorrect(entry)
+	entry.retryAt = 0
+	entry.waitSince = os.clock()
+	corrections += 1
+end
+
+local function worker(myToken)
+	while alive and running and workerToken == myToken do
+		local now = os.clock()
+		local entry = chooseDirty(now)
+		if not entry then
+			currentEntry = nil
+			releaseMouse()
+			restoreView()
+			lastMessage = "All selected provinces are at target color"
+			task.wait(CONFIG.IdleSleep)
+			continue
+		end
+		currentEntry = entry
+		local target = targetColor(entry)
+		if mode == "CIVIL WAR" then
+			if not prepareCivilColor(entry) then
+				entry.retryAt = os.clock() + CONFIG.NoEffectRetry
+				lastMessage = "Civil War color prepare failed; retrying"
+				task.wait(CONFIG.SwitchSleep)
+				continue
+			end
+		elseif not ensureBucketEquipped() then
+			entry.retryAt = os.clock() + CONFIG.NoEffectRetry
+			lastMessage = "Equip/own the normal PaintBucket"
+			task.wait(CONFIG.SwitchSleep)
+			continue
+		end
+
+		if not acquireTarget(entry) then
+			releaseMouse()
+			entry.retryAt = os.clock() + CONFIG.UnreachableRetry
+			entry.waitSince = os.clock()
+			lastMessage = "Skipped an unreachable province"
+			task.wait(CONFIG.SwitchSleep)
+			continue
+		end
+
+		-- In NORMAL mode the hold can stay down across instant camera switches.
+		-- CIVIL WAR releases between targets because each province may use a different palette color.
+		if not pressMouse() then
+			entry.retryAt = os.clock() + CONFIG.NoEffectRetry
+			restoreView()
+			running = false
+			break
+		end
+
+		local before = entry.part.Color
+		local deadline = os.clock() + CONFIG.PaintTimeout
+		while alive and running and workerToken == myToken and os.clock() < deadline do
+			RunService.Heartbeat:Wait()
+			if not validProvince(entry.part) then break end
+			if entry.part.Color == target then
+				markCorrect(entry)
+				lastMessage = "Corrected target"
+				break
+			end
+			if mouse.Target ~= entry.part then
+				break
+			end
+		end
+
+		if mode == "CIVIL WAR" then releaseMouse() end
+		if entry.active and validProvince(entry.part) and entry.part.Color ~= target then
+			noEffect += (entry.part.Color == before) and 1 or 0
+			entry.retryAt = os.clock() + CONFIG.NoEffectRetry
+			entry.waitSince = os.clock()
+			lastMessage = mouse.Target == entry.part and "No target-color change yet; retrying" or "Target lost; retrying"
+		end
+		task.wait(CONFIG.SwitchSleep)
+	end
+	releaseMouse()
+	restoreView()
+	currentEntry = nil
+end
+
+local function stop(reason)
+	if not running and not held and not cameraSnapshot then
+		if reason then lastMessage = reason end
+		return
+	end
+	running = false
+	workerToken += 1
+	releaseMouse()
+	restoreView()
+	currentEntry = nil
+	if reason then lastMessage = reason end
+end
+
+local function addProvince(part)
+	if not validProvince(part) or lookup[part] then return false end
+	nextId += 1
+	local entry = {
+		id = nextId,
+		part = part,
+		active = true,
+		retryAt = 0,
+		waitSince = os.clock(),
+		civilColor = uniqueRandomColor(part.Color),
+	}
+	entries[#entries + 1] = entry
+	lookup[part] = entry
+	local box = Instance.new("SelectionBox")
+	box.Name = "HandsFreeProtected"
+	box.Adornee = part
+	box.SurfaceTransparency = 1
+	box.LineThickness = 0.025
+	box.Color3 = mode == "CIVIL WAR" and entry.civilColor or paletteColor()
+	box.Parent = playerGui:FindFirstChild(GUI_NAME)
+	entry.box = box
+	entry.colorConn = part:GetPropertyChangedSignal("Color"):Connect(function()
+		if entry.active and part.Color ~= targetColor(entry) then entry.waitSince = os.clock() end
+	end)
+	entry.destroyConn = part.Destroying:Connect(function()
+		entry.active = false
+		lookup[part] = nil
+		if entry.box then entry.box:Destroy() end
+	end)
+	return true
+end
+
+local function removeProvince(part)
+	local entry = lookup[part]
+	if not entry then return end
+	entry.active = false
+	lookup[part] = nil
+	if entry.colorConn then entry.colorConn:Disconnect() end
+	if entry.destroyConn then entry.destroyConn:Disconnect() end
+	if entry.box then entry.box:Destroy() end
+end
+
+local function clearAll()
+	stop("Cleared")
+	for _, entry in ipairs(entries) do if entry.active then removeProvince(entry.part) end end
+	table.clear(entries)
+	table.clear(lookup)
+	table.clear(usedColors)
+	colorIndex = 0
+	hueSeed = math.random()
+end
+
+-- UI -------------------------------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = GUI_NAME
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(390, 390)
+frame.Position = UDim2.fromOffset(12, 80)
+frame.BackgroundColor3 = Color3.fromRGB(30,30,40)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,34)
+title.BackgroundColor3 = Color3.fromRGB(49,49,64)
+title.BorderSizePixel = 0
+title.Text = "AutoPainter · HANDS FREE"
+title.TextColor3 = Color3.new(1,1,1)
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 19
+title.Active = true
+title.Parent = frame
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(34,34)
+close.Position = UDim2.new(1,-34,0,0)
+close.BackgroundTransparency = 1
+close.Text = "×"
+close.TextColor3 = Color3.new(1,1,1)
+close.TextSize = 24
+close.Parent = title
+
+local status = Instance.new("TextLabel")
+status.Position = UDim2.fromOffset(10,42)
+status.Size = UDim2.new(1,-20,0,62)
+status.BackgroundTransparency = 1
+status.TextWrapped = true
+status.TextColor3 = Color3.fromRGB(220,220,230)
+status.TextSize = 14
+status.Parent = frame
+
+local counts = Instance.new("TextLabel")
+counts.Position = UDim2.fromOffset(10,104)
+counts.Size = UDim2.new(1,-20,0,48)
+counts.BackgroundTransparency = 1
+counts.TextColor3 = Color3.fromRGB(120,255,160)
+counts.TextSize = 14
+counts.TextWrapped = true
+counts.Parent = frame
+
+local function button(text, y)
+	local b = Instance.new("TextButton")
+	b.Position = UDim2.fromOffset(10,y)
+	b.Size = UDim2.new(1,-20,0,34)
+	b.BackgroundColor3 = Color3.fromRGB(75,75,95)
+	b.BorderSizePixel = 0
+	b.TextColor3 = Color3.new(1,1,1)
+	b.Font = Enum.Font.SourceSansBold
+	b.TextSize = 15
+	b.Text = text
+	b.Parent = frame
+	return b
+end
+
+local modeButton = button("Mode: NORMAL", 158)
+local addButton = button("Protect Province", 198)
+local removeButton = button("Unprotect Province", 238)
+local clearButton = button("Clear Provinces", 278)
+local startButton = button("START AUTO", 318)
+local doneButton = Instance.new("TextButton")
+doneButton.Size = UDim2.fromOffset(260,42)
+doneButton.AnchorPoint = Vector2.new(0.5,0)
+doneButton.Position = UDim2.new(0.5,0,0,8)
+doneButton.BackgroundColor3 = Color3.fromRGB(35,145,110)
+doneButton.BorderSizePixel = 0
+doneButton.TextColor3 = Color3.new(1,1,1)
+doneButton.TextSize = 18
+doneButton.Text = "DONE SELECTING"
+doneButton.Visible = false
+doneButton.Parent = gui
+
+local function activeCount()
+	local n = 0
+	for _,e in ipairs(entries) do if e.active then n += 1 end end
+	return n
+end
+local function dirtyCount()
+	local n = 0
+	for _,e in ipairs(entries) do
+		if e.active and validProvince(e.part) then
+			local t = targetColor(e)
+			if t and e.part.Color ~= t then n += 1 end
+		end
+	end
+	return n
+end
+
+local function updateUI()
+	if not alive then return end
+	modeButton.Text = "Mode: " .. mode
+	startButton.Text = running and "STOP AUTO" or "START AUTO"
+	local c = normalTarget or paletteColor()
+	counts.Text = string.format("Selected: %d · Dirty: %d · Mode: %s\nCorrections: %d · Aim fails: %d · No effect: %d · Input errors: %d",
+		activeCount(), dirtyCount(), mode, corrections, aimFailures, noEffect, inputErrors)
+	status.Text = lastMessage .. (mode == "NORMAL" and ("\nNormal target: " .. tostring(c)) or "\nCivil War: unique target color per province")
+	for _,e in ipairs(entries) do
+		if e.active and e.box then e.box.Color3 = mode == "CIVIL WAR" and e.civilColor or c end
+	end
+end
+
+local function beginSelection(kind)
+	stop("Selection mode")
+	selecting = kind
+	frame.Visible = false
+	doneButton.Visible = true
+	lastMessage = kind == "ADD" and "Click provinces to protect" or "Click provinces to remove"
+	updateUI()
+end
+local function finishSelection()
+	selecting = nil
+	frame.Visible = true
+	doneButton.Visible = false
+	lastMessage = "Selection finished"
+	updateUI()
+end
+
+modeButton.Activated:Connect(function()
+	if running then stop("Stopped before changing mode") end
+	mode = mode == "NORMAL" and "CIVIL WAR" or "NORMAL"
+	lastMessage = mode == "NORMAL" and "Normal mode uses the current PaintBucket palette color" or "Civil War assigns a unique random color to every selected province"
+	updateUI()
+end)
+addButton.Activated:Connect(function() beginSelection("ADD") end)
+removeButton.Activated:Connect(function() beginSelection("REMOVE") end)
+clearButton.Activated:Connect(function() clearAll(); updateUI() end)
+doneButton.Activated:Connect(finishSelection)
+startButton.Activated:Connect(function()
+	if running then stop("Stopped")
+	else
+		if activeCount() == 0 then lastMessage = "Select at least one province first"; updateUI(); return end
+		if type(mouse1press) ~= "function" or type(mouse1release) ~= "function" then
+			lastMessage = "This client does not expose mouse1press/mouse1release"; updateUI(); return
+		end
+		if not ensureBucketEquipped() then lastMessage = "Equip/own the normal PaintBucket first"; updateUI(); return end
+		normalTarget = paletteColor()
+		for _,e in ipairs(entries) do if e.active then e.waitSince = os.clock(); e.retryAt = 0 end end
+		running = true
+		workerToken += 1
+		local token = workerToken
+		lastMessage = "Running hands-free; camera targets provinces while the real PaintBucket handles painting"
+		task.spawn(worker, token)
+	end
+	updateUI()
+end)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if input.KeyCode == Enum.KeyCode.Escape then
+		if selecting then finishSelection() else stop("Emergency stop") end
+		updateUI(); return
+	end
+	if processed or UserInputService:GetFocusedTextBox() then return end
+	if input.KeyCode == Enum.KeyCode.Q then startButton:Activate(); return end
+	if selecting and input.UserInputType == Enum.UserInputType.MouseButton1 then
+		local part = mouse.Target
+		if selecting == "ADD" then addProvince(part) elseif selecting == "REMOVE" then removeProvince(part) end
+		updateUI()
+	end
+end)
+
+-- Draggable window.
+local dragging = false
+local dragStart, frameStart
+local dragInput
+
+title.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true; dragStart = input.Position; frameStart = frame.Position; dragInput = input
+	end
+end)
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local d = input.Position - dragStart
+		frame.Position = UDim2.new(frameStart.X.Scale, frameStart.X.Offset+d.X, frameStart.Y.Scale, frameStart.Y.Offset+d.Y)
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false; dragInput = nil end
+end)
+
+close.Activated:Connect(function()
+	if not alive then return end
+	stop("Closed")
+	alive = false
+	for _,e in ipairs(entries) do if e.active then removeProvince(e.part) end end
+	gui:Destroy()
+end)
+
+player:GetPropertyChangedSignal("Character"):Connect(function()
+	if running then stop("Character changed; restart Auto") end
+end)
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	if running then stop("Camera changed; restart Auto") end
+end)
+
+RunService.Heartbeat:Connect(function()
+	if alive and os.clock() - lastStatusAt >= CONFIG.StatusInterval then
+		lastStatusAt = os.clock()
+		updateUI()
+	end
+end)
+
+updateUI()
+return {
+	Start = function() if not running then startButton:Activate() end end,
+	Stop = function() stop("Stopped by API") end,
+	SetMode = function(value)
+		if value ~= "NORMAL" and value ~= "CIVIL WAR" then return false end
+		if running then stop("Stopped before changing mode") end
+		mode = value; updateUI(); return true
+	end,
+	AddProvince = addProvince,
+	RemoveProvince = removeProvince,
+	Clear = clearAll,
+	GetStats = function()
+		return {Running=running, Mode=mode, Selected=activeCount(), Dirty=dirtyCount(), Held=held,
+			Corrections=corrections, AimFailures=aimFailures, NoEffect=noEffect, InputErrors=inputErrors,
+			PressAttempts=pressAttempts, ReleaseAttempts=releaseAttempts, AutoPainterRPCs=0}
+	end,
+}
