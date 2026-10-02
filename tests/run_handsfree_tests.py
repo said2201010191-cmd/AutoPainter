@@ -1,7 +1,12 @@
 from pathlib import Path
-import hashlib,re,subprocess,sys,tempfile
+import hashlib,json,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parent.parent
 source=(root/'AutoPainterHandsFree.luau').read_text()
+baseline=json.loads((root/'tests/normal_v7_baseline_hashes.json').read_text())
+for block in baseline['blocks']:
+    start=source.index(block['start']);end=source.index(block['end'],start)
+    assert hashlib.sha256(source[start:end].encode()).hexdigest()==block['sha256'], 'Frozen NORMAL block changed: '+block['name']
+print('7 frozen NORMAL v7 blocks match byte-for-byte',flush=True)
 # Protect the exact camera/acquisition implementation confirmed in the user's client.
 start=source.index('local function saveView()')
 end=source.index('-- Fast queue/target path.')

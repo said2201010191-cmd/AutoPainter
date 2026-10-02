@@ -1,18 +1,18 @@
-# Current Hands Free build (v7)
+# Current Hands Free build (v8)
 
-**AutoPainterHandsFree.luau** now uses one normalized RGB matcher (rounded bytes, ±1/channel) for dirty state, palette validation and paint results. NORMAL starts with fresh per-target VirtualInput activation. Clean tiles are checked before cursor movement and DOWN. The targeting solver remains intact with added clean guards.
+**NORMAL's proven v7 engine is frozen.** Seven source-region hashes protect its timing, normalized matcher, dirty/reconciliation engine, cached targeting, transaction lock, PER_TARGET service, release and retry code. The default stays PER_TARGET with the same learned 120–350 ms dwell bounds.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Close older panels first: v7 starts new success/strategy evidence. Fresh priority now means clean → dirty only. Transactions lock palette/target/service/release ownership. Missing UP callbacks can resolve from quiet unpressed button state. Dwell starts at 250 ms and learns within 120–350 ms from valid outcomes. ColorChanged drives dirty markers and scheduling independently of hover; a 120 ms queue-only reconciliation remains.
+Civil War now uses a bounded native palette state machine: current control center, one render-frame settle, short click hold, actual selected-color verification, and at most one retry. Missed Activated callbacks no longer reject a matching native PaintBucketColor. Opener/closer actions have separate postconditions; already-correct palette colors skip swatch clicks. No attribute writes or direct game RPCs are added.
 
-**Civil War now requires native palette learning.** The supplied files do not reveal the game's exact palette GUI paths. v7 records actual normal palette clicks and exposed color changes, then automates those same controls through VirtualInput. It never writes PaintBucketColor or assumes re-equip updates the cached tool color. Assignments must be unique and supported by learned controls. Missing/unsupported palette state stops with a report; see the guide before attempting the eight-province test.
+The palette database exports every learned mapping. **Copy Learned Palette**, **Export/Import Palette Profile**, **Reroll Civil Colors**, seeded unique random native colors, contrast/filter pools, capacity warnings and detailed palette steps are available while stopped. Imports revalidate the current GUI and recalculate coordinates. Mode switches/focus loss preserve learned colors. Combat HUD and explicit RESUME are display/control improvements outside the frozen NORMAL engine.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for palette setup, exact NORMAL/Civil War/combat tests and the complete Copy Activation Report field list. Reports include stable entry IDs/positions, normalized RGB deltas, last twenty transactions, palette suspicion, local defense timings and release ownership.
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for setup, the exact 12-province Civil test, NORMAL regression checks, profile limitations and the complete report field list.
 
-**572 deterministic tests pass; all 26 Luau files compile. Live Roblox correctness/speed remains unverified until the user tests v7.** The normal bucket remains the sole game-RPC sender; there are no hooks, spoofed targets, validator changes or server installation. Older Final/diagnostic controllers and their historical documentation below remain separate.
+**622 deterministic tests pass; all 27 Luau files compile. NORMAL live performance was previously verified by the user. Civil War palette automation remains live-unverified until the user tests v8.** Older reference/Final/diagnostic files and their historical documentation below remain separate.
 
 ---
 

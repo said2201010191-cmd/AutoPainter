@@ -1,4 +1,4 @@
-local Mock=require("./V7Mock")
+local Mock=require("./V8Mock")
 local passed=0
 local function test(name,fn)
  local ok,err=pcall(fn);assert(ok,"FAIL "..name..": "..tostring(err));passed+=1;print("PASS "..name)
@@ -11,6 +11,7 @@ local function setup(deferred,n,options)
  for i=1,n or 1 do
   local p=w.province((i-1)*40-120,0);p.Name="Province";parts[i]=p;w.protected[p]=true;assert(a.AddProvince(p))
  end
+ if options.palette then a.RerollCivilColors(101) end
  w.mouse.Target=nil;return w,a,parts
 end
 for _,deferred in ipairs({false,true}) do
@@ -34,9 +35,9 @@ for _,deferred in ipairs({false,true}) do
   for _,part in ipairs(p) do part.Color=w.Color3.fromRGB(128,51,77) end;w.flush();w.start(a,0.6)
   assert(a.GetStats().Dirty==0 and w.cursorMoves==0 and next(w.downs)==nil);a.Stop();w.assertClean()
  end)
- test(pre.."PER_TARGET is v7 default and old evidence is not inherited",function()
+ test(pre.."PER_TARGET is v8 default and old evidence is not inherited",function()
   local w,a=setup(deferred,3);w.start(a,1)
-  assert(a.GetStats().Version==7 and a.GetPerformanceStats().ActivationStrategy=="PER_TARGET")
+  assert(a.GetStats().Version==8 and a.GetPerformanceStats().ActivationStrategy=="PER_TARGET")
   assert(w.downs["VirtualInput.SendMouseButton"]==3 and not w.downs.mouse1press);a.Stop();w.assertClean()
  end)
  test(pre.."Civil War refuses unlearned impossible palette assignments before input",function()
@@ -53,7 +54,7 @@ for _,deferred in ipairs({false,true}) do
   local m=a.GetPerformanceStats();assert(m.UniqueAssignedCivilColors==8 and m.DuplicateAssignedCivilColors==0)
   assert(m.SuccessfulPaints>=8 and m.DirtyCount==0,a.GetPerformanceReport())
   local seen={};for _,part in ipairs(p) do local d=a.GetTargetStats(part);assert(a.ColorsMatch(part.Color,d.TargetColor));assert(not seen[d.AssignedCivilColorKey]);seen[d.AssignedCivilColorKey]=true end
-  assert(w.paletteClicks==8 and m.AtoBtoASequences==0 and m.CursorMovesToAlreadyCleanProvince==0 and m.ReleaseTimeouts==0)
+  assert(w.paletteClicks>=7 and w.paletteClicks<=8 and m.AtoBtoASequences==0 and m.CursorMovesToAlreadyCleanProvince==0 and m.ReleaseTimeouts==0)
   a.Stop();w.assertClean()
  end)
  test(pre.."Civil recolors restore their own assignments without hover or reassignment",function()
@@ -242,9 +243,9 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p=setup(deferred,3);local old=a.GetTargetStats(p[2]).EntryId;a.RemoveProvince(p[2]);a.AddProvince(p[2])
   assert(a.GetTargetStats(p[2]).EntryId>old and a.GetTargetStats(p[1]).EntryId~=a.GetTargetStats(p[3]).EntryId);w.assertClean()
  end)
- test(pre.."palette UI geometry change is reported without clicking guessed coordinates",function()
-  local w,a=setup(deferred,2,{palette=2});w.uiButtons[1].AbsoluteSize=w.v(80,25);a.SetMode("CIVIL WAR");w.start(a,1)
-  assert(not a.GetStats().Running and w.paletteClicks==0 and a.GetPerformanceStats().PaletteFailures==1);w.assertClean()
+ test(pre.."palette UI geometry is recalculated using its current safe center",function()
+  local w,a=setup(deferred,2,{palette=2});w.uiButtons[1].AbsolutePosition=w.v(20,465);w.uiButtons[1].AbsoluteSize=w.v(38,22);a.SetMode("CIVIL WAR");w.start(a,1)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().PaletteFailures==0);a.Stop();w.assertClean()
  end)
  test(pre.."dynamic picker button is not misrepresented as several fixed swatches",function()
   local w,a=setup(deferred,0);w.makePalette(1);w.learn(a);assert(a.BeginPaletteLearning("COLORS"))
@@ -275,10 +276,10 @@ for _,deferred in ipairs({false,true}) do
   w.start(a,0.5);assert(next(w.downs)==nil and a.GetStats().Dirty==0 and a.GetPerformanceStats().CleanSkippedBeforeDown>0)
   a.Stop();w.assertClean()
  end)
- test(pre.."palette attribute match without an observed native UI activation is insufficient",function()
+ test(pre.."palette attribute match succeeds even if the native Activated callback is missed",function()
   local w,a=setup(deferred,2,{palette=2});w.noPaletteActivated=true;a.SetMode("CIVIL WAR");w.start(a,1.5)
-  assert(not a.GetStats().Running and a.GetPerformanceStats().PaletteFailures==1 and next(w.downs)==nil)
-  assert(a.GetPerformanceStats().AdaptiveDwellMs==250);w.assertClean()
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().PaletteFailures==0)
+  assert(a.GetPaletteTransactionReport():find("PaletteSuccessVia=ATTRIBUTE",1,true));a.Stop();w.assertClean()
  end)
  test(pre.."continuous sampling remains gated until normalized per-target successes exist",function()
   local w,a=setup(deferred,12);assert(a.SetActivationStrategy("ADAPTIVE"));w.start(a,2)
@@ -294,5 +295,179 @@ for _,deferred in ipairs({false,true}) do
   w.step(0.6);assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().ReleaseTimeouts==0);a.Stop();w.assertClean()
  end)
 
+ test(pre.."all 126 learned mappings export without the former inventory cap",function()
+  local w,a=setup(deferred,0,{palette=126});local text=a.GetLearnedPaletteReport()
+  local _,count=text:gsub("ColorKey=","");assert(count==126 and text:find("126 | Swatch126",1,true))
+  local copied;w.env.setclipboard=function(s) copied=s end;assert(a.CopyLearnedPalette())
+  local _,lines=copied:gsub("\n","");assert(lines==126 and copied:find("Swatch126",1,true))
+  assert(w.paletteClicks==0 and next(w.downs)==nil);w.assertClean()
+ end)
+ test(pre.."seeded 32-of-126 assignments are unique and reproducible",function()
+  local w,a,p=setup(deferred,32,{palette=126});assert(a.RerollCivilColors(777))
+  local keys,seen={},{};for i,part in ipairs(p) do local k=a.GetTargetStats(part).AssignedCivilColorKey;assert(not seen[k]);seen[k]=true;keys[i]=k end
+  assert(a.RerollCivilColors(777));for i,part in ipairs(p) do assert(a.GetTargetStats(part).AssignedCivilColorKey==keys[i]) end
+  assert(a.RerollCivilColors(778));local different=false;for i,part in ipairs(p) do different=different or a.GetTargetStats(part).AssignedCivilColorKey~=keys[i] end
+  assert(different and next(w.downs)==nil and w.paletteClicks==0);w.assertClean()
+ end)
+ test(pre.."high contrast and filtered pools never duplicate or invent colors",function()
+  local w,a,p=setup(deferred,12,{palette=20})
+  for _,pool in ipairs({"HIGH CONTRAST","VIVID","DARK","LIGHT","ALL LEARNED"}) do
+   assert(a.SetCivilPool(pool));assert(a.RerollCivilColors(314));local keys={}
+   for _,part in ipairs(p) do local d=a.GetTargetStats(part);assert(not keys[d.AssignedCivilColorKey]);keys[d.AssignedCivilColorKey]=true;assert(d.LearnedPaletteIndex) end
+  end
+  assert(next(w.downs)==nil);w.assertClean()
+ end)
+ test(pre.."reroll is stopped-only and paints nothing before START",function()
+  local w,a=setup(deferred,4,{palette=8});a.SetMode("CIVIL WAR");assert(a.RerollCivilColors(9));assert(w.paletteClicks==0)
+  w.start(a,0.05);assert(not a.RerollCivilColors(10));a.Stop();w.step(0.3);w.assertClean()
+ end)
+ test(pre.."one province with an already correct selected palette skips every UI click",function()
+  local w,a,p=setup(deferred,1,{palette=1});a.SetMode("CIVIL WAR");w.start(a,0.5)
+  assert(a.GetStats().Dirty==0 and w.paletteClicks==0 and a.GetPerformanceStats().PaletteSkipsAlreadyCorrect>=1)
+  a.Stop();w.assertClean()
+ end)
+ test(pre.."missing Activated and unchanged wrong attribute retries once then fails",function()
+  local w,a=setup(deferred,2,{palette=4});w.noPaletteActivated=true;w.ignorePaletteClicks=true
+  w.player:SetAttribute("PaintBucketColor",w.color);w.nativePaletteColor=w.color;w.flush()
+  a.SetMode("CIVIL WAR");w.start(a,2)
+  assert(not a.GetStats().Running and w.paletteClicks==2 and a.GetPerformanceStats().PaletteSelectionFailures==1)
+  assert(next(w.downs)==nil and a.GetPaletteTransactionReport():find("SWATCH_FAILED",1,true))
+  assert(a.GetPerformanceStats().AverageCivilPaintMs==0 and a.GetPerformanceStats().AverageCivilReleaseBoundaryMs==0);w.assertClean()
+ end)
+ test(pre.."native UI settling and retry hold recover a click requiring 40ms",function()
+  local w,a=setup(deferred,1,{palette=3});w.minPaletteHold=0.039;w.player:SetAttribute("PaintBucketColor",w.color);w.nativePaletteColor=w.color;w.flush()
+  a.SetMode("CIVIL WAR");w.start(a,1.2)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().PaletteSelectionFailures==0)
+  assert(a.GetPaletteTransactionReport():find("Retry=1",1,true));a.Stop();w.assertClean()
+ end)
+ test(pre.."current center follows resized moved controls and changed inset",function()
+  local w,a=setup(deferred,4,{palette=8});w.inset=w.v(7,55)
+  for _,b in ipairs(w.uiButtons) do b.AbsolutePosition=b.AbsolutePosition+w.v(5,5);b.AbsoluteSize=w.v(38,18) end
+  a.SetMode("CIVIL WAR");w.start(a,2);assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().PaletteSelectionFailures==0);a.Stop();w.assertClean()
+ end)
+ test(pre.."obscured control never receives DOWN and failure stays bounded",function()
+  local w,a=setup(deferred,1,{palette=3});local overlay=w.instance("TextButton");overlay.Visible=true;overlay.Active=true;w.blockedGUI=overlay
+  w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetMode("CIVIL WAR");w.start(a,1)
+  assert(not a.GetStats().Running and w.paletteClicks==0 and next(w.downs)==nil);w.assertClean()
+ end)
+ test(pre.."focus loss mid-palette click releases and preserves all learned mappings",function()
+  local w,a=setup(deferred,2,{palette=8});w.onPaletteDown=function() w.input.WindowFocusReleased:Fire() end
+  w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetMode("CIVIL WAR");w.start(a,0.6)
+  assert(not a.GetStats().Running and not a.GetStats().Held and a.GetPerformanceStats().CivilCapacity==8)
+  w.input.WindowFocused:Fire();w.flush();w.step(0.4);assert(not a.GetStats().Running and a.GetPerformanceStats().ResumeRequired)
+  assert(w.getButton("RESUME"));w.assertClean()
+ end)
+ test(pre.."profile import revalidates GUI and never paints or trusts saved coordinates",function()
+  local w,a=setup(deferred,3,{palette=8});local profile=a.GetPaletteProfile()
+  for _,b in ipairs(w.uiButtons) do b.AbsolutePosition=b.AbsolutePosition+w.v(4,8) end
+  assert(a.ImportPaletteData(profile));assert(a.GetPerformanceStats().CivilCapacity==8 and w.paletteClicks==0)
+  a.SetMode("CIVIL WAR");w.start(a,1.5);assert(a.GetStats().Dirty==0);a.Stop();w.assertClean()
+ end)
+ test(pre.."profile import rejects changed signatures and absent or ambiguous paths atomically",function()
+  local w,a=setup(deferred,2,{palette=4});local profile=a.GetPaletteProfile();w.uiButtons[1].Name="Changed"
+  assert(not a.ImportPaletteData(profile));assert(a.GetPerformanceStats().LearnedPaletteColors==4)
+  w.uiButtons[1].Name="Swatch1";local duplicate=w.instance("TextButton");duplicate.Name="Swatch1";duplicate.Parent=w.paletteRoot
+  assert(not a.ImportPaletteData(profile));assert(w.paletteClicks==0);w.assertClean()
+ end)
+ test(pre.."profile rejects malformed RGB and foreign place before any clicks",function()
+  local w,a=setup(deferred,1,{palette=3});local profile=a.GetPaletteProfile();profile.Controls[1].RGB[1]=999
+  assert(not a.ImportPaletteData(profile));profile=a.GetPaletteProfile();profile.PlaceId=-123
+  assert(not a.ImportPaletteData(profile) and w.paletteClicks==0);w.assertClean()
+ end)
+ test(pre.."mode switches preserve database and separate NORMAL from Civil targets",function()
+  local w,a,p=setup(deferred,3,{palette=8});a.SetMode("CIVIL WAR");local civil=a.GetTargetStats(p[1]).TargetColor
+  a.SetMode("NORMAL");assert(a.ColorsMatch(a.GetTargetStats(p[1]).TargetColor,w.player:GetAttribute("PaintBucketColor")))
+  a.SetMode("CIVIL WAR");assert(a.ColorsMatch(a.GetTargetStats(p[1]).TargetColor,civil) and a.GetPerformanceStats().LearnedPaletteColors==8);w.assertClean()
+ end)
+ test(pre.."copy full report exposes every palette step and baseline without input",function()
+  local w,a=setup(deferred,3,{palette=8});a.SetMode("CIVIL WAR");w.start(a,1.5);a.Stop();local captured
+  w.env.setclipboard=function(s) captured=s end;local n=w.paletteClicks;local down=#w.activationEvents;assert(a.CopyActivationReport())
+  for _,key in ipairs({"LEARNED NATIVE PALETTE COLORS","FULL CIVIL ASSIGNMENTS","NORMAL BASELINE COMPARISON","PaletteStep=COMPLETE","VirtualInputMoveSucceeded=true","AttributeChangedObserved=true","PaletteSelections="}) do assert(captured:find(key,1,true),key) end
+  assert(w.paletteClicks==n and #w.activationEvents==down);w.assertClean()
+ end)
+ test(pre.."twelve Civil provinces and three recolors keep seeded unique native colors",function()
+  local w,a,p=setup(deferred,12,{palette=20});a.SetMode("CIVIL WAR");assert(a.RerollCivilColors(4242));w.start(a,4)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().UniqueAssignedCivilColors==12)
+  local keys={};for i,part in ipairs(p) do keys[i]=a.GetTargetStats(part).AssignedCivilColorKey end
+  w.manualTarget(p[12]);for i=1,3 do p[i].Color=w.Color3.new(0,0,0) end;w.flush();w.step(2)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().DirtyEventsWithoutHover>=3)
+  for i,part in ipairs(p) do assert(a.GetTargetStats(part).AssignedCivilColorKey==keys[i]) end
+  assert(a.GetPerformanceStats().ReleaseTimeouts==0 and a.GetPerformanceStats().CursorMovesToAlreadyCleanProvince==0);a.Stop();w.assertClean()
+ end)
+
+ test(pre.."opener is used only for hidden swatches and verified by visibility",function()
+  local w,a=setup(deferred,2,{palette=4});local opener,closer,show=w.makeChrome()
+  assert(a.BeginPaletteLearning("OPENER"));w.humanSelect(opener);a.FinishPaletteLearning();show(false)
+  w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetMode("CIVIL WAR");w.start(a,2)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().OpenerUses==1 and a.GetPerformanceStats().OpenerFailures==0)
+  assert(a.GetPerformanceStats().CloserUses==0);a.Stop();w.assertClean()
+ end)
+ test(pre.."missed opener Activated still succeeds when swatches become visible",function()
+  local w,a=setup(deferred,1,{palette=3});local opener,closer,show=w.makeChrome()
+  assert(a.BeginPaletteLearning("OPENER"));w.humanSelect(opener);a.FinishPaletteLearning();show(false)
+  w.noPaletteActivated=true;w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetMode("CIVIL WAR");w.start(a,1.5)
+  assert(a.GetStats().Dirty==0 and a.GetPaletteTransactionReport():find("OpenerActivatedObserved=false",1,true));a.Stop();w.assertClean()
+ end)
+ test(pre.."opener failure is distinct from a swatch failure and retries at most once",function()
+  local w,a=setup(deferred,1,{palette=3});local opener,closer,show=w.makeChrome()
+  assert(a.BeginPaletteLearning("OPENER"));w.humanSelect(opener);a.FinishPaletteLearning();show(false);w.buttonActions[opener]=function() end
+  w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetMode("CIVIL WAR");w.start(a,2)
+  assert(w.paletteClicks==2 and a.GetPerformanceStats().OpenerFailures==1 and a.GetPerformanceStats().PaletteSelections==0)
+  assert(a.GetStats().LastMessage:find("OPENER_FAILED",1,true));w.assertClean()
+ end)
+ test(pre.."a learned closer is skipped when palette does not block targeting",function()
+  local w,a=setup(deferred,2,{palette=4});local opener,closer,show=w.makeChrome()
+  assert(a.BeginPaletteLearning("CLOSER"));w.humanSelect(closer);a.FinishPaletteLearning();show(true)
+  a.SetMode("CIVIL WAR");w.start(a,1.5);assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().CloserUses==0);a.Stop();w.assertClean()
+ end)
+ test(pre.."blocking palette closes and reopens only at required target boundaries",function()
+  local w,a=setup(deferred,2,{palette=4});local opener,closer,show=w.makeChrome()
+  assert(a.BeginPaletteLearning("OPENER"));w.humanSelect(opener);a.FinishPaletteLearning()
+  assert(a.BeginPaletteLearning("CLOSER"));w.humanSelect(closer);a.FinishPaletteLearning()
+  w.mapOverlay=w.instance("Frame");w.mapOverlay.Active=true;w.mapOverlay.Visible=false;w.mapOverlay.Parent=w.paletteRoot;show(false)
+  a.SetMode("CIVIL WAR");w.start(a,2)
+  assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().CloserUses==2 and a.GetPerformanceStats().CloserFailures==0,tostring(a.GetStats().Dirty).."/"..tostring(a.GetPerformanceStats().CloserUses).." "..a.GetStats().LastMessage)
+  assert(a.GetPerformanceStats().OpenerUses==2);a.Stop();w.assertClean()
+ end)
+ test(pre.."learned palette copy uses writefile fallback without starting automation",function()
+  local w,a=setup(deferred,0,{palette=126});w.env.setclipboard=nil;local text
+  w.env.writefile=function(name,value) assert(name=="AutoPainterLearnedPalette.txt");text=value end
+  local b=w.getButton("Copy Learned Palette");assert(b);b.Activated:Fire();w.flush()
+  assert(text and text:find("Swatch126",1,true) and not a.GetStats().Running and w.paletteClicks==0);w.assertClean()
+ end)
+ test(pre.."profile JSON export and import buttons use local file without execution",function()
+  local w,a=setup(deferred,0,{palette=8});local data,saved
+  local base=w.env.game.GetService
+  w.env.game.GetService=function(self,name)
+   if name=="HttpService" then return {JSONEncode=function(_,value) data=value;return '{"mock":"profile"}' end,JSONDecode=function(_,text) assert(text==saved);return data end} end
+   return base(self,name)
+  end
+  w.env.writefile=function(name,text) assert(name=="AutoPainterPaletteProfile.json");saved=text end
+  w.env.readfile=function(name) assert(name=="AutoPainterPaletteProfile.json");return saved end
+  w.getButton("Export Palette Profile").Activated:Fire();w.flush();assert(saved and #data.Controls==8)
+  w.getButton("Import Palette Profile").Activated:Fire();w.flush();assert(a.GetPerformanceStats().CivilCapacity==8)
+  assert(w.paletteClicks==0 and next(w.downs)==nil);w.assertClean()
+ end)
+ test(pre.."explicit resume starts a fresh palette transaction after focus returns",function()
+  local w,a=setup(deferred,2,{palette=8});w.player:SetAttribute("PaintBucketColor",w.color);w.flush()
+  w.onPaletteDown=function() w.input.WindowFocusReleased:Fire() end;a.SetMode("CIVIL WAR");w.start(a,0.4)
+  w.onPaletteDown=nil;w.input.WindowFocused:Fire();w.flush();local before=w.paletteClicks;w.step(0.2)
+  assert(not a.GetStats().Running and w.paletteClicks==before)
+  w.env.task.spawn(function() w.getButton("RESUME").Activated:Fire();w.flush() end);w.step(1.5)
+  assert(a.GetStats().Dirty==0 and not a.GetPerformanceStats().ResumeRequired);a.Stop();w.assertClean()
+ end)
+
+ test(pre.."leaving a completed Civil run refreshes stopped NORMAL comparisons against the real global color",function()
+  local w,a,p=setup(deferred,3,{palette=8});a.SetMode("CIVIL WAR");w.start(a,1.5);assert(a.GetStats().Dirty==0)
+  a.Stop();w.step(0.1);local clicks=w.paletteClicks;local downs=#w.activationEvents
+  a.SetMode("NORMAL");local expectedDirty=0
+  for _,part in ipairs(p) do
+   assert(a.ColorsMatch(a.GetTargetStats(part).TargetColor,w.player:GetAttribute("PaintBucketColor")))
+   if not a.ColorsMatch(part.Color,w.player:GetAttribute("PaintBucketColor")) then expectedDirty+=1 end
+  end
+  assert(a.GetStats().Dirty==expectedDirty and w.paletteClicks==clicks and #w.activationEvents==downs)
+  a.SetMode("CIVIL WAR");assert(a.GetStats().Dirty==0);w.assertClean()
+ end)
+
 end
-print(passed.." Hands Free v7 tests passed (deterministic mock; live correctness/speed unverified)")
+print(passed.." Hands Free v8 tests passed (deterministic mock; live correctness/speed unverified)")

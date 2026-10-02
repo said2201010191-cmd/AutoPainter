@@ -1,0 +1,47 @@
+{
+  "commit": "1e0bff91b5d8057c74967585523c839a8a422939",
+  "blocks": [
+    {
+      "name": "timing defaults",
+      "start": "local CFG = {",
+      "end": "local alive, running",
+      "sha256": "6d46ba82f048d4ec6ced72b82ae7f336b58dab780a72cf6f587a18e69126cdb4"
+    },
+    {
+      "name": "normalized matcher",
+      "start": "local function normalizedRGB(c)",
+      "end": "local function entryLabel(entry)",
+      "sha256": "3f72ccc2b81f1e3e4b96de6c9033496839305c1f5e6b5a179db033c1cd6e1ed4"
+    },
+    {
+      "name": "activation and release",
+      "start": "-- ACTIVATION LAYER BEGIN",
+      "end": "-- ACTIVATION LAYER END",
+      "sha256": "a4c44d5367652cea1bc26ee34302c9c766325a51b8931af97e01d75e6fb19a0c"
+    },
+    {
+      "name": "camera solver",
+      "start": "local function saveView()",
+      "end": "-- Fast queue/target path.",
+      "sha256": "2f376843cb997475330b00f3ab49c7603fe0998d689919532c394367097854c7"
+    },
+    {
+      "name": "queue/strategy/lock",
+      "start": "local dirty, dirtyCursor",
+      "end": "function v7.record(service,stalled)",
+      "sha256": "3a4dfa639759484b4f1f2c27e47def51c4c38a75c0be78f6c57749c6baf4dbad"
+    },
+    {
+      "name": "service accounting",
+      "start": "function policy.begin(entry",
+      "end": "function v7.stats()",
+      "sha256": "276030970f3d65d35a459fa4f1ef516c5412920c863d54f1c6567e9af589c746"
+    },
+    {
+      "name": "dirty/targeting/worker",
+      "start": "local function rebuildDirty()",
+      "end": "local function addProvince(part)",
+      "sha256": "4309391d43c3d38fa200ce9d8947cf1a1aa186c1ded3e0f77ef56e4f8fad918e"
+    }
+  ]
+}

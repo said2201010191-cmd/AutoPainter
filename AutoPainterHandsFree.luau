@@ -1,4 +1,4 @@
--- AutoPainter Hands Free v7
+-- AutoPainter Hands Free v8
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
 -- NORMAL paints every protected province to one palette color.
@@ -21,7 +21,7 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
-	assert(existing.GetStats().Version==7,"Close the older Hands Free panel; v7 must reset prior evidence")
+	assert(existing.GetStats().Version==8,"Close the older Hands Free panel; v8 must load its new palette adapter")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
@@ -433,172 +433,412 @@ local function ensureBucket()
 	return tool.Parent == character and tool or nil
 end
 
--- The GUI paths are learned from actual native palette clicks; no guessed swatches are clicked.
+-- Civil-only palette adapter. NORMAL service/targeting/release core is frozen at v7.
 local palette: any = {controls={},byButton={},learning=nil,pending=nil,opener=nil,closer=nil,
-	status="Native palette controls have not been learned",previous=nil,lastWorking=nil,inventory={}}
+ status="Native palette controls have not been learned",duplicates=0,invalidClicks=0,lastLearned="none",nextIndex=0,
+ pool="ALL LEARNED",seed=nil,seedSupplied=false,closeRequired=false,transactions={},current={PaletteStep="IDLE"},
+ metrics={PaletteSelections=0,PaletteSelectionSuccesses=0,PaletteSelectionFailures=0,PaletteSelectionTotal=0,
+ OpenerUses=0,OpenerFailures=0,CloserUses=0,CloserFailures=0,PaletteSkipsAlreadyCorrect=0},
+ resumeNeeded=false,compactHUD=false}
+local PAL = {SettleFrames=1,ClickHold=0.025,RetrySettleFrames=2,RetryClickHold=0.04,Verify=0.16,MaxControls=512,MinDistinctDistance=38}
+function palette.path(button)
+ local segments={};local o=button
+ while o and o~=playerGui do table.insert(segments,1,{Name=o.Name,ClassName=o.ClassName});o=o.Parent end
+ return o==playerGui and segments or nil
+end
+function palette.signature(button)
+ return {ClassName=button.ClassName,Name=button.Name,Text=button:IsA("TextButton") and button.Text or nil,
+ Image=button:IsA("ImageButton") and button.Image or nil,BackgroundRGB=rgbText(button.BackgroundColor3)}
+end
+function palette.valid(item)
+ return item and not item.invalid and item.button and item.button:IsDescendantOf(playerGui)
+  and (item.button:IsA("TextButton") or item.button:IsA("ImageButton"))
+end
 function palette.topButton(point)
-	local inset=GuiService:GetGuiInset()
-	local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)
-	if not ok then return nil end
-	for _,o in ipairs(objects) do
-		if o:IsA("TextButton") or o:IsA("ImageButton") then
-			local root=playerGui:FindFirstChild(GUI_NAME)
-			if not root or not o:IsDescendantOf(root) then return o end
-			return nil
-		end
-	end
-	return nil
+ -- AbsolutePosition/GetGuiObjectsAtPosition use inset viewport coordinates;
+ -- VirtualInput/GetMouseLocation use full-window coordinates. Convert once here.
+ local inset=GuiService:GetGuiInset()
+ local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)
+ if not ok then return nil end
+ local own=playerGui:FindFirstChild(GUI_NAME)
+ for _,o in ipairs(objects) do
+  if own and o:IsDescendantOf(own) and (o.Active or o:IsA("TextButton") or o:IsA("ImageButton")) then return nil,"CONTROLLER_UI" end
+  if o:IsA("TextButton") or o:IsA("ImageButton") then return o end
+  -- A decorative label may be a child of the actual button. A foreign active overlay blocks it.
+  if o:IsA("GuiObject") and o.Active then return nil end
+ end
+ return nil
 end
 function palette.visible(button)
-	if not button or not button:IsDescendantOf(playerGui) then return false end
-	local o=button
-	while o and o~=playerGui do
-		if o:IsA("ScreenGui") and not o.Enabled then return false end
-		if (o:IsA("GuiObject") or o:IsA("TextButton") or o:IsA("ImageButton") or o:IsA("Frame")) and o.Visible==false then return false end
-		o=o.Parent
-	end
-	return button.AbsoluteSize and button.AbsoluteSize.X>0 and button.AbsoluteSize.Y>0
+ if not button or not button:IsDescendantOf(playerGui) then return false end
+ local o=button
+ while o and o~=playerGui do
+  if o:IsA("ScreenGui") and not o.Enabled then return false end
+  if (o:IsA("GuiObject") or o:IsA("TextButton") or o:IsA("ImageButton") or o:IsA("Frame")) and o.Visible==false then return false end
+  o=o.Parent
+ end
+ return button.AbsoluteSize.X>=4 and button.AbsoluteSize.Y>=4
+end
+function palette.center(item)
+ if not palette.valid(item) or not palette.visible(item.button) then return nil,"Control missing/hidden; relearn if replaced" end
+ if item.button.Active==false then return nil,"Native control is inactive" end
+ local ok,interactive=pcall(function() return item.button.Interactable end)
+ if ok and interactive==false then return nil,"Native control is not interactable" end
+ local pos,size=item.button.AbsolutePosition,item.button.AbsoluteSize
+ local point=pos+size*0.5+GuiService:GetGuiInset()
+ local viewport=Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize
+ if not viewport or point.X<1 or point.Y<1 or point.X>=viewport.X or point.Y>=viewport.Y then return nil,"Control center is outside viewport; reveal/scroll native palette" end
+ if palette.topButton(point)~=item.button then return nil,"Control center is obscured/clipped; exact top button did not match" end
+ return point
 end
 function palette.capture(button,point)
-	return {button=button,path=button:GetFullName(),offset=point-button.AbsolutePosition,
-		size=button.AbsoluteSize,viewport=Workspace.CurrentCamera.ViewportSize,inset=GuiService:GetGuiInset()}
+ local localPoint=point-GuiService:GetGuiInset()-button.AbsolutePosition
+ return {button=button,path=button:GetFullName(),segments=palette.path(button),signature=palette.signature(button),
+ offset=localPoint,normalized=Vector2.new(localPoint.X/button.AbsoluteSize.X,localPoint.Y/button.AbsoluteSize.Y),
+ size=button.AbsoluteSize,successes=0,failures=0,lastUse=nil,validated=true}
+end
+function palette.learningStatus()
+ return string.format("Learned: %d | Last: %s | Duplicates ignored: %d | Invalid clicks: %d",#palette.controls,palette.lastLearned,palette.duplicates,palette.invalidClicks)
 end
 function palette.onClick(point)
-	if not palette.learning then return end
-	local button=palette.topButton(point);if not button or not palette.visible(button) then return end
-	local item=palette.capture(button,point)
-	if palette.learning=="OPENER" then palette.opener=item;palette.status="Opener learned; finish setup";palette.learning=nil;return end
-	if palette.learning=="CLOSER" then palette.closer=item;palette.status="Closer learned; finish setup";palette.learning=nil;return end
-	palette.pending={item=item,before=paletteColor(),at=os.clock()}
+ if not palette.learning then return end
+ local button,blocked=palette.topButton(point)
+ if blocked=="CONTROLLER_UI" then return end
+ if not button or not palette.visible(button) then palette.invalidClicks+=1;palette.status=palette.learningStatus();return end
+ local item=palette.capture(button,point)
+ if palette.learning=="OPENER" then palette.opener=item;palette.status="Opener learned; finish setup";palette.learning=nil;return end
+ if palette.learning=="CLOSER" then palette.closer=item;palette.status="Closer learned (only used when it blocks the target point)";palette.learning=nil;return end
+ palette.pending={item=item,before=paletteColor(),at=os.clock()}
 end
 function palette.onColor()
-	local pending=palette.pending
-	if not palette.learning or not pending or os.clock()-pending.at>0.75 then return end
-	local color=paletteColor()
-	if colorsMatch(color,pending.before) then return end
-	palette.pending=nil
-	local item=pending.item;local existing=palette.byButton[item.button]
-	if existing then
-		if not colorsMatch(existing.color,color) then
-			existing.invalid=true;palette.status="Dynamic color control detected; exact picker adapter/source required"
-		end
-		return
-	end
-	for _,known in ipairs(palette.controls) do if not known.invalid and colorsMatch(known.color,color) then return end end
-	if #palette.controls>=256 then palette.status="Palette learning limit reached (256 controls)";return end
-	local r,g,b=normalizedRGB(color);item.color=Color3.fromRGB(r,g,b);item.key=colorKey(item.color)
-	palette.byButton[item.button]=item;table.insert(palette.controls,item)
-	palette.status=string.format("Learned %d native selectable colors; click more colors or finish",#palette.controls)
+ local pending=palette.pending
+ if not palette.learning or not pending or os.clock()-pending.at>0.75 then return end
+ local color=paletteColor();if colorsMatch(color,pending.before) then return end
+ palette.pending=nil
+ local item=pending.item;local existing=palette.byButton[item.button]
+ if existing then
+  if not colorsMatch(existing.color,color) then existing.invalid=true;palette.invalidClicks+=1
+   palette.status="Dynamic color control detected; exact picker adapter/source required";return end
+  existing.validated=true;palette.duplicates+=1;palette.status=palette.learningStatus();return
+ end
+ for _,known in ipairs(palette.controls) do
+  if palette.valid(known) and colorsMatch(known.color,color) then palette.duplicates+=1;palette.status=palette.learningStatus();return end
+ end
+ if #palette.controls>=PAL.MaxControls then palette.status="Palette learning capacity reached (512)";return end
+ local r,g,b=normalizedRGB(color);item.color=Color3.fromRGB(r,g,b);item.key=colorKey(item.color)
+ palette.nextIndex+=1;item.index=palette.nextIndex
+ palette.byButton[item.button]=item;table.insert(palette.controls,item)
+ palette.lastLearned=item.button.Name.." ("..rgbText(item.color)..")";palette.status=palette.learningStatus()
 end
 function palette.find(color)
-	for _,item in ipairs(palette.controls) do
-		if not item.invalid and item.button:IsDescendantOf(playerGui) and colorsMatch(item.color,color) then return item end
-	end
-	return nil
+ for _,item in ipairs(palette.controls) do if palette.valid(item) and colorsMatch(item.color,color) then return item end end
+ return nil
 end
 function palette.prune()
-	for i=#palette.controls,1,-1 do
-		local item=palette.controls[i]
-		if item.invalid or not item.button:IsDescendantOf(playerGui) then palette.byButton[item.button]=nil;table.remove(palette.controls,i) end
-	end
-	if palette.opener and not palette.opener.button:IsDescendantOf(playerGui) then palette.opener=nil end
-	if palette.closer and not palette.closer.button:IsDescendantOf(playerGui) then palette.closer=nil end
+ -- Keep invalid database rows visible in exports. They never count toward usable capacity.
+ for _,item in ipairs(palette.controls) do if not item.button:IsDescendantOf(playerGui) then item.invalid=true end end
 end
-function palette.assign()
-	palette.prune()
-	local available={}
-	for _,item in ipairs(palette.controls) do
-		if not item.invalid and item.button:IsDescendantOf(playerGui) then table.insert(available,item) end
-	end
-	local used={};local missing={}
-	for _,entry in ipairs(entries) do
-		if entry.civilColor then
-			local item=palette.find(entry.civilColor)
-			if not item or used[item.key] then return false,"Existing Civil assignment missing/duplicated; relearn palette or clear/reselect" end
-			used[item.key]=true
-		else table.insert(missing,entry) end
-	end
-	local free={};for _,item in ipairs(available) do if not used[item.key] then table.insert(free,item) end end
-	if #free<#missing then
-		return false,string.format("Civil War needs %d unique native colors; %d learned and available. Palette/source setup required.",#entries,#available)
-	end
-	-- Validate the complete assignment before changing any target.
-	for i,entry in ipairs(missing) do entry.civilColor=free[i].color;entry.civilKey=free[i].key end
-	return true
+function palette.available()
+ local out={};for _,item in ipairs(palette.controls) do if palette.valid(item) then table.insert(out,item) end end
+ return out
+end
+function palette.distance(a,b)
+ local ar,ag,ab=normalizedRGB(a);local br,bg,bb=normalizedRGB(b)
+ return (ar-br)^2+(ag-bg)^2+(ab-bb)^2
+end
+function palette.rng(seed)
+ local state=seed%2147483647;if state<=0 then state=1 end
+ return function(n) state=(state*16807)%2147483647;return state%n+1 end
+end
+function palette.assign(reroll)
+ palette.prune()
+ local available=palette.available();local used,missing,chosen={}, {}, {}
+ for _,entry in ipairs(entries) do
+  if entry.civilColor and not reroll then
+   local item=palette.find(entry.civilColor)
+   if not item or used[item.key] then return false,"Existing Civil assignment missing/duplicated; relearn or reroll while stopped" end
+   entry.civilControl=item;used[item.key]=true;table.insert(chosen,item)
+  else table.insert(missing,entry) end
+ end
+ local all,filtered={},{}
+ for _,item in ipairs(available) do
+  if not used[item.key] then
+   table.insert(all,item)
+   local r: any,g: any,b: any=normalizedRGB(item.color);assert(r and g and b,"Invalid learned RGB");local hi,lo=math.max(r,g,b),math.min(r,g,b)
+   local light=(0.2126*r+0.7152*g+0.0722*b)/255
+   if palette.pool=="ALL LEARNED" or palette.pool=="HIGH CONTRAST" or
+    (palette.pool=="VIVID" and hi>=150 and hi-lo>=90) or (palette.pool=="DARK" and light<=0.35) or (palette.pool=="LIGHT" and light>=0.68) then table.insert(filtered,item) end
+  end
+ end
+ if #all<#missing then return false,string.format("Civil capacity: %d unique learned colors; selected: %d. Reuse is disabled.",#available,#entries) end
+ if #filtered<#missing then filtered=all;palette.poolFallback="Filtered pool too small; ALL LEARNED used" else palette.poolFallback="none" end
+ if not palette.seed then palette.seed=math.random(1,2147483646) end
+ local random=palette.rng(palette.seed)
+ for i=#filtered,2,-1 do local j=random(i);filtered[i],filtered[j]=filtered[j],filtered[i] end
+ local assignments={}
+ for _,entry in ipairs(missing) do
+  local best,bestDistance=1,-1
+  for i,item in ipairs(filtered) do
+   local distance=math.huge
+   for _,other in ipairs(chosen) do distance=math.min(distance,palette.distance(item.color,other.color)) end
+   if distance>bestDistance then best,bestDistance=i,distance end
+   -- Random order is primary for ALL/filtered pools, with a best-effort contrast floor.
+   if palette.pool~="HIGH CONTRAST" and distance>=PAL.MinDistinctDistance^2 then best=i;break end
+  end
+  local item=table.remove(filtered,best);table.insert(chosen,item);assignments[entry]=item
+ end
+ -- Atomic assignment; no input and no partial reroll on shortage.
+ for entry,item in pairs(assignments) do entry.civilColor=item.color;entry.civilKey=item.key;entry.civilControl=item end
+ return true
 end
 function palette.summary()
-	local keys={};local assigned,duplicate=0,0
-	for _,entry in ipairs(entries) do
-		if entry.civilColor then assigned+=1;local key=colorKey(entry.civilColor);if keys[key] then duplicate+=1 end;keys[key]=true end
-	end
-	local unique=0;for _ in pairs(keys) do unique+=1 end
-	return {CivilSelectedCount=#entries,UniqueAssignedCivilColors=unique,DuplicateAssignedCivilColors=duplicate,
-		UnassignedCivilColors=#entries-assigned,LearnedPaletteColors=#palette.controls,PaletteStatus=palette.status}
+ local keys={};local assigned,duplicate=0,0
+ for _,entry in ipairs(entries) do
+  if entry.civilColor then assigned+=1;local key=colorKey(entry.civilColor);if keys[key] then duplicate+=1 end;keys[key]=true end
+ end
+ local unique=0;for _ in pairs(keys) do unique+=1 end
+ local capacity=#palette.available()
+ return {CivilSelectedCount=#entries,UniqueAssignedCivilColors=unique,DuplicateAssignedCivilColors=duplicate,
+ UnassignedCivilColors=#entries-assigned,LearnedPaletteColors=#palette.controls,CivilCapacity=capacity,CapacityAvailable=capacity>=#entries,
+ CivilColorPool=palette.pool,ColorPoolFallback=palette.poolFallback or "none",CivilRandomSeed=palette.seed or "not assigned",PaletteStatus=palette.status}
 end
-function palette.click(item,token)
-	if not item or not palette.visible(item.button) then return false,"Learned palette control is absent/hidden" end
-	if item.viewport~=Workspace.CurrentCamera.ViewportSize or item.size~=item.button.AbsoluteSize or item.inset~=GuiService:GetGuiInset() then
-		return false,"Palette geometry changed; relearn the native control coordinates"
-	end
-	if not settleRelease() or not alive or not running or token~=workerToken or not focused then return false,"Palette canceled/release unresolved" end
-	if not virtualInput or not primaryMethod then return false,"VirtualInput unavailable for native palette" end
-	local point=item.button.AbsolutePosition+item.offset
-	if palette.topButton(point)~=item.button then return false,"Palette control is obscured; no click sent" end
-	local activated=false
-	local connection=item.button.Activated:Connect(function() activated=true end) -- observation only
-	local ok,problem=pcall(function()
-		local moved,why=callInput(function() virtualInput:SendMousePosition(point) end)
-		if not moved then error(tostring(why)) end
-		if not alive or not running or token~=workerToken or not focused then error("Palette canceled") end
-		if palette.topButton(point)~=item.button then error("Palette moved or became obscured") end
-		local owner={Method=primaryMethod,Tool=activationTool,Down=downSeen,EquippedDown=equippedDownSeen,ToolDown=toolDownSeen,Started=os.clock(),Kind="PALETTE"}
-		ownedInput,held=owner,true
-		local down,whyDown=callInput(function() virtualInput:SendMouseButton(point,Enum.UserInputType.MouseButton1,true,0) end)
-		owner.DownFailed=not down
-		if not down then error(tostring(whyDown)) end
-		if not settleRelease() then error("Palette UP unresolved") end
-		local deadline=os.clock()+CFG.PaletteTimeout
-		while alive and running and token==workerToken and not activated and os.clock()<deadline do RunService.Heartbeat:Wait() end
-		if not activated then error("Native palette button activation not observed") end
-	end)
-	connection:Disconnect()
-	if ownedInput then settleRelease() end
-	return ok,ok and item.path or tostring(problem)
+function palette.allowed(token)
+ return alive and running and workerToken==token and focused and activationTool and activationTool.Parent==player.Character
+end
+function palette.waitUntil(predicate,token,seconds)
+ local deadline=os.clock()+seconds
+ repeat
+  if not palette.allowed(token) then return false end
+  if predicate() then return true end
+  RunService.Heartbeat:Wait()
+ until os.clock()>=deadline
+ return palette.allowed(token) and predicate()
+end
+function palette.click(item,token,step,successPredicate,intended)
+ local detail={Role=step,TargetControlName=item and item.button.Name or "unavailable",TargetControlPath=item and item.path or "unavailable",
+ TargetControlVisible=item and palette.visible(item.button) or false,CursorPositionBefore=tostring(UserInputService:GetMouseLocation()),
+ VirtualInputMoveSucceeded=false,MouseDownSent=false,MouseUpSent=false,ActivatedObserved=false,AttributeChangedObserved=false,
+ FailureReason="",Retry=0}
+ table.insert(palette.current.Steps,detail)
+ palette.current.PaletteStep=step;palette.current.Click=detail
+ local lastError="No learned "..step.." control"
+ if not palette.valid(item) then detail.FailureReason=lastError;return false,lastError end
+ local activated,changed=false,false
+ local activatedConnection=item.button.Activated:Connect(function() activated=true end)
+ local colorConnection=player:GetAttributeChangedSignal("PaintBucketColor"):Connect(function() changed=true end)
+ local ok,problem=pcall(function()
+  for attempt=1,2 do
+   detail.Retry=attempt-1;activated,changed=false,false
+   if not palette.allowed(token) then error("Focus/tool/session lost; transaction canceled") end
+   if not settleRelease() then error("Previous release unresolved") end
+   if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then error("External Mouse1 held; no palette click") end
+   local point,why=palette.center(item)
+   if not point then lastError=why else
+    detail.TargetControlPosition=tostring(item.button.AbsolutePosition);detail.TargetControlVisible=true
+    local moved,moveError=callInput(function() virtualInput:SendMousePosition(point) end)
+    detail.VirtualInputMoveSucceeded=moved
+    if not moved then lastError="VirtualInput move rejected: "..tostring(moveError) else
+     for _=1,(attempt==1 and PAL.SettleFrames or PAL.RetrySettleFrames) do RunService.RenderStepped:Wait() end
+     if not palette.allowed(token) then error("Focus/tool/session lost after cursor move") end
+     local cursor=UserInputService:GetMouseLocation();detail.CursorPositionAfter=tostring(cursor)
+     local currentPoint=palette.center(item);local top=palette.topButton(cursor)
+     detail.TopButtonAtClick=top and top:GetFullName() or "none"
+     if not currentPoint or (currentPoint-point).Magnitude>1 or (cursor-point).Magnitude>2 or top~=item.button then
+      lastError="Cursor/layout/top button changed before DOWN"
+     else
+      local owner={Method=primaryMethod,Tool=activationTool,Down=downSeen,EquippedDown=equippedDownSeen,ToolDown=toolDownSeen,Started=os.clock(),Kind="PALETTE"}
+      ownedInput,held=owner,true
+      local down,downError=callInput(function() virtualInput:SendMouseButton(point,Enum.UserInputType.MouseButton1,true,0) end)
+      owner.DownFailed=not down;detail.MouseDownSent=down
+      local holdEnd=os.clock()+(attempt==1 and PAL.ClickHold or PAL.RetryClickHold)
+      while down and palette.allowed(token) and not owner.ReleaseSent and os.clock()<holdEnd do RunService.Heartbeat:Wait() end
+      local released=settleRelease();detail.MouseUpSent=owner.ReleaseSent and not owner.ReleaseError
+      if not released then error("Palette UP unresolved") end
+      if not down then lastError="Palette DOWN rejected: "..tostring(downError)
+      elseif not palette.allowed(token) then error("Focus/tool/session lost during palette click")
+      else
+       palette.current.PaletteStep="VERIFYING"
+       local success=palette.waitUntil(successPredicate,token,PAL.Verify)
+       detail.ActivatedObserved=activated;detail.AttributeChangedObserved=changed;detail.FinalPaletteRGB=rgbText(paletteColor())
+       if success then
+        detail.PaletteSuccessVia=intended and (activated and "ACTIVATED+ATTRIBUTE" or "ATTRIBUTE") or "OTHER"
+        item.lastUse=os.clock();item.successes=(item.successes or 0)+1;item.validated=true
+        return true
+       end
+       lastError=intended and "Intended PaintBucketColor not observed after native click" or (step.." postcondition not observed")
+      end
+     end
+    end
+   end
+   item.failures=(item.failures or 0)+1
+   detail.FailureReason=lastError
+   if not palette.allowed(token) then error("Focus/tool/session lost; no retry") end
+   palette.current.PaletteStep=step
+  end
+  return false
+ end)
+ activatedConnection:Disconnect();colorConnection:Disconnect()
+ if ownedInput then settleRelease() end
+ detail.ActivatedObserved=activated;detail.AttributeChangedObserved=changed;detail.FinalPaletteRGB=rgbText(paletteColor())
+ if ok and problem==true then detail.FailureReason="";return true end
+ detail.FailureReason=ok and lastError or tostring(problem)
+ return false,detail.FailureReason
+end
+function palette.mapBlocked(entry,item)
+ if palette.closeRequired then return true end
+ if mouse.Target==entry.part and palette.topButton(UserInputService:GetMouseLocation()) then return true end
+ local camera=Workspace.CurrentCamera
+ local world=entry.lastWorld or entry.part.Position
+ local p,visible=camera:WorldToViewportPoint(world)
+ if not visible then return false end
+ local insetAtPoint=GuiService:GetGuiInset()
+ local point=Vector2.new(p.X+insetAtPoint.X,p.Y+insetAtPoint.Y)
+ local top=palette.topButton(point)
+ if top then return true end
+ -- Active frames in the palette's ScreenGui can also block map clicks.
+ local root=item.button
+ while root.Parent and root.Parent~=playerGui do root=root.Parent end
+ local inset=GuiService:GetGuiInset()
+ local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)
+ if ok then for _,o in ipairs(objects) do if o:IsDescendantOf(root) and o.Active then return true end end end
+ return false
 end
 function palette.prepare(entry,token,service)
-	local item=palette.find(entry.civilColor)
-	if not item then return false,"No learned native palette button for this assignment" end
-	service.attributeBefore=paletteColor();service.attributeAfterSet=nil -- no attribute write is performed
-	service.previousIntended=v7.previousIntended;v7.previousIntended=entry.civilColor
-	if not palette.visible(item.button) then
-		local ok,why=palette.click(palette.opener,token);if not ok then return false,why end
-		local visibleDeadline=os.clock()+CFG.PaletteTimeout
-		while alive and running and token==workerToken and not palette.visible(item.button) and os.clock()<visibleDeadline do RunService.Heartbeat:Wait() end
-	end
-	local ok,why=palette.click(item,token);service.paletteUISelection=why
-	if not ok then return false,why end
-	local deadline=os.clock()+CFG.PaletteTimeout
-	while running and alive and token==workerToken and not colorsMatch(paletteColor(),entry.civilColor) and os.clock()<deadline do RunService.Heartbeat:Wait() end
-	service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()
-	if not colorsMatch(service.attributeAfter,entry.civilColor) then return false,"Native UI click did not establish the intended exposed color" end
-	if palette.closer and palette.visible(palette.closer.button) then
-		local closed,whyClose=palette.click(palette.closer,token);if not closed then return false,whyClose end
-	end
-	service.paletteProof="Native palette Activated observed + normalized attribute match; working color pending province result"
-	return alive and running and token==workerToken
+ local started=os.clock();local item=palette.find(entry.civilColor);entry.civilControl=item
+ local trace={PaletteStep="IDLE",EntryId=entry.id,IntendedRGB=rgbText(entry.civilColor),CurrentPaintBucketRGB=rgbText(paletteColor()),
+ Steps={},OpenerAttempted=false,OpenerActivatedObserved=false,PaletteBecameVisible=false,OpenerFailures=0,CloserAttempts=0,CloserFailures=0,
+ PaletteSuccessVia="none",FailureReason=""}
+ palette.current=trace
+ if #palette.transactions>=20 then table.remove(palette.transactions,1) end;table.insert(palette.transactions,trace)
+ service.attributeBefore=paletteColor();service.previousIntended=v7.previousIntended;v7.previousIntended=entry.civilColor
+ local function finish(ok,why)
+  trace.PaletteStep=ok and "COMPLETE" or "FAILED";trace.FailureReason=why or "";trace.FinalPaletteRGB=rgbText(paletteColor())
+  trace.PaletteMs=(os.clock()-started)*1000
+  service.paletteUISelection=item and item.path or "unavailable"
+  service.paletteProof="Native selected-color observation: "..trace.PaletteSuccessVia.."; working color confirmed only by province result"
+  service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()
+  if not ok then palette.status=trace.FailureReason end
+  return ok,why
+ end
+ if not item then return finish(false,"No valid native palette mapping for assignment") end
+ if not palette.allowed(token) then return finish(false,"Focus/tool/session unavailable") end
+ if colorsMatch(paletteColor(),entry.civilColor) then
+  palette.metrics.PaletteSkipsAlreadyCorrect+=1;trace.PaletteSuccessVia="ALREADY_CORRECT_ATTRIBUTE"
+ else
+  if not palette.visible(item.button) then
+   trace.OpenerAttempted=true;palette.metrics.OpenerUses+=1
+   local opened,why=palette.click(palette.opener,token,"OPENING",function() return palette.visible(item.button) end)
+   local click=trace.Click;trace.OpenerActivatedObserved=click and click.ActivatedObserved or false
+   trace.PaletteBecameVisible=palette.visible(item.button)
+   if not opened then trace.OpenerFailures=1;palette.metrics.OpenerFailures+=1;return finish(false,"OPENER_FAILED: "..tostring(why)) end
+  end
+  trace.PaletteBecameVisible=palette.visible(item.button)
+  palette.metrics.PaletteSelections+=1;local selectingAt=os.clock()
+  local selected,why=palette.click(item,token,"SELECTING",function() return colorsMatch(paletteColor(),entry.civilColor) end,entry.civilColor)
+  palette.metrics.PaletteSelectionTotal+=(os.clock()-selectingAt)*1000
+  if not selected then palette.metrics.PaletteSelectionFailures+=1;return finish(false,"SWATCH_FAILED: "..tostring(why)) end
+  palette.metrics.PaletteSelectionSuccesses+=1;trace.PaletteSuccessVia=trace.Click.PaletteSuccessVia
+ end
+ if palette.mapBlocked(entry,item) then
+  if not palette.valid(palette.closer) then return finish(false,"PALETTE_BLOCKS_TARGET: learn a closer or move/close native palette") end
+  trace.CloserAttempts=1;palette.metrics.CloserUses+=1
+  local closed,why=palette.click(palette.closer,token,"CLOSING",function()
+   if palette.closeRequired then return not palette.visible(item.button) end
+   return not palette.mapBlocked(entry,item)
+  end)
+  if not closed then trace.CloserFailures=1;palette.metrics.CloserFailures+=1;return finish(false,"CLOSER_FAILED: "..tostring(why)) end
+ end
+ if not palette.allowed(token) then return finish(false,"Transaction canceled") end
+ return finish(true)
+end
+function palette.database(compact)
+ local lines={compact and "Name | RGB | FullGuiPath" or "LEARNED NATIVE PALETTE COLORS"}
+ for _,item in ipairs(palette.controls) do
+  local valid=palette.valid(item);local button=item.button
+  if compact then table.insert(lines,button.Name.." | "..rgbText(item.color).." | "..item.path)
+  else
+   table.insert(lines,string.format("%03d | %s | %s\nRGB=%s | ColorKey=%s | ButtonVisible=%s | ButtonValid=%s\nAbsolutePosition=%s | AbsoluteSize=%s | LearnedClickOffset=%s\nLastSuccessfulUse=%s | SuccessfulAutomaticSelections=%d | FailedAutomaticSelections=%d | CurrentSessionVerified=%s",
+    item.index,button.Name,item.path,rgbText(item.color),item.key,tostring(palette.visible(button)),tostring(valid),tostring(button.AbsolutePosition),tostring(button.AbsoluteSize),tostring(item.offset),tostring(item.lastUse or "never"),item.successes or 0,item.failures or 0,tostring(item.validated)))
+  end
+ end
+ return table.concat(lines,"\n")
+end
+function palette.assignments()
+ local lines={"FULL CIVIL ASSIGNMENTS"}
+ for _,e in ipairs(entries) do
+  local item=e.civilColor and palette.find(e.civilColor)
+  table.insert(lines,entryLabel(e).." | AssignedColorName="..(item and item.button.Name or "unassigned").." | AssignedRGB="..rgbText(e.civilColor).." | LearnedPaletteIndex="..tostring(item and item.index).." | PaletteControlPath="..(item and item.path or "unavailable").." | LastActualRGB="..rgbText(e.part.Color).." | State="..(colorsMatch(e.part.Color,e.civilColor) and "CLEAN" or "DIRTY"))
+ end
+ return table.concat(lines,"\n")
+end
+function palette.transactionReport()
+ local lines={"CIVIL PALETTE TRANSACTIONS (last 20; local evidence)"}
+ local fields={"PaletteStep","EntryId","IntendedRGB","CurrentPaintBucketRGB","PaletteSuccessVia","FinalPaletteRGB","FailureReason","PaletteMs","OpenerAttempted","OpenerActivatedObserved","PaletteBecameVisible","OpenerFailures","CloserAttempts","CloserFailures"}
+ local clickFields={"Role","Retry","TargetControlName","TargetControlPath","TargetControlVisible","TargetControlPosition","CursorPositionBefore","CursorPositionAfter","TopButtonAtClick","VirtualInputMoveSucceeded","MouseDownSent","MouseUpSent","ActivatedObserved","AttributeChangedObserved","FinalPaletteRGB","PaletteSuccessVia","FailureReason"}
+ for _,trace in ipairs(palette.transactions) do
+  for _,key in ipairs(fields) do table.insert(lines,key.."="..tostring(trace[key])) end
+  for _,click in ipairs(trace.Steps) do for _,key in ipairs(clickFields) do table.insert(lines,"  "..key.."="..tostring(click[key])) end end
+ end
+ return table.concat(lines,"\n")
 end
 function palette.inspect()
-	local lines={"PALETTE UI INVENTORY (read-only; names/visual colors are NOT proof of working controls)"};local count=0
-	for _,o in ipairs(playerGui:GetDescendants()) do
-		if (o:IsA("TextButton") or o:IsA("ImageButton")) and not o:IsDescendantOf(playerGui:FindFirstChild(GUI_NAME)) then
-			local path=o:GetFullName();local lower=string.lower(path)
-			if lower:find("paint",1,true) or lower:find("color",1,true) or lower:find("palette",1,true) then
-				count+=1;if count<=80 then table.insert(lines,path.." | Visible="..tostring(palette.visible(o)).." | BackgroundRGB="..rgbText(o.BackgroundColor3)) end
-			end
-		end
-	end
-	table.insert(lines,"Matching buttons="..count.."; inventory capped at 80 lines; no controls clicked")
-	return table.concat(lines,"\n")
+ return palette.database(false).."\n"..palette.assignments().."\n"..palette.transactionReport()
+end
+function palette.copy(text,filename)
+ if type(setclipboard)=="function" and pcall(setclipboard,text) then return true end
+ if type(writefile)=="function" and pcall(writefile,filename,text) then return true end
+ return false
+end
+function palette.profile()
+ local data={Version=1,PlaceId=game.PlaceId,Controls={}}
+ local function row(item)
+  if not palette.valid(item) then return nil end
+  local r,g,b=normalizedRGB(item.color)
+  local segments={};for _,part in ipairs(item.segments) do table.insert(segments,{Name=part.Name,ClassName=part.ClassName}) end
+  return {Path=segments,FullGuiPath=item.path,RGB=r and {r,g,b} or nil,ColorKey=item.key,Signature=palette.signature(item.button),NormalizedClick={0.5,0.5}}
+ end
+ for _,item in ipairs(palette.controls) do if palette.valid(item) then table.insert(data.Controls,row(item)) end end
+ data.Opener=row(palette.opener);data.Closer=row(palette.closer)
+ return data
+end
+function palette.import(data)
+ if running or workerActive or starting or ownedInput or selecting then return false,"Stop/finish selection before import" end
+ if type(data)~="table" or data.Version~=1 or data.PlaceId~=game.PlaceId or type(data.Controls)~="table" or #data.Controls>PAL.MaxControls then return false,"Invalid profile version/game/size" end
+ local built,seen={},{}
+ local function resolve(row,needsColor)
+  if type(row)~="table" or type(row.Path)~="table" or #row.Path>32 or #row.Path==0 or type(row.Signature)~="table" then error("Invalid GUI path/signature") end
+  local button=playerGui
+  for _,segment in ipairs(row.Path) do
+   if type(segment)~="table" or type(segment.Name)~="string" or type(segment.ClassName)~="string" then error("Invalid path segment") end
+   local found=nil
+   for _,child in ipairs(button:GetChildren()) do if child.Name==segment.Name and child.ClassName==segment.ClassName then if found then error("Ambiguous GUI path; relearn") end;found=child end end
+   if not found then error("GUI path changed/missing; relearn") end;button=found
+  end
+  if not (button:IsA("TextButton") or button:IsA("ImageButton")) then error("Profile target is not a native button") end
+  local own=playerGui:FindFirstChild(GUI_NAME);if own and button:IsDescendantOf(own) then error("Controller UI is not native palette") end
+  local signature=palette.signature(button)
+  for _,key in ipairs({"ClassName","Name","Text","Image","BackgroundRGB"}) do if signature[key]~=row.Signature[key] then error("GUI signature changed; relearn") end end
+  local item=palette.capture(button,button.AbsolutePosition+button.AbsoluteSize*0.5+GuiService:GetGuiInset());item.validated=false;item.imported=true
+  if needsColor then
+   if type(row.RGB)~="table" or #row.RGB~=3 then error("Invalid RGB") end
+   for _,v in ipairs(row.RGB) do if type(v)~="number" or v~=v or v<0 or v>255 or v%1~=0 then error("Invalid RGB byte") end end
+   item.color=Color3.fromRGB(row.RGB[1],row.RGB[2],row.RGB[3]);item.key=colorKey(item.color)
+   if item.key~=row.ColorKey or seen[button] then error("Invalid key/duplicate control") end
+   for _,other in ipairs(built) do if colorsMatch(item.color,other.color) then error("Duplicate/near-identical profile color") end end
+   seen[button]=true;item.index=#built+1;table.insert(built,item)
+  end
+  return item
+ end
+ local ok,extra=pcall(function()
+  for _,row in ipairs(data.Controls) do resolve(row,true) end
+  return {opener=data.Opener and resolve(data.Opener,false),closer=data.Closer and resolve(data.Closer,false)}
+ end)
+ if not ok then return false,tostring(extra) end
+ palette.controls=built;palette.byButton={};palette.nextIndex=#built
+ for _,item in ipairs(built) do palette.byButton[item.button]=item end
+ palette.opener,palette.closer=extra.opener,extra.closer
+ palette.status=string.format("Imported %d mappings; current GUI revalidated, selected color verified on use",#built)
+ return true
 end
 
 local function saveView()
@@ -996,6 +1236,11 @@ function v7.record(service,stalled)
 		AcquisitionMs=service.acquiredAt and (e.lastAcquireSeconds or 0)*1000 or 0,QueueWaitMs=service.queueWaitMs or 0,
 		PalettePreparationMs=service.paletteMs or 0,ServiceMs=service.validAt and math.max(0,os.clock()-service.validAt)*1000 or 0,AcquiredToCorrectMs=service.latency and service.latency*1000 or "unobserved",
 		Result=result,ActualChanged=not colorsMatch(service.actualBefore,actual)}
+	if service.civil then
+		record.Civil=true;record.DefenseResponseMs=service.success and service.attackAt and math.max(0,(service.entry.lastCorrectedTime or os.clock())-service.attackAt)*1000 or nil
+		record.PaintMs=service.validAt and (service.success and math.max(0,(service.entry.lastCorrectedTime or os.clock())-service.validAt)*1000 or math.min(record.ServiceMs,service.dwell*1000)) or 0
+		record.ReleaseMs=math.max(0,record.ServiceMs-record.PaintMs)
+	end
 	service.record=record
 	if #v7.records>=20 then table.remove(v7.records,1) end;table.insert(v7.records,record)
 	v7.ActualRGB,v7.TargetRGB,v7.DeltaRGB=record.ActualRGBAfter,record.IntendedRGB,record.DeltaRGB
@@ -1077,7 +1322,7 @@ function v7.report()
 	table.insert(lines,"CIVIL ASSIGNMENTS (native palette controls, not arbitrary RGB)")
 	for _,e in ipairs(entries) do table.insert(lines,entryLabel(e).." | AssignedCivilRGB="..rgbText(e.civilColor).." | AssignedCivilColorKey="..colorKey(e.civilColor)) end
 	table.insert(lines,"LAST 20 TARGET TRANSACTIONS (normalized local observations; not server acknowledgments)")
-	local fields={"EntryId","Position","IntendedRGB","PaletteAttributeBefore","AttributeAfterSet","PaletteAttributeAfter","AttributeAfterEquip","PaletteUISelection","PaletteProof","PreviousIntendedRGB","ActualRGBBefore","ActualRGBAfter","DeltaRGB","NormalizedMatch","MouseTargetCorrect","ActualChanged","QueueWaitMs","AcquisitionMs","PalettePreparationMs","ServiceMs","AcquiredToCorrectMs","Result"}
+	local fields={"EntryId","Position","IntendedRGB","PaletteAttributeBefore","AttributeAfterSet","PaletteAttributeAfter","AttributeAfterEquip","PaletteUISelection","PaletteProof","PreviousIntendedRGB","ActualRGBBefore","ActualRGBAfter","DeltaRGB","NormalizedMatch","MouseTargetCorrect","ActualChanged","QueueWaitMs","AcquisitionMs","PalettePreparationMs","ServiceMs","AcquiredToCorrectMs","PaintMs","ReleaseMs","DefenseResponseMs","Result"}
 	for _,record in ipairs(v7.records) do
 		table.insert(lines,record.Label)
 		for _,key in ipairs(fields) do table.insert(lines,"  "..key.."="..tostring(record[key])) end
@@ -1085,6 +1330,28 @@ function v7.report()
 	return table.concat(lines,"\n")
 end
 
+function palette.performance()
+ local r=table.clone(palette.metrics)
+ r.AveragePaletteSelectionMs=r.PaletteSelections>0 and r.PaletteSelectionTotal/r.PaletteSelections or 0
+ local arm=policy.stats(policy.civil)
+ r.CivilSuccessfulPaints=arm.Successes;r.CivilCorrectionsPerSecond=arm.CorrectionsPerSecond;r.AverageCivilServiceMs=arm.AverageServiceMs
+ local count,defense,defenseN,queue,acq,paint,release,pal=0,0,0,0,0,0,0,0
+ for _,record in ipairs(v7.records) do if record.Civil then
+  count+=1;queue+=record.QueueWaitMs;acq+=record.AcquisitionMs;paint+=record.PaintMs;release+=record.ReleaseMs;pal+=record.PalettePreparationMs
+  if record.DefenseResponseMs then defense+=record.DefenseResponseMs;defenseN+=1 end
+ end end
+ r.AverageCivilDefenseResponseMs=defenseN>0 and defense/defenseN or 0
+ r.AverageCivilPaletteMs=count>0 and pal/count or 0
+ r.CivilTimingSampleCount=count;r.CivilDefenseSampleCount=defenseN
+ r.AverageCivilQueueMs=count>0 and queue/count or 0;r.AverageCivilAcquisitionMs=count>0 and acq/count or 0
+ r.AverageCivilPaintMs=count>0 and paint/count or 0;r.AverageCivilReleaseBoundaryMs=count>0 and release/count or 0
+ r.PaletteStep=palette.current.PaletteStep;r.ResumeRequired=palette.resumeNeeded
+ return r
+end
+function palette.baseline()
+ local p=policy.stats(policy.normal.PER_TARGET)
+ return string.format("NORMAL BASELINE COMPARISON (user-verified v7; informational, not a benchmark guarantee)\nBaseline RecentSuccessRate=100%% RecentCorrectionsPerSecond=16.15 AvgServiceMs=49.5 AvgAcquiredToColorMs=45.4\nCurrent WindowAttempts=%d WindowSuccesses=%d SuccessRate=%.2f%% CorrectionsPerSecond=%.3f AvgServiceMs=%.3f AvgAcquiredToColorMs=%.3f\nNo regression/improvement conclusion from tiny or unmatched samples; compare equal workload/server conditions.",p.WindowAttempts,p.WindowSuccesses,p.SuccessRate*100,p.CorrectionsPerSecond,p.AverageServiceMs,p.AverageAcquiredToColorMs)
+end
 local function reportPerformance()
 	policy.account()
 	local now = os.clock(); local duration = runSeconds + (runStartedAt and now-runStartedAt or 0)
@@ -1117,6 +1384,7 @@ local function reportPerformance()
 	result.AverageAttackColorChangeToCorrectedMs=metrics.FreshAttackCorrections>0 and metrics.AttackResponseTotal/metrics.FreshAttackCorrections or 0
 	result.RecentlyChangedQueueDepth=freshCount
 	for key,value in pairs(v7.stats()) do result[key]=value end
+	for key,value in pairs(palette.performance()) do result[key]=value end
 	result.Strategies={PER_TARGET=policy.stats(policy.normal.PER_TARGET),CONTINUOUS=policy.stats(policy.normal.CONTINUOUS),CIVIL_WAR=policy.stats(policy.civil)}
 	return result
 end
@@ -1706,7 +1974,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v7"
+title.Text = "AutoPainter · HANDS FREE v8"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -1777,6 +2045,17 @@ v7.learnButton=button("Learn native palette colors",500);v7.learnButton.Size=UDi
 v7.openerButton=button("Learn palette opener",500);v7.openerButton.Position=UDim2.fromOffset(210,500);v7.openerButton.Size=UDim2.fromOffset(190,30)
 v7.closerButton=button("Learn palette closer",535);v7.closerButton.Size=UDim2.fromOffset(190,30)
 v7.dirtyButton=button("Dirty markers: ON",535);v7.dirtyButton.Position=UDim2.fromOffset(210,535);v7.dirtyButton.Size=UDim2.fromOffset(190,30)
+local palettePanel=Instance.new("Frame")
+palettePanel.Name="PaletteDatabasePanel";palettePanel.Size=UDim2.fromOffset(245,575);palettePanel.Position=UDim2.fromOffset(416,0)
+palettePanel.BackgroundColor3=frame.BackgroundColor3;palettePanel.Parent=frame
+palette.buttons={}
+for i,label in ipairs({"Copy Learned Palette","Export Palette Profile","Import Palette Profile","Reroll Civil Colors","Pool: ALL LEARNED","Combat HUD: OFF","Close palette: AUTO"}) do
+ local b=button(label,10+(i-1)*44);b.Parent=palettePanel;b.Size=UDim2.new(1,-20,0,36);palette.buttons[i]=b
+end
+palette.seedBox=Instance.new("TextBox");palette.seedBox.Name="CivilRandomSeed";palette.seedBox.PlaceholderText="Reroll seed (blank = random)"
+palette.seedBox.Text="";palette.seedBox.TextSize=14;palette.seedBox.Size=UDim2.new(1,-20,0,34);palette.seedBox.Position=UDim2.fromOffset(10,325);palette.seedBox.Parent=palettePanel
+palette.info=Instance.new("TextLabel");palette.info.Position=UDim2.fromOffset(10,365);palette.info.Size=UDim2.new(1,-20,0,200)
+palette.info.BackgroundTransparency=1;palette.info.TextColor3=Color3.new(1,1,1);palette.info.TextWrapped=true;palette.info.TextSize=14;palette.info.Parent=palettePanel
 local performanceFields={"ActivationStrategy","StrategyConfigured","StrategyDecisionCached","StrategyDecisionReason","VirtualInputHold",
 	"DownEvents","UpEvents","Attempts","CompletedServices","AbortedServices","SuccessfulPaints","SuccessRate","CorrectionsPerSecond","OverallCorrectionsPerSecond",
 	"AverageTargetDwellMs","AdaptiveDwellMs","AverageAcquisitionMs","AverageAcquiredToColorMs","AverageSwitchMs","ActiveTarget","DirtyCount","Deferred","Stalled",
@@ -1785,7 +2064,7 @@ local performanceFields={"ActivationStrategy","StrategyConfigured","StrategyDeci
 	"FreshAttackCorrections","AverageAttackColorChangeToCorrectedMs","MinimumAttackResponseMs","MaximumAttackResponseMs","RecentlyChangedQueueDepth",
 	"SessionConfirmed","Runtime","AutoPainterRPCs"}
 local function performanceReport()
-	local m=reportPerformance();local lines={"AUTOPAINTER v7 — observed corrections; native RPCs unobserved"}
+	local m=reportPerformance();local lines={"AUTOPAINTER v8 — observed corrections; native RPCs unobserved"}
 	for _,key in ipairs(performanceFields) do table.insert(lines,key.."="..tostring(m[key])) end
 	table.insert(lines,"STRATEGY BENCHMARK (rolling completed services; work time includes acquisition/release/retry; clean idle excluded)")
 	for _,name in ipairs({"PER_TARGET","CONTINUOUS","CIVIL_WAR"}) do
@@ -1796,6 +2075,9 @@ local function performanceReport()
 	end
 	table.insert(lines,dirtyEventReport())
 	table.insert(lines,v7.report())
+	table.insert(lines,palette.baseline())
+	local pm=palette.performance();local pk={};for k in pairs(pm) do table.insert(pk,k) end;table.sort(pk)
+	for _,key in ipairs(pk) do table.insert(lines,key.."="..tostring(pm[key])) end
 	return table.concat(lines,"\n")
 end
 local function copyActivationReport()
@@ -1826,7 +2108,7 @@ local function updateUI()
 	frame.Visible = not running and not selecting
 	liveStatus.Visible = running or selecting=="PALETTE"
 	modeButton.Text = "Mode: " .. mode
-	startButton.Text = running and "STOP AUTO" or "START AUTO"
+	startButton.Text = running and "STOP AUTO" or (palette.resumeNeeded and "RESUME" or "START AUTO")
 	local c = normalTarget or paletteColor()
 	counts.Text = string.format(
 		"Selected: %d · Dirty: %d · Mode: %s\nCorrections: %d · Aim fails: %d · No effect: %d · Input errors: %d",
@@ -1842,7 +2124,7 @@ local function updateUI()
 			or "\nCivil War: unique target color per province")
 
 	local perf=reportPerformance()
-	liveStatus.Text=string.format("AUTO v7 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
+	liveStatus.Text=string.format("AUTO v8 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
 		perf.ActivationStrategy,activation.Method,activation.Observation,
 		perf.DirtyCount,perf.Attempts,perf.SuccessfulPaints,perf.SuccessRate*100,perf.CorrectionsPerSecond,
 		perf.AverageTargetDwellMs,perf.AdaptiveDwellMs,perf.AverageAcquisitionMs,perf.AverageAcquiredToColorMs,perf.AverageSwitchMs,
@@ -1851,7 +2133,15 @@ local function updateUI()
 		perf.ColorEventsReceived,perf.DirtyEventsWithoutHover,perf.AverageColorEventToDirtyQueueMs,perf.MaxColorEventToDirtyQueueMs,
 		perf.RecentlyChangedQueueDepth,perf.FreshAttackCorrections,perf.AverageAttackColorChangeToCorrectedMs,perf.ActiveTarget)
 
-	if selecting=="PALETTE" then
+	local capacity=perf.CivilCapacity
+ palette.info.Text=string.format("Civil capacity: %d unique colors\nSelected: %d\nCapacity available: %s\nSeed: %s\n%s\n%s",capacity,#entries,capacity>=#entries and "YES" or "NO",tostring(palette.seed or "automatic"),palette.status,palette.current.PaletteStep)
+ if running and mode=="CIVIL WAR" then liveStatus.Text..="\nPalette: "..palette.current.PaletteStep.." | "..tostring(palette.current.IntendedRGB).." | "..tostring(palette.current.Click and palette.current.Click.TargetControlName or "already selected") end
+ if running and palette.compactHUD then
+  local recent=perf.Strategies.PER_TARGET
+  liveStatus.Size=UDim2.fromOffset(330,112)
+  liveStatus.Text=string.format("AUTO · Q/Escape STOP · %s\nDirty %d · Recent %.0f%% · Corrections/s %.2f\nMedian/P90 response %.1f / %.1f ms\n%s",mode,perf.DirtyCount,recent.SuccessRate*100,perf.CorrectionsPerSecond,perf.MedianDefenseResponseMs,perf.P90DefenseResponseMs,perf.ActiveTarget)
+ else liveStatus.Size=UDim2.fromOffset(470,250) end
+ if selecting=="PALETTE" then
 		liveStatus.Text="NATIVE PALETTE SETUP · "..tostring(palette.learning or "Captured").."\n"..palette.status.."\nClick only the normal game's palette controls, then DONE / FINISH SETUP."
 	end
 
@@ -1867,6 +2157,7 @@ local function beginSelection(kind)
 end
 
 local function finishSelection()
+	if selecting=="PALETTE" then palette.status=string.format("Palette learned: %d verified colors",#palette.available()) end
 	palette.learning=nil;palette.pending=nil
 	selecting = nil
 	frame.Visible = true
@@ -1890,6 +2181,47 @@ v7.dirtyButton.Activated:Connect(function()
 	CFG.ShowDirtyState=not CFG.ShowDirtyState;v7.dirtyButton.Text="Dirty markers: "..(CFG.ShowDirtyState and "ON" or "OFF")
 	for _,entry in ipairs(entries) do v7.draw(entry) end
 end)
+
+function palette.reroll(seed)
+ if running or workerActive or starting or ownedInput or selecting then return false,"Stop and finish selection before reroll" end
+ if seed~=nil and (type(seed)~="number" or seed~=seed or seed%1~=0 or seed<1 or seed>2147483646) then return false,"Seed must be an integer 1..2147483646" end
+ palette.seed=seed;palette.seedSupplied=seed~=nil
+ local ok,why=palette.assign(true)
+ if ok then rebuildDirty();palette.status="Civil assignments rerolled; START required" else palette.status=why end
+ updateUI();return ok,why
+end
+function palette.exportProfile()
+ local ok,text=pcall(function() return game:GetService("HttpService"):JSONEncode(palette.profile()) end)
+ if not ok then return false,"Profile encoding failed" end
+ -- A durable file is preferred; clipboard remains available when file APIs are absent.
+ if type(writefile)=="function" and pcall(writefile,"AutoPainterPaletteProfile.json",text) then return true end
+ return palette.copy(text,"AutoPainterPaletteProfile.json")
+end
+function palette.importProfile(text)
+ if text==nil then
+  if type(readfile)~="function" then return false,"readfile unavailable; pass profile JSON to ImportPaletteProfile(text)" end
+  local ok,value=pcall(readfile,"AutoPainterPaletteProfile.json");if not ok then return false,"Palette profile file unavailable" end;text=value
+ end
+ if type(text)~="string" or #text>1000000 then return false,"Invalid/oversized profile JSON" end
+ local ok,data=pcall(function() return game:GetService("HttpService"):JSONDecode(text) end)
+ if not ok then return false,"Invalid palette profile JSON" end
+ return palette.import(data)
+end
+palette.buttons[1].Activated:Connect(function() palette.copy(palette.database(true),"AutoPainterLearnedPalette.txt") end)
+palette.buttons[2].Activated:Connect(function() local ok,why=palette.exportProfile();palette.status=ok and "Palette profile exported" or tostring(why);updateUI() end)
+palette.buttons[3].Activated:Connect(function() local ok,why=palette.importProfile();if not ok then palette.status=tostring(why) end;updateUI() end)
+palette.buttons[4].Activated:Connect(function()
+ local text=palette.seedBox.Text;local seed=text~="" and tonumber(text) or nil
+ if text~="" and not seed then palette.status="Invalid seed";updateUI();return end
+ local ok,why=palette.reroll(seed);if not ok then palette.status=tostring(why);updateUI() end
+end)
+palette.buttons[5].Activated:Connect(function()
+ if running or workerActive then return end
+ local pools={"ALL LEARNED","HIGH CONTRAST","VIVID","DARK","LIGHT"};local i=table.find(pools,palette.pool) or 1
+ palette.pool=pools[i%#pools+1];palette.buttons[5].Text="Pool: "..palette.pool;palette.status="Pool changed; reroll to replace existing assignments";updateUI()
+end)
+palette.buttons[6].Activated:Connect(function() palette.compactHUD=not palette.compactHUD;palette.buttons[6].Text="Combat HUD: "..(palette.compactHUD and "ON" or "OFF");updateUI() end)
+palette.buttons[7].Activated:Connect(function() if running or workerActive then return end;palette.closeRequired=not palette.closeRequired;palette.buttons[7].Text="Close palette: "..(palette.closeRequired and "REQUIRED" or "AUTO");updateUI() end)
 
 local function startAutoImpl()
 	local startToken = workerToken
@@ -1964,6 +2296,7 @@ local function startAuto()
 	local ok, value = pcall(startAutoImpl)
 	starting = false
 	if not ok then stop("Activation start error: " .. tostring(value)); updateUI(); return false end
+	if value then palette.resumeNeeded=false end
 	return value
 end
 
@@ -1975,6 +2308,7 @@ end
 modeButton.Activated:Connect(function()
 	if running then stop("Stopped before changing mode") end
 	mode = mode == "NORMAL" and "CIVIL WAR" or "NORMAL"
+	if mode=="NORMAL" then normalTarget=paletteColor() end
 	rebuildDirty()
 	lastMessage = mode == "NORMAL"
 		and "Normal mode uses the current PaintBucket palette color"
@@ -2060,14 +2394,15 @@ gui.Destroying:Connect(closeController)
 
 connectLifetime(player:GetAttributeChangedSignal("PaintBucketColor"), function()
 	palette.onColor()
-	if running and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("Normal palette changed; restart with the desired color") end
+	if running and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("NORMAL target color changed — restart required") end
 end)
 
 connectLifetime(UserInputService.WindowFocusReleased, function()
 	focused=false
+	palette.resumeNeeded=running or workerActive
 	stop("Client lost focus; activation stopped")
 end)
-connectLifetime(UserInputService.WindowFocused, function() focused=true;wakeWork() end)
+connectLifetime(UserInputService.WindowFocused, function() focused=true;if palette.resumeNeeded then lastMessage="Focus restored — press RESUME";updateUI() end;wakeWork() end)
 connectLifetime(player:GetPropertyChangedSignal("Character"), function()
 	if running then stop("Character changed; restart Auto") end
 end)
@@ -2096,6 +2431,18 @@ end)
 updateUI()
 
 local api = {
+ GetLearnedPaletteReport=function() return palette.database(false) end,
+ CopyLearnedPalette=function() return palette.copy(palette.database(true),"AutoPainterLearnedPalette.txt") end,
+ GetPaletteProfile=palette.profile, ImportPaletteData=palette.import,
+ ExportPaletteProfile=palette.exportProfile, ImportPaletteProfile=palette.importProfile,
+ RerollCivilColors=palette.reroll,
+ SetCivilPool=function(value)
+  if running or workerActive or ownedInput or not table.find({"ALL LEARNED","HIGH CONTRAST","VIVID","DARK","LIGHT"},value) then return false end
+  palette.pool=value;palette.buttons[5].Text="Pool: "..value;return true
+ end,
+ GetPaletteTransactionReport=palette.transactionReport,
+ GetNormalBaselineReport=palette.baseline,
+
 	GetPerformanceStats = reportPerformance,
 	GetTargetStats = function(part)
 		local e=lookup[part];if not e then return nil end
@@ -2107,6 +2454,7 @@ local api = {
 			ActualRGB=rgbText(e.part.Color),TargetRGB=rgbText(targetColor(e)),DeltaRGB=colorDelta(e.part.Color,targetColor(e)),
 			LocalColorEventReceivedAt=e.lastColorEventTime,LocalDirtyQueuedAt=e.dirtyQueueInsertTime,LocalColorEventToQueueMs=e.localQueueLatencyMs,
 			LastWrongColorChange=e.lastWrongColorChange,FreshAttackAt=e.freshAttackAt,
+			AssignedColorName=e.civilControl and e.civilControl.button.Name,LearnedPaletteIndex=e.civilControl and e.civilControl.index,PaletteControlPath=e.civilControl and e.civilControl.path,
 			MarkerThickness=e.box and e.box.LineThickness,MarkerColor=e.box and e.box.Color3,
 			TargetColor=targetColor(e),DirtySince=e.dirtySince,DirtyQueueInsertTime=e.dirtyQueueInsertTime,
 			LastHoveredTime=e.lastHoveredTime,LastPaintAttempt=e.lastPaintAttempt,LastCorrectedTime=e.lastCorrectedTime,LastDirtyTime=e.lastDirtyTime}
@@ -2135,6 +2483,7 @@ local api = {
 		if value ~= "NORMAL" and value ~= "CIVIL WAR" then return false end
 		if running then stop("Stopped before changing mode") end
 		mode = value
+		if mode=="NORMAL" then normalTarget=paletteColor() end
 		rebuildDirty()
 		updateUI()
 		return true
@@ -2144,7 +2493,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
-			Version = 7,
+			Version = 8,
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

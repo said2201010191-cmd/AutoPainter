@@ -1,120 +1,136 @@
-# Hands Free v7 — correctness before speed
+# Hands Free v8 — frozen NORMAL, Civil palette database
 
-v7 replaces raw Color3 equality, changes palette authority, locks complete target transactions, and fixes release bookkeeping. NORMAL defaults to PER_TARGET. The working projection/cursor/camera algorithms remain; only clean-target guards were inserted in the camera fallback. A hash test verifies the original solver after removing those guard lines.
+**NORMAL live performance was previously verified by the user. Civil War palette automation remains live-unverified until the user tests v8.** Deterministic tests cannot establish GUI behavior, internal tool color, server replication latency, or live corrections/sec.
 
-**Live Roblox correctness/speed remains unverified until the user tests this build.** Mock tests do not establish the game's palette behavior, replication timing or painting throughput.
+## Loader
 
-## Loader and version reset
-
-Close the previous Hands Free panel, then load:
+Close the previous panel, then run locally:
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-v7 refuses to reuse an older controller. All strategy evidence, dwell histories and success counters start fresh. Duplicate v7 loads share the current controller. Each player uses their own LocalPlayer, tool, controls and state. No Studio, place editing, server setup or credentials are required. The repository/file must be publicly readable. Original/reference files, AutoPainterFinal and locked diagnostics remain separate.
+The file/repository must be public. Each client uses its own LocalPlayer and state. No Studio, place editing, server installation, account-specific identity or credentials are required. v8 rejects an older controller and duplicate v8 loads reuse the existing one. Reference files, AutoPainterFinal and locked diagnostics remain separate.
 
-## One color definition
+## Frozen NORMAL baseline
 
-Every semantic color comparison uses `colorsMatch(actual, target)`: round each Color3 channel to an RGB byte and allow at most one byte difference per channel. The same matcher governs eligibility, reconciliation, pre-cursor/pre-DOWN skips, palette checks, success recognition, NORMAL and CIVIL WAR. No Color3 object equality remains in the controller.
+The user reported NORMAL at 293 successful paints, DirtyCount=0, approximately 7.82 ms acquisition, no clean-target cursor moves, no oscillation and no release timeouts. The recent PER_TARGET window was 16/16 successful, approximately 16.15 corrections/sec, 49.5 ms service, 45.4 ms acquired-to-color and a learned 120 ms dwell limit. These are observations from the user's v7 session, not a v8 performance claim.
 
-RawMismatchButNormalizedMatch counts matching comparisons whose original float channels differed; it is not a distinct-province count. ActualRGB, TargetRGB and DeltaRGB explain the normalized result. Civil assignments use actual learned native palette values, normalized to RGB bytes. Near-indistinguishable learned colors are deduplicated with the same matcher.
+Seven source regions are hashed against commit `1e0bff91b5d8057c74967585523c839a8a422939`: timing defaults; normalized matcher; activation/release; camera solver; queue/strategy/target lock; service accounting; and dirty/reconciliation/cursor/retry/worker code. Those regions are byte-for-byte unchanged. Hashes live in `tests/normal_v7_baseline_hashes.json` and run with the Hands Free tests. Changes to Civil-only palette functions and reporting/UI are outside those frozen regions.
 
-## Native palette evidence and the remaining setup requirement
+NORMAL remains PER_TARGET by default. It starts with a 250 ms dwell ceiling and learns within 120–350 ms from the same v7 outcomes. There are no new waits, palette clicks, palette writes or re-equip steps in its service path. CONTINUOUS/ADAPTIVE remain explicit experimental API settings; v8 does not select them automatically under the default.
 
-The supplied extracts establish that native palette clicks update the tool's cached variable and PaintBucketColor. They do **not** contain the palette GUI paths or complete click-handler/UI hierarchy. This build therefore does not guess button names or equate swatch background color with working paint color.
+`NORMAL BASELINE COMPARISON` shows the current rolling PER_TARGET sample next to the user's reference values. Small samples or different contention/server workloads do not prove a regression or improvement.
 
-Civil War now uses a **learned native palette UI route**. It never writes PaintBucketColor or assumes re-equipping resets the LocalScript's cached color. Learning observes a real click on a game GuiButton followed by the native PaintBucketColor change. It records that exact button, selectable RGB and click geometry. During automation, VirtualInput moves/clicks that same control, observes its normal Activated event, verifies the exposed color with colorsMatch, then acquires the province and paints. It does not fire UI signals or invoke a click handler. The internal cached color is only confirmed by the eventual province result; the report labels that distinction.
+## Native palette database and learning
 
-Civil War stops before painting if the controls are unlearned, there are too few distinct learned colors, a control is hidden/removed/obscured, geometry changed, a native click is not observed, or the palette value does not match. The report states the number of **learned available colors**, not an invented total palette capacity. A dynamic slider/RGB picker using one changing button is unsupported by this fixed-swatch adapter and is reported explicitly. Its exact source/UI contract would be needed for another adapter.
+The normal game's actual selectable swatches remain authoritative. v8 does not assign arbitrary RGB, write PaintBucketColor, invoke UI handlers, fire protected signals, or assume re-equipping updates a cached LocalScript variable.
 
-### One-time palette learning per script load
+1. Equip the normal bucket and open its native palette while automation is stopped.
+2. Click **Learn native palette colors**. Click distinct native swatches, then **DONE / FINISH SETUP**. The setup display shows learned count, last color/name, duplicate observations and invalid clicks. A first click that leaves the attribute unchanged supplies no new color evidence: choose another color and return to that swatch.
+3. If the palette can close, use **Learn palette opener**, click the game's opener, then finish. Use **Learn palette closer** for the game's closer if its palette blocks the map. These actions record only the controls you explicitly click.
+4. Capacity counts distinct, currently valid learned colors. Invalid/deleted rows remain visible in the database report but do not count as usable colors. A dynamic picker that changes the meaning of one button requires another adapter; it is not treated as many swatches.
 
-1. Equip the normal PaintBucket and open its native palette manually. Stop automation.
-2. Click **Learn native palette colors** in AutoPainter. The main panel hides. Click at least eight distinct native swatch buttons, then **DONE / FINISH SETUP**. The setup label reports learned colors. A click that leaves the attribute unchanged provides no new evidence: select another color and re-click that swatch if necessary.
-3. If the palette closes during normal painting, use **Learn palette opener**, click the normal control that opens it, then finish setup. If the palette must close before targeting, use **Learn palette closer** similarly. These buttons are captured from your explicit clicks; AutoPainter does not search-and-click arbitrary UI candidates.
-4. Keep the same UI geometry for this run. Relearn controls after layout/viewport changes or recreated tool GUI. Learning prunes invalid old controls. Copy Activation Report includes a read-only inventory of palette-related button paths for diagnosis.
-5. Civil War assigns only these actually observed selectable colors. With eight selections it requires eight distinct assignments before starting. Existing assignments remain stable on later recolors. With insufficient learned colors, it stops with the exact shortfall rather than sharing colors or inventing RGB values.
+Mode changes and focus loss preserve the database. The database has a 512-control memory bound; reports print **every stored mapping without an inventory truncation**. A 126-color palette fits completely. Closing/reloading clears memory; profiles can restore mappings.
 
-Setup generates no automated paint/input calls. Your own native palette clicks remain ordinary game input. After learning, START handles the palette and target transactions automatically. No manual clicks are needed per province.
+### Copy Learned Palette
 
-## Transaction and scheduling rules
+Press **Copy Learned Palette** while stopped. It copies all rows as:
 
-One worker owns cursor, camera, palette and input. ActiveTargetLock covers release, palette preparation, genuine target acquisition, native DOWN, result observation and paired UP. Fresh attacks are considered at the next safe boundary; v7 does not enable optional mid-service preemption. ServicesPreempted remains zero. STOP/focus/tool loss still cancel safely.
+```text
+Name | RGB | FullGuiPath
+```
 
-Fresh attack priority is granted **only on clean → dirty**. Red → green → orange while the target remains blue is one dirty episode. DirtySince/FreshAttackAt remain unchanged, LastWrongColorChange advances, and wrong-to-wrong changes do not reset retries. Successful screen/world/camera caches survive becoming clean. ColorChanged queues without hover; Mouse.Target is used for acquisition/activation and diagnostic observation, not eligibility.
+If setclipboard is unavailable/denied, the fallback writes `AutoPainterLearnedPalette.txt`. It performs no clicks, paints, scans or learning. **Copy Activation Report** separately includes the expanded uncapped database, assignments and recent palette transactions.
 
-A reconciliation reads colors every 120 ms and repairs membership. It directly moves no input or camera; repaired dirty work wakes the normal worker. CursorMovesTriggeredByReconciliation is therefore zero by design, and tests verify no input from queue-only repair while paused. Server-to-client replication delay remains unknown without a server timestamp.
+### Export and import profiles
 
-Clean checks occur before choosing work, before actual cursor calls, during yielded camera acquisition and immediately before DOWN. A target corrected by another player is skipped. CursorMovesToAlreadyCleanProvince should remain zero. An in-progress native call cannot be made atomic with replication; the metric describes the state at the last check before issuing the call.
+**Export Palette Profile** saves `AutoPainterPaletteProfile.json` when writefile is available; otherwise it copies the JSON. It contains place ID, relative PlayerGui path segments/classes, full diagnostic paths, RGB/key, GUI signature and normalized center coordinates. It contains no code or secrets. Paths resolve under the current player's PlayerGui, not a saved username.
 
-ABA sequences without a recognized correction are counted. Repeated same-pair alternation forces a complete PER_TARGET service and adds a bounded retry delay to that target. It does not speed up cursor motion. Genuine success resets the no-success sequence. A valid service still has a bounded maximum, so a contested target cannot own the worker forever.
+**Import Palette Profile** reads that fixed local file when readfile is available. Alternatively retain the loader's returned API and call `api.ImportPaletteProfile(jsonText)`. Import is allowed only while stopped and outside selection. It checks schema, place, RGB/key consistency, duplicate/near-identical colors, unambiguous current GUI paths and button signatures before replacing the database atomically. Hidden but structurally present controls may import; missing/recreated/different controls require relearning.
 
-## Release and success accounting
+Imported coordinates are never replayed. Each automatic use recomputes the current center, checks its top control and verifies the resulting selected color. Import establishes structural correspondence; it cannot read or prove the native LocalScript's cached variable. `CurrentSessionVerified` becomes true after observed use. Profile export/import never executes or requires script content.
 
-Exactly one paired UP is sent for each owned DOWN. ReleasesObserved counts release-event confirmation. If Button1Up is delayed/missing, continuously observed unpressed button state for a 60 ms quiet grace establishes the local boundary. A new press resets that grace. No next DOWN starts before ownership resolves. An UP error with a still-pressed state stops and records ReleaseTimeouts; it is not hidden or retried indefinitely. Raw DownEvents/UpEvents include observed PlayerMouse events, including native GUI/physical input, and need not equal owned paint attempts.
+## Civil assignments and pools
 
-Success is a normalized target-color observation associated with valid native activation, not an API return. A correction wakes the owner immediately and ends dwell. PER_TARGET then releases; CONTINUOUS can retain the hold only when enabled after v7 successes. A matching result within one second after a valid released service can be recorded once as SUCCESS_LATE; this is local association, not proof of server causality. A later external match cleans the queue without claiming a paint. LateCorrections makes this distinction visible.
+Select provinces, finish selection, choose CIVIL WAR and press **Reroll Civil Colors** while stopped. START also fills any missing assignments. Colors are shuffled and drawn without replacement from valid learned mappings. Existing assignments persist across corrections and START/STOP. Switching to NORMAL uses only its global target; switching back restores per-entry Civil comparisons.
 
-Different Civil intentions yielding the same wrong observed result trigger SuspectedStalePalette and stop further automatic Civil work for diagnosis. The last twenty records preserve intentions, palette evidence and actual outcomes. Contention or delayed replication can also cause unexpected results; suspicion is not a server-side diagnosis.
+A blank reroll seed generates and reports a new `CivilRandomSeed`; an integer 1–2147483646 reproduces a reroll with the same ordered palette, ordered selections and pool. Changing a seed or pool does not recolor existing assignments until an explicit reroll. Reroll updates targets/markers but sends no input; START is still required.
 
-## Dwell and activation defaults
+Pool choices:
 
-- Default: PER_TARGET in NORMAL and CIVIL WAR.
-- Dwell: 250 ms initially; bounded to 120–350 ms.
-- Learning: rolling P90 of up to 24 successful acquired-to-correct times plus 40 ms. Decreases are gradual. A genuine full-window miss can raise the limit; acquisition, palette-preparation and release failures do not train it as a paint timeout.
-- Retry: bounded exponential delays; one dirty-to-dirty change does not erase them. A real new clean-to-dirty episode can reset its target's delay.
-- VirtualInput.SendMouseButton remains primary. Only real repeated activation failures/unavailability unlock the existing alternate-method recovery, not color mismatches.
-- ADAPTIVE remains optional through the top-of-file setting or `SetActivationStrategy("ADAPTIVE")` while stopped. Continuous sampling is gated on at least three recognized PER_TARGET successes in the new session. v6 evidence is never imported.
+- **ALL LEARNED** (default): random ordering with a best-effort RGB distance floor between selected colors.
+- **HIGH CONTRAST:** seeded first color, then farthest-point selection against existing assignments using RGB distance.
+- **VIVID:** max channel at least 150 and channel spread at least 90.
+- **DARK / LIGHT:** RGB luminance approximation at most 0.35 / at least 0.68.
 
-NORMAL reads the exposed native palette color at START. It does not rewrite it or re-equip per province. Choose and verify the desired color through the normal palette first. Civil War's last palette selection remains the real tool color after STOP; v7 does not perform an unverified attribute restore. Choose a new native palette color before switching to NORMAL if desired.
+A filtered shortage falls back to ALL LEARNED and reports that fact. Overall shortage stops before partial assignment; color reuse is disabled. Every selected color is native-learned. The distance heuristic favors distinguishable colors but is not a perceptual/adjacency guarantee. With 126 usable colors, unique capacity is 126 provinces.
 
-## Exact NORMAL live test
+## Civil palette transaction
 
-1. Close the old panel and load v7. Select the intended native palette color and verify one ordinary manual paint.
-2. Holster while selecting ten wrong-color provinces and two already-correct provinces. Finish selection, use NORMAL/PER_TARGET, then START.
-3. Required: SuccessfulPaints > 0, DirtyCount reaches zero, correct provinces receive no cursor visit, and CursorMovesToAlreadyCleanProvince=0. Inspect actual/target/delta RGB if the result is not recognized.
-4. Leave the map clean. With the cursor over A, have a friend recolor protected B. The selection marker is updated by the local color callback before scheduling: dirty is thick red, active is yellow, clean is thin green. Rendering can combine fast updates in one frame; the event log separately proves off-cursor queue receipt.
-5. Required: B queues with hover=false, reuses its cached target, and becomes correct. Q/Escape must release. Copy Activation Report.
+The unchanged single worker/ActiveTargetLock owns palette preparation, acquisition, painting and release. The Civil adapter performs:
 
-## Exact CIVIL WAR live test
+1. Compare actual exposed PaintBucketColor with the assigned color. A normalized match skips opening and swatch clicking.
+2. If a swatch is hidden, click the learned opener and verify that swatch becomes visible. Never toggle an already-visible palette through its opener.
+3. Compute the current button center from AbsolutePosition/AbsoluteSize. Convert inset viewport coordinates to full-window VirtualInput coordinates once. The hit query performs the inverse conversion. Do not replay old learned offsets.
+4. Verify the exact top button, move the real cursor, wait one RenderStepped frame, then recheck current geometry, real cursor position and top button. DOWN/UP use a 25 ms legitimate click hold (frame scheduling can lengthen it).
+5. Verify normalized PaintBucketColor. Accept `ATTRIBUTE` evidence even if Activated was missed, or `ACTIVATED+ATTRIBUTE` when both are seen. Activated alone does not pass. An already-correct color is reported separately as `ALREADY_CORRECT_ATTRIBUTE`.
+6. On failure, resolve the owned UP, check focus/tool/control state, recalculate the center and retry **once**. The retry uses two render frames and a 40 ms hold. Each click has a 160 ms postcondition window. No unbounded click loop exists.
+7. Close only if the palette blocks the prospective map point/current target cursor, or **Close palette: REQUIRED** was explicitly selected. The closer must satisfy the visibility/blocking postcondition. `AUTO` avoids unnecessary close/reopen cycles. If a blocking palette lacks a closer, the report asks for it.
+8. Return to the frozen genuine-Mouse.Target acquisition and normal PaintBucket paint path. The province result ultimately verifies the working paint color.
 
-1. Complete native palette learning above. Select eight provinces, finish selection, switch to CIVIL WAR, START.
-2. Before painting, require CivilSelectedCount=8, UniqueAssignedCivilColors=8, DuplicateAssignedCivilColors=0. If this is not met, use the reported setup limitation; do not continue with arbitrary colors.
-3. Required: each province matches its own assignment, SuccessfulPaints>=8, DirtyCount=0, CursorMovesToAlreadyCleanProvince=0, AtoBtoASequences approximately zero, and no unresolved release. The assigned and result RGB for each stable entry ID must agree under colorsMatch.
-4. Recolor two different protected provinces externally. Both must queue without hover and return to their own original assignments, not the most recently selected global color.
-5. If the palette route stops, copy the whole report, including palette inventory and transaction records. Do not interpret attribute equality alone as proof of the native cached color. The exact palette source/UI paths are still useful to replace learning with a game-specific supported adapter.
+Palette step states are IDLE, OPENING, SELECTING, VERIFYING, CLOSING, COMPLETE and FAILED. Opener, swatch and closer failures have distinct messages. Failed transactions stop the Civil run. Focus loss cancels/release-cleans without invalidating the database; focus return shows **RESUME** and requires an explicit click/Q action.
 
-## Exact combat live test
+A current-center click outside the viewport or behind another control is refused. Scroll/reveal the native palette if necessary; this version does not blindly scroll unknown UI. Layout/size/inset movement is recomputed. Imported structural/signature changes require relearning.
 
-1. Start from a clean protected set. Have a friend repeatedly recolor different provinces while your pointer is elsewhere. Do not manually aim for the recolored tiles.
-2. Check off-cursor dirty records and red/active/clean markers. Wrong-to-wrong changes must retain the original dirty episode and retry schedule.
-3. Require bounded complete services rather than endless rapid A-B-A switching. Check ActiveTargetLock, TargetSwitchesPerSecond, AtoBtoASequences, OscillationStops and ServicesPreempted.
-4. Compare local event → queue, queue → acquisition and acquisition → normalized correction. The primary defense metric starts at local ColorChanged receipt, not at the remote player's click or unknown server mutation.
-5. Run for a comparable 20–30 seconds, Q/Escape, then Copy Activation Report. Also test focus loss, unequip, Clear and closure before unattended use.
+Coordinate references: [GuiBase2d.AbsolutePosition](https://raw.githubusercontent.com/Roblox/creator-docs/main/content/en-us/reference/engine/classes/GuiBase2d.yaml), [GetGuiObjectsAtPosition](https://raw.githubusercontent.com/Roblox/creator-docs/main/content/en-us/reference/engine/classes/BasePlayerGui.yaml), [VirtualInput](https://create.roblox.com/docs/reference/engine/classes/VirtualInput). The v8 change is confined to native palette UI coordinates; proven province targeting is unchanged.
 
-## Full Copy Activation Report contents
+## NORMAL quality-of-life controls
 
-Copy exports existing observations plus read-only UI inventory. It uses setclipboard, otherwise writes `AutoPainterActivationReport.txt`. It neither starts a test nor clicks a control.
+**Combat HUD** selects a compact running display: dirty count, recent success rate, corrections/sec, median/P90 local response and current target. It changes display only. Q/Escape still stops. NORMAL's target stays captured at START; a manual palette change stops with **NORMAL target color changed — restart required**. After focus loss, **RESUME** is explicit and never sends input merely because focus returned.
 
-- **Identity and color:** EntryId, position/label (`Entry 14 @ (x,y,z)`), AssignedCivilRGB/key, ActualRGB, TargetRGB, DeltaRGB, RawMismatchButNormalizedMatch; CivilSelectedCount, UniqueAssignedCivilColors, DuplicateAssignedCivilColors, UnassignedCivilColors, learned palette count/status.
-- **Dirty evidence:** ColorEventsReceived, DirtyEventsWithoutHover, LocalColorEventReceivedAt, LocalDirtyQueuedAt, LocalColorEventToQueueMs, QueueWasAlreadyDirty, hover/queued flags, DirtySince, LastWrongColorChange, FreshAttackAt; ReconciliationRepairs and CursorMovesTriggeredByReconciliation. Per-entry timestamps are also available from GetTargetStats(part).
-- **Clean skips/results:** CleanSkippedBeforeCursor, CleanSkippedBeforeDown, CursorMovesToAlreadyCleanProvince, SuccessfulPaints, FailedValidServices, LateCorrections, Attempts, CompletedServices, AbortedServices, SuccessRate, rolling/overall corrections/sec, AdaptiveDwellMs, Deferred and Stalled.
-- **Ownership/thrash:** ActiveTargetLock, TargetSwitches, TargetSwitchesPerSecond, AtoBtoASequences, SamePairOscillations, OscillationDetected, OscillationStops, ServicesPreempted, VirtualInputHold, DownEvents, UpEvents, ReleasesSent, ReleasesObserved, ReleasesConfirmedByButtonState and ReleaseTimeouts.
-- **Defense timing:** AverageDefenseResponseMs, MedianDefenseResponseMs, P90DefenseResponseMs, FastestDefenseResponseMs, SlowestDefenseResponseMs, average queue/palette/service durations and per-transaction QueueWaitMs, AcquisitionMs, PalettePreparationMs, ServiceMs, AcquiredToCorrectMs. Median/P90 use the last 64 defense corrections; average/min/max accumulate since load.
-- **Targeting:** AverageAcquisitionMs, AverageSwitchMs, cached cursor/camera hits, FullCameraSearches, TargetAcquisitionsPerSecond, CursorAcquireSuccessRate and CameraFallbackRate.
-- **Strategy:** configured/active strategy, cached decision/reason, session confirmation, separate PER_TARGET/CONTINUOUS/CIVIL_WAR counters and rolling work-time rates. Attempts are local services, not native RPC counts.
-- **Last twenty transactions:** EntryId, Position, IntendedRGB, PaletteAttributeBefore, AttributeAfterSet (`NOT WRITTEN BY AUTOPAINTER`), PaletteAttributeAfter, AttributeAfterEquip, PaletteUISelection, PaletteProof, PreviousIntendedRGB, ActualRGBBefore, ActualRGBAfter, DeltaRGB, NormalizedMatch, MouseTargetCorrect, ActualChanged, all phase timings and Result.
-- **Palette diagnostics:** PaletteFailures, SuspectedStalePalette, selected native button paths and a capped read-only inventory of paint/color/palette-related game buttons. Inventory appearance/names alone are not treated as authority to click them.
+## Exact NORMAL regression test
 
-Counters accumulate since loading. Deferred/Stalled are event counts, not unique provinces. Observed color changes can also be caused by other players. AutoPainterRPCs=0 describes this controller's transport; native requests are neither intercepted nor counted.
+1. Close the old panel, load v8, select the intended native palette color and verify an ordinary manual paint. Use NORMAL with default PER_TARGET.
+2. Select ten wrong-color and two already-correct provinces, finish selection and START. Require recognized successes, DirtyCount=0, CursorMovesToAlreadyCleanProvince=0 and ReleaseTimeouts=0. Already-correct tiles must receive no visits.
+3. While the pointer is elsewhere, have a friend recolor a protected clean province. Require off-cursor ColorChanged/dirty evidence and cached correction. Repeated wrong-to-wrong changes remain one dirty episode.
+4. Run a comparable 20–30-second defense workload, stop and Copy Activation Report. Compare its rolling NORMAL window to the user baseline only after enough matched observations. v8 tests/hash preservation do not establish identical live performance.
+5. Change the palette during NORMAL and test focus loss. Both must stop; returning focus alone must send no input.
 
-## Validation and boundaries
+## Exact Civil palette acceptance test
 
-Run `python3 tests/run_tests.py /path/to/luau`.
+1. Learn at least 20 swatches (or import your exported profile with its UI present). Use Copy Learned Palette and verify every learned row, including the last one. Learn opener/closer if required.
+2. Select 12 provinces, finish selection, choose CIVIL WAR and leave pool at ALL LEARNED. Enter a seed such as `4242` and press **Reroll Civil Colors**. Require Selected=12, UniqueAssignedCivilColors=12, DuplicateAssignedCivilColors=0 and CapacityAvailable=true. Reroll must not move the cursor or paint.
+3. Copy the assignments/report before START. Each row must identify a real learned native color, stable entry ID and position. Start with all twelve different from their assigned targets if you want to require twelve successful paints.
+4. START. Require each province to reach its assigned color, DirtyCount=0, SuccessfulPaints>0, no palette-preparation failure, no click spam, no release timeout and no repeated oscillation. Check actual assigned/result RGB; attribute equality alone is not proof of the tool's internal cache.
+5. Have a friend recolor three protected provinces while the pointer is elsewhere. All three must queue independently of hover and return to their original assignments. No reroll should occur.
+6. Stop and Copy Activation Report. If it fails, retain the full failed transaction: step, geometry/cursor/top button, input events, selected RGB, retry and failure reason. Stop on a wrong resulting color rather than repeatedly rerolling away the evidence.
+7. Export the profile; reload only after closing the panel, import, and repeat a small three-province test. If import reports a changed GUI, relearn rather than trusting old coordinates.
 
-**572 deterministic tests pass:** 222 legacy native-controller, 246 locked diagnostic and 104 current Hands Free tests (52 scenarios under immediate/deferred events). All **26 Luau files compile**, removing only the original reference's Markdown fence in a temporary compilation copy. The v6 Hands Free tests were revised for the changed palette/strategy/release contract; old raw assumptions are not treated as v7 acceptance tests. Standalone analysis reports only missing Roblox/executor globals/types.
+## Full Copy Activation Report fields
 
-Coverage includes quantized equality, ±1 tolerance, eight distinct learned palette results and restoration, unsupported/insufficient/stale/dynamic/hidden palettes, no attribute writes, clean skips, dirty episodes without hover, reconciliation, target lock, oscillation recovery, immediate/late results, dwell bounds, missed/stuck UP, quiet-state reset, canceled/yielding input, cleanup, bounded records and zero game RPC transport.
+The report exports collected observations and read-only UI mapping data. It never starts input. Clipboard fallback is `AutoPainterActivationReport.txt`.
 
-No PaintPart call, Mouse.Target assignment, GetMouseData/ClientControls hook, metamethod hook, protected-signal firing, validator replacement, decompilation or moderation concealment is introduced. Native UI Activated connections observe events; they do not invoke the game's handlers. Roblox's exposed VirtualInput restrictions remain intact. References: [VirtualInput](https://create.roblox.com/docs/reference/engine/classes/VirtualInput), [GUI coordinate properties](https://create.roblox.com/docs/reference/engine/classes/GuiBase2d).
+**Existing NORMAL/engine evidence:** ActivationStrategy, StrategyConfigured, StrategyDecisionCached, StrategyDecisionReason, VirtualInputHold, DownEvents, UpEvents, Attempts, CompletedServices, AbortedServices, SuccessfulPaints, SuccessRate, CorrectionsPerSecond, OverallCorrectionsPerSecond, AverageTargetDwellMs, AdaptiveDwellMs, AverageAcquisitionMs, AverageAcquiredToColorMs, AverageSwitchMs, ActiveTarget, DirtyCount, Deferred, Stalled, CachedCursorHits, CachedCameraHits, FullCameraSearches, TargetAcquisitionsPerSecond, CursorAcquireSuccessRate, CameraFallbackRate, SessionConfirmed, Runtime and AutoPainterRPCs.
+
+**Correctness/release/defense:** RawMismatchButNormalizedMatch, ActualRGB, TargetRGB, DeltaRGB, CleanSkippedBeforeCursor, CleanSkippedBeforeDown, CursorMovesToAlreadyCleanProvince, CursorMovesTriggeredByReconciliation, ReleasesSent, ReleasesObserved, ReleasesConfirmedByButtonState, ReleaseTimeouts, ActiveTargetLock, TargetSwitches, TargetSwitchesPerSecond, AtoBtoASequences, SamePairOscillations, OscillationDetected, OscillationStops, ServicesPreempted, FailedValidServices, PaletteFailures, SuspectedStalePalette and LateCorrections. Average/Median/P90/Fastest/SlowestDefenseResponseMs; average queue/palette/service times. Median/P90 use the latest 64 observed defense corrections.
+
+**Dirty evidence:** ColorEventsReceived, DirtyEventsWithoutHover, AverageColorEventToDirtyQueueMs, MaxColorEventToDirtyQueueMs, ReconciliationFinds, ReconciliationRepairs, ReconciliationChecks, FreshAttackCorrections, AverageAttackColorChangeToCorrectedMs, MinimumAttackResponseMs, MaximumAttackResponseMs, RecentlyChangedQueueDepth and last off-cursor event path/ID, LocalColorEventReceivedAt, LocalDirtyQueuedAt, LocalColorEventToQueueMs, QueueWasAlreadyDirty, Hovered and DirtyQueued. Per-entry API also exposes DirtySince, LastWrongColorChange, FreshAttackAt, LastHoveredTime, LastPaintAttempt and LastCorrectedTime. Server→client replication latency is unknown without a server timestamp.
+
+**LEARNED NATIVE PALETTE COLORS (all rows):** LearnedIndex (numbered row), Name, FullGuiPath, RGB, ColorKey, ButtonVisible, ButtonValid, AbsolutePosition, AbsoluteSize, LearnedClickOffset, LastSuccessfulUse, SuccessfulAutomaticSelections, FailedAutomaticSelections and CurrentSessionVerified. The learned offset is diagnostic only; clicks use the current center.
+
+**Capacity/randomness:** CivilSelectedCount, UniqueAssignedCivilColors, DuplicateAssignedCivilColors, UnassignedCivilColors, LearnedPaletteColors, CivilCapacity, CapacityAvailable, CivilColorPool, ColorPoolFallback, CivilRandomSeed and PaletteStatus. FULL CIVIL ASSIGNMENTS prints EntryId/Position, AssignedColorName, AssignedRGB, LearnedPaletteIndex, PaletteControlPath, LastActualRGB and DIRTY/CLEAN for every selection.
+
+**Palette step/transaction evidence (last 20 transactions):** PaletteStep, EntryId, IntendedRGB, CurrentPaintBucketRGB, PaletteSuccessVia, FinalPaletteRGB, FailureReason, PaletteMs, OpenerAttempted, OpenerActivatedObserved, PaletteBecameVisible, OpenerFailures, CloserAttempts and CloserFailures. Each action includes Role, Retry (0 or 1), TargetControlName, TargetControlPath, TargetControlVisible, TargetControlPosition, CursorPositionBefore, CursorPositionAfter, TopButtonAtClick, VirtualInputMoveSucceeded, MouseDownSent, MouseUpSent, ActivatedObserved, AttributeChangedObserved, FinalPaletteRGB, PaletteSuccessVia and FailureReason.
+
+**Civil performance:** PaletteSelections, PaletteSelectionSuccesses, PaletteSelectionFailures, AveragePaletteSelectionMs, OpenerUses/OpenerFailures, CloserUses/CloserFailures, PaletteSkipsAlreadyCorrect, CivilSuccessfulPaints, CivilCorrectionsPerSecond, AverageCivilServiceMs, AverageCivilDefenseResponseMs, AverageCivilQueueMs, AverageCivilPaletteMs, AverageCivilAcquisitionMs, AverageCivilPaintMs, AverageCivilReleaseBoundaryMs, CivilTimingSampleCount, CivilDefenseSampleCount and ResumeRequired. Civil strategy rates use its rolling work-time sample; phase means use Civil records present in the last 20 total target transactions. ReleaseBoundaryMs is the remaining local post-result/full-window boundary, not a server timestamp. Late confirmations retain the existing late-result flag.
+
+**Last 20 target result records:** EntryId, Position, IntendedRGB, PaletteAttributeBefore, AttributeAfterSet (NOT WRITTEN), PaletteAttributeAfter, AttributeAfterEquip, PaletteUISelection, PaletteProof, PreviousIntendedRGB, ActualRGBBefore, ActualRGBAfter, DeltaRGB, NormalizedMatch, MouseTargetCorrect, ActualChanged, QueueWaitMs, AcquisitionMs, PalettePreparationMs, ServiceMs, AcquiredToCorrectMs and Result. NORMAL BASELINE COMPARISON and separate PER_TARGET/CONTINUOUS/CIVIL_WAR strategy samples are also included.
+
+## Validation
+
+Run `python3 tests/run_tests.py /path/to/luau`. Current regression results: **622 deterministic tests** (222 legacy native controller, 246 locked diagnostic, 154 Hands Free v8). The Hands Free suite runs 77 scenarios with immediate and deferred events, including the existing NORMAL scenarios. Seven frozen code hashes and the older camera hash are checked. All **27 Luau files compile** (the original reference's Markdown fence is removed only in a temporary compilation copy).
+
+Added coverage includes 126-row export, random uniqueness/reproducibility, pools, stable restoration, current-center/inset geometry, 25/40 ms click boundaries, missed Activated with selected-color evidence, failed attribute verification, maximum one retry, opener/closer postconditions, focus cancellation/resume, profile validation, copy/file actions and mode isolation. Profile JSON serialization is mocked; the schema/GUI validation is exercised separately.
+
+No direct game RPC, Mouse.Target assignment, GetMouseData/ClientControls/metamethod hook, validator bypass, protected signal firing or automation concealment is introduced. NORMAL live performance was previously verified by the user. Civil War palette automation remains live-unverified until the user tests v8.
