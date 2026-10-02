@@ -1,18 +1,18 @@
-# Current Hands Free build (v8)
+# Current Hands Free build (v8.1)
 
-**NORMAL's proven v7 engine is frozen.** Seven source-region hashes protect its timing, normalized matcher, dirty/reconciliation engine, cached targeting, transaction lock, PER_TARGET service, release and retry code. The default stays PER_TARGET with the same learned 120–350 ms dwell bounds.
+NORMAL retains its proven genuine-target/native-input architecture with per-entry circuit breakers, cache recovery, fair retry scheduling, qualified-only dwell learning and native button-state resynchronization. Healthy services get no new recovery delay; PER_TARGET remains the default.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Civil War now uses a bounded native palette state machine: current control center, one render-frame settle, short click hold, actual selected-color verification, and at most one retry. Missed Activated callbacks no longer reject a matching native PaintBucketColor. Opener/closer actions have separate postconditions; already-correct palette colors skip swatch clicks. No attribute writes or direct game RPCs are added.
+Civil War retains the user's live-proven v8 palette click/settle/hold/verification path. Learned semantic mappings now survive PaletteGui recreation and lazily bind replacement controls by exact relative path and signature. Swatches, opener, closer and existing unique Civil assignments persist. Missing GUI means temporarily unavailable capacity, not deleted learning. Focus return requires explicit RESUME.
 
-The palette database exports every learned mapping. **Copy Learned Palette**, **Export/Import Palette Profile**, **Reroll Civil Colors**, seeded unique random native colors, contrast/filter pools, capacity warnings and detailed palette steps are available while stopped. Imports revalidate the current GUI and recalculate coordinates. Mode switches/focus loss preserve learned colors. Combat HUD and explicit RESUME are display/control improvements outside the frozen NORMAL engine.
+**Before upgrading from v8, STOP and Export Palette Profile, then close its panel.** Load v8.1 and import the profile. This preserves learning across controller reloads; recreation of native GUI within v8.1 needs no export or relearning. Native input and public loading require the client environment's exposed APIs; no Studio, server changes, credentials or direct game RPCs are used.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for setup, the exact 12-province Civil test, NORMAL regression checks, profile limitations and the complete report field list.
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact NORMAL stress/Civil GUI-recreation tests, recovery rules, profile import, tuning and new report fields.
 
-**622 deterministic tests pass; all 27 Luau files compile. NORMAL live performance was previously verified by the user. Civil War palette automation remains live-unverified until the user tests v8.** Older reference/Final/diagnostic files and their historical documentation below remain separate.
+**676 deterministic tests pass; 28 Luau files compile.** NORMAL and Civil v8 painting were previously live-verified by the user. **v8.1 long-run NORMAL recovery and PaletteGui rebinding remain live-unverified until the user tests them.** The normalized matcher, camera solver and palette click/preparation behavior retain v8 source guards; recovery/scheduler code is intentionally revised. Historical reference/Final/diagnostic files below remain separate.
 
 ---
 

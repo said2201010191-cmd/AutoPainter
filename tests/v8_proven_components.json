@@ -1,0 +1,23 @@
+{
+  "commit": "7453d73c130fefd2dc0aca0739a72573ac6505d1",
+  "blocks": [
+    {
+      "name": "normalized matcher",
+      "start": "local function normalizedRGB(c)",
+      "end": "local function entryLabel(entry)",
+      "sha256": "3f72ccc2b81f1e3e4b96de6c9033496839305c1f5e6b5a179db033c1cd6e1ed4"
+    },
+    {
+      "name": "camera solver",
+      "start": "local function saveView()",
+      "end": "-- Fast queue/target path.",
+      "sha256": "2f376843cb997475330b00f3ab49c7603fe0998d689919532c394367097854c7"
+    },
+    {
+      "name": "native palette preparation",
+      "start": "function palette.prepare(",
+      "end": "function palette.database(",
+      "sha256": "03ebbfa9f5abd51cd03e3a27e11e26343b7789209739d10ccbf45d8e81dfccd5"
+    }
+  ]
+}

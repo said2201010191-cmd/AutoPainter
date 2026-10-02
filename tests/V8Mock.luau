@@ -27,6 +27,14 @@ function Mock.new(deferred)
    w.buttonColors[b]=w.Color3.fromRGB((i*23)%230,(i*41)%230,(i*67)%230);table.insert(w.uiButtons,b)
   end
  end
+ function w.recreatePalette(n,chrome)
+  root:Destroy();w.uiButtons={};w.buttonColors={};w.buttonActions={}
+  root=w.instance("ScreenGui");root.Name="NativePaintPalette";root.Enabled=true;root.Parent=w.playerGui
+  w.paletteRoot=root;w.makePalette(n)
+  if chrome then return w.makeChrome() end
+ end
+ function w.detachPalette() root.Parent=nil end
+ function w.attachPalette() root.Parent=w.playerGui end
  local function selectButton(b)
   if w.buttonActions[b] then w.buttonActions[b]() end
   local c=w.buttonColors[b]
