@@ -4,7 +4,7 @@ root=Path(__file__).resolve().parent.parent
 source=(root/'AutoPainterHandsFree.luau').read_text()
 # Protect the exact camera/acquisition implementation confirmed in the user's client.
 start=source.index('local function saveView()')
-end=source.index('local function preparePalette(')
+end=source.index('-- Fast queue/target path.')
 assert hashlib.sha256(source[start:end].encode()).hexdigest()=='7bfac35ddd0da0847cd75a4d8ccdbf924de164c72965d7eab0d9da5444a38a25', 'Camera acquisition was modified'
 for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|hookmetamethod|firesignal|getconnections|require|decompile)\s*\(',r'\bmouse\.Target\s*=(?!=)',r'\.OnClientInvoke\s*=']:
     assert not re.search(forbidden,source),forbidden

@@ -1,14 +1,16 @@
-# Current Hands Free activation fix (v4)
+# Current Hands Free build (v5)
 
-The `Acquire: Real Mouse.Target acquired` / `Automatic Mouse1 did not reach the normal PaintBucket input loop` issue is addressed in **AutoPainterHandsFree.luau**. Its working camera/acquisition code is unchanged. START now runs bounded, sequential input trials and reports input observations separately from color effects. NORMAL and optional CIVIL WAR remain available.
+**AutoPainterHandsFree.luau** now uses the live-confirmed VirtualInput path first. NORMAL keeps one Mouse1 hold across usable visible targets, jumps the real cursor, and advances on target-color events. Cached cursor points precede visible surface search, cached camera poses and the existing camera fallback. Clean provinces stay out of scheduling work; stalled targets receive a short deferral while other dirty targets proceed.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Close the older Hands Free panel first. No manual input is required after START if a method is confirmed. A no-op mouse1press can fall back to the documented VirtualInput API when available, then the tool's public Activate/Deactivate path. No game remote calls, hooks or fabricated mouse data are added. Exhausted/unconfirmed methods stop clearly; no live success is claimed yet.
+Close the older Hands Free panel first. The public client loader needs no Studio, server changes or credentials. AutoPainter sends zero game RPCs; the normal tool owns requests and cooldowns. Camera recovery releases before moving across the map. STOP, focus/tool loss, unexpected input and clean idle also end the hold. Genuine Mouse.Target is always required, with no hooks or fabricated mouse state.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact verification, limits and live steps. **534 tests pass**, including 66 new activation tests. The older Final controller and its loader below remain available unchanged; they are separate from the Hands Free build and should not be run concurrently.
+NORMAL has no per-target palette/re-equip work. Optional CIVIL WAR retains its separate color preparation. The running HUD and Copy Activation Report include acquisition/correction rates, timing, cache hits, camera searches, deferrals and hold state.
+
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for settings, metric definitions, input-propagation limits and the exact live procedure. **554 deterministic tests pass; all 25 Luau files compile.** The new continuous-hold flow is not yet live-benchmarked. The older Final controller and its documentation below are separate and unchanged; do not run both controllers together.
 
 ---
 
