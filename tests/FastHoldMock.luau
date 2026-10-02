@@ -57,7 +57,7 @@ function Fast.new(deferred)
 					if part and part.Parent==w.provinces then
 						w.paintCalls+=1
 						if w.protected and not w.protected[part] then w.violations+=1 end
-						if not w.stalled or not w.stalled[part] then part.Color=w.player:GetAttribute("PaintBucketColor") end
+						if not w.stalled or not w.stalled[part] then part.Color=w.nativeResultColor and w.nativeResultColor(part,w.player:GetAttribute("PaintBucketColor")) or w.player:GetAttribute("PaintBucketColor") end
 					end
 					w.schedule(w.nativeInterval or 0.04,repeatPaint)
 				end

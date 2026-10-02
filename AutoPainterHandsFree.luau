@@ -1,4 +1,4 @@
--- AutoPainter Hands Free v6
+-- AutoPainter Hands Free v7
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
 -- NORMAL paints every protected province to one palette color.
@@ -21,24 +21,28 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
+	assert(existing.GetStats().Version==7,"Close the older Hands Free panel; v7 must reset prior evidence")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
 
 local CFG = {
-	ActivationStrategy = "ADAPTIVE", -- ADAPTIVE, PER_TARGET or CONTINUOUS; no native cooldown changes.
-	TargetDwellDefault = 0.32,
-	TargetDwellMin = 0.20,
-	TargetDwellMax = 0.45,
+	ActivationStrategy = "PER_TARGET", -- ADAPTIVE, PER_TARGET or CONTINUOUS; no native cooldown changes.
+	TargetDwellDefault = 0.25,
+	TargetDwellMin = 0.12,
+	TargetDwellMax = 0.35,
 	DwellHistory = 24,
 	DwellMinSamples = 4,
-	DwellMargin = 0.08,
+	DwellMargin = 0.04,
 	StrategyMinAttempts = 4,
 	StrategyMaxProbeAttempts = 8,
 	StrategyWindow = 16,
 	StrategyReliabilityMargin = 0.20,
 	StrategyThroughputMargin = 0.20,
-	ReconcileInterval = 0.15,
+	ReconcileInterval = 0.12,
+	ShowDirtyState = true,
+	LateConfirmation = 1.0,
+	PaletteTimeout = 0.60,
 	RecentlyChangedPriorityWindow = 1.0,
 	CursorAcquire = 0.10,
 	HeldCursorGrace = 0.035,
@@ -71,13 +75,10 @@ local alive, running = true, false
 local selecting = nil
 local mode = "NORMAL"
 local entries, lookup = {}, {}
-local usedColors = {}
 local nextId = 0
 local workerToken = 0
 local currentEntry = nil
 local normalTarget = nil
-local paletteBeforeRun = nil
-local civilPaletteDirty = false
 local held = false
 local cameraSnapshot = nil
 local cameraCache = setmetatable({}, {__mode = "k"})
@@ -101,40 +102,47 @@ local function paletteColor()
 	return typeof(value) == "Color3" and value or Color3.new(1, 1, 1)
 end
 
-local function colorKey(c)
-	return string.format("%02X%02X%02X",
-		math.clamp(math.round(c.R * 255), 0, 255),
-		math.clamp(math.round(c.G * 255), 0, 255),
-		math.clamp(math.round(c.B * 255), 0, 255))
-end
-
-local hueSeed, colorIndex = math.random(), 0
-local function uniqueColor(current)
-	for _ = 1, 4096 do
-		colorIndex += 1
-		local h = (hueSeed + colorIndex * 0.618033988749895) % 1
-		local c = Color3.fromHSV(h, 0.74 + math.random() * 0.26, 0.84 + math.random() * 0.16)
-		local d = ((c.R-current.R)^2 + (c.G-current.G)^2 + (c.B-current.B)^2)^0.5
-		local key = colorKey(c)
-		if not usedColors[key] and d >= 0.18 then
-			usedColors[key] = true
-			return c
-		end
-	end
-	while true do
-		local c = Color3.fromRGB(math.random(0,255), math.random(0,255), math.random(0,255))
-		local key = colorKey(c)
-		if not usedColors[key] then
-			usedColors[key] = true
-			return c
-		end
-	end
-end
-
 local function targetColor(entry)
-	return mode == "CIVIL WAR" and entry.civilColor or (normalTarget or paletteColor())
+	if mode=="CIVIL WAR" then return entry.civilColor end
+	return normalTarget or paletteColor()
 end
-
+-- All semantic color decisions go through this matcher, including palette/dirty/results.
+local v7: any = { RawMismatchButNormalizedMatch=0, ActualRGB="unavailable",TargetRGB="unavailable",DeltaRGB="unavailable",CleanSkippedBeforeCursor=0, CleanSkippedBeforeDown=0,
+	CursorMovesToAlreadyCleanProvince=0,CursorMovesTriggeredByReconciliation=0,
+	ReleasesSent=0,ReleasesObserved=0,ReleasesConfirmedByButtonState=0,ReleaseTimeouts=0,
+	TargetSwitches=0,AtoBtoASequences=0,SamePairOscillations=0,OscillationStops=0,ServicesPreempted=0,
+	OscillationDetected=false,FailedValidServices=0,PaletteFailures=0,LateCorrections=0,
+	defense={},records={},switches={},lock=nil,previousIntended=nil,SuspectedStalePalette=false }
+local function normalizedRGB(c)
+	if typeof(c)~="Color3" then return nil end
+	return math.clamp(math.round(c.R*255),0,255),math.clamp(math.round(c.G*255),0,255),math.clamp(math.round(c.B*255),0,255)
+end
+local function colorsMatch(actual,target)
+	local ar,ag,ab=normalizedRGB(actual);local tr,tg,tb=normalizedRGB(target)
+	if not ar or not tr then return false end
+	local match=math.abs(ar-tr)<=1 and math.abs(ag-tg)<=1 and math.abs(ab-tb)<=1
+	if match and (math.abs(actual.R-target.R)>1e-9 or math.abs(actual.G-target.G)>1e-9 or math.abs(actual.B-target.B)>1e-9) then
+		v7.RawMismatchButNormalizedMatch+=1
+	end
+	return match
+end
+local function rgbText(c)
+	local r,g,b=normalizedRGB(c);return r and string.format("%d,%d,%d",r,g,b) or "unavailable"
+end
+local function colorDelta(a,b)
+	local ar,ag,ab=normalizedRGB(a);local br,bg,bb=normalizedRGB(b)
+	return ar and br and string.format("%d,%d,%d",ar-br,ag-bg,ab-bb) or "unavailable"
+end
+local function entryLabel(entry)
+	local p=entry.part.Position
+	return string.format("Entry %d @ (%.2f,%.2f,%.2f)",entry.id,p.X,p.Y,p.Z)
+end
+local function shouldTarget(entry)
+	return entry.active and entry.part.Parent and not colorsMatch(entry.part.Color,targetColor(entry))
+end
+local function colorKey(c)
+	local r,g,b=normalizedRGB(c);return r and string.format("%02X%02X%02X",r,g,b) or "unassigned"
+end
 local cachedBucket,cachedHumanoid=nil,nil
 local function findBucket()
 	local character = player.Character
@@ -175,10 +183,10 @@ local forceRelease, observeTool, onLateUp
 local virtualInput, primaryMethod, primaryFailures, holdStalls = nil, nil, 0, 0
 local equippedGeneration, confirmedGeneration = 0, -1
 local inputConnections = {
-	mouse.Button1Down:Connect(function() downSeen += 1;downObservedAt=os.clock() end),
+	mouse.Button1Down:Connect(function() downSeen += 1;downObservedAt=os.clock();if ownedInput and ownedInput.ReleaseSent then ownedInput.QuietSince=nil end end),
 	mouse.Button1Up:Connect(function()
 		upSeen += 1
-		if ownedInput and not ownedInput.ReleaseSent then ownedInput.ExternalUp=true end
+		if ownedInput and not ownedInput.ReleaseSent and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then ownedInput.ExternalUp=true end
 		if onLateUp then onLateUp() end
 	end),
 }
@@ -209,7 +217,7 @@ observeTool = function(tool)
 			table.insert(equippedMouseConnections, toolMouse.Button1Down:Connect(function() equippedDownSeen += 1;equippedDownObservedAt=os.clock() end))
 			table.insert(equippedMouseConnections, toolMouse.Button1Up:Connect(function()
 				equippedUpSeen+=1
-				if ownedInput and not ownedInput.ReleaseSent then ownedInput.ExternalUp=true end
+				if ownedInput and not ownedInput.ReleaseSent and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then ownedInput.ExternalUp=true end
 				if onLateUp then onLateUp() end
 			end))
 		end
@@ -260,7 +268,7 @@ forceRelease = function()
 	inputEvidence(owner)
 	owner.ReleaseSent, owner.ReleaseAt = true, os.clock()
 	owner.Up, owner.EquippedUp, owner.ToolUp = upSeen, equippedUpSeen, toolUpSeen
-	releaseAttempts += 1
+	releaseAttempts += 1;v7.ReleasesSent+=1
 	local ok, problem = callInput(owner.Method.Up)
 	owner.ReleaseError = not ok
 	held = false
@@ -273,17 +281,23 @@ forceRelease = function()
 end
 local function releaseObserved(owner)
 	if not owner.ReleaseSent then return false end
-	inputEvidence(owner) -- include deferred down observations before deciding that a failed call was inert
-	if owner.ExternalUp then
-		local ok, pressed=pcall(function() return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) end)
-		if ok and not pressed then return true end
+	inputEvidence(owner)
+	local readable,pressed=pcall(function() return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) end)
+	local observed=owner.MouseObserved and (upSeen>owner.Up or equippedUpSeen>owner.EquippedUp)
+		or (not owner.MouseObserved and owner.ToolObserved and toolUpSeen>owner.ToolUp)
+	if readable and pressed then owner.QuietSince=nil;return false end
+	if observed then
+		if not owner.ReleaseCounted then v7.ReleasesObserved+=1;owner.ReleaseCounted=true end
+		return true
 	end
-	if owner.MouseObserved then return upSeen > owner.Up or equippedUpSeen > owner.EquippedUp end
-	if owner.ToolObserved then return toolUpSeen > owner.ToolUp end
-	-- An unobserved/no-op down has no matching event to await. Require a successful
-	-- paired release, a quiet interval, and an observable non-pressed mouse state.
-	local ok, pressed = pcall(function() return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) end)
-	return (not owner.ReleaseError or owner.DownFailed) and ok and not pressed and os.clock() - owner.ReleaseAt >= CFG.ActivationReleaseQuiet
+	if readable and not pressed and (not owner.ReleaseError or owner.DownFailed or owner.ExternalUp) then
+		owner.QuietSince=owner.QuietSince or os.clock()
+		if os.clock()-owner.QuietSince>=CFG.ActivationReleaseQuiet then
+			if not owner.ReleaseCounted then v7.ReleasesConfirmedByButtonState+=1;owner.ReleaseCounted=true end
+			return true
+		end
+	else owner.QuietSince=nil end
+	return false
 end
 local function settleRelease()
 	local owner = ownedInput
@@ -298,6 +312,7 @@ local function settleRelease()
 		RunService.Heartbeat:Wait()
 	end
 	if ownedInput~=owner then return not releaseBlocked end
+	if not owner.TimeoutCounted then owner.TimeoutCounted=true;v7.ReleaseTimeouts+=1 end
 	releaseBlocked = true
 	activation.Status = "Release unconfirmed; stopped without testing another activation method"
 	lastMessage = activation.Status
@@ -326,7 +341,7 @@ local function activateAndPaint(entry, target, token)
 	for _, method in ipairs(order) do
 		if rejectedMethods[method.Name] then continue end
 		if not inputAllowed(entry, tool, token) or not tool.Enabled then return "retry" end
-		if entry.part.Color == target then return "correct" end
+		if colorsMatch(entry.part.Color,target) then return "correct" end
 		if ownedInput or releaseBlocked or inputBusy then return "blocked" end
 		if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
 			activation.Status = "Existing Mouse1 down; activation not attempted"
@@ -347,8 +362,8 @@ local function activateAndPaint(entry, target, token)
 		local confirmed, interrupted = false, false
 		while ok and inputAllowed(entry, tool, token) and not owner.ReleaseSent do
 			inputEvidence(owner)
-			if entry.part.Color ~= owner.Before then activation.ColorChanged = true end
-			activation.TargetColorObserved = entry.part.Color == target
+			if not colorsMatch(entry.part.Color,owner.Before) then activation.ColorChanged = true end
+			activation.TargetColorObserved = colorsMatch(entry.part.Color,target)
 			if activation.Observed and activation.TargetColorObserved then confirmed = true; break end
 			if os.clock() >= deadline or (not activation.Observed and os.clock() >= inputDeadline) then break end
 			RunService.Heartbeat:Wait()
@@ -416,6 +431,174 @@ local function ensureBucket()
 		end
 	end
 	return tool.Parent == character and tool or nil
+end
+
+-- The GUI paths are learned from actual native palette clicks; no guessed swatches are clicked.
+local palette: any = {controls={},byButton={},learning=nil,pending=nil,opener=nil,closer=nil,
+	status="Native palette controls have not been learned",previous=nil,lastWorking=nil,inventory={}}
+function palette.topButton(point)
+	local inset=GuiService:GetGuiInset()
+	local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)
+	if not ok then return nil end
+	for _,o in ipairs(objects) do
+		if o:IsA("TextButton") or o:IsA("ImageButton") then
+			local root=playerGui:FindFirstChild(GUI_NAME)
+			if not root or not o:IsDescendantOf(root) then return o end
+			return nil
+		end
+	end
+	return nil
+end
+function palette.visible(button)
+	if not button or not button:IsDescendantOf(playerGui) then return false end
+	local o=button
+	while o and o~=playerGui do
+		if o:IsA("ScreenGui") and not o.Enabled then return false end
+		if (o:IsA("GuiObject") or o:IsA("TextButton") or o:IsA("ImageButton") or o:IsA("Frame")) and o.Visible==false then return false end
+		o=o.Parent
+	end
+	return button.AbsoluteSize and button.AbsoluteSize.X>0 and button.AbsoluteSize.Y>0
+end
+function palette.capture(button,point)
+	return {button=button,path=button:GetFullName(),offset=point-button.AbsolutePosition,
+		size=button.AbsoluteSize,viewport=Workspace.CurrentCamera.ViewportSize,inset=GuiService:GetGuiInset()}
+end
+function palette.onClick(point)
+	if not palette.learning then return end
+	local button=palette.topButton(point);if not button or not palette.visible(button) then return end
+	local item=palette.capture(button,point)
+	if palette.learning=="OPENER" then palette.opener=item;palette.status="Opener learned; finish setup";palette.learning=nil;return end
+	if palette.learning=="CLOSER" then palette.closer=item;palette.status="Closer learned; finish setup";palette.learning=nil;return end
+	palette.pending={item=item,before=paletteColor(),at=os.clock()}
+end
+function palette.onColor()
+	local pending=palette.pending
+	if not palette.learning or not pending or os.clock()-pending.at>0.75 then return end
+	local color=paletteColor()
+	if colorsMatch(color,pending.before) then return end
+	palette.pending=nil
+	local item=pending.item;local existing=palette.byButton[item.button]
+	if existing then
+		if not colorsMatch(existing.color,color) then
+			existing.invalid=true;palette.status="Dynamic color control detected; exact picker adapter/source required"
+		end
+		return
+	end
+	for _,known in ipairs(palette.controls) do if not known.invalid and colorsMatch(known.color,color) then return end end
+	if #palette.controls>=256 then palette.status="Palette learning limit reached (256 controls)";return end
+	local r,g,b=normalizedRGB(color);item.color=Color3.fromRGB(r,g,b);item.key=colorKey(item.color)
+	palette.byButton[item.button]=item;table.insert(palette.controls,item)
+	palette.status=string.format("Learned %d native selectable colors; click more colors or finish",#palette.controls)
+end
+function palette.find(color)
+	for _,item in ipairs(palette.controls) do
+		if not item.invalid and item.button:IsDescendantOf(playerGui) and colorsMatch(item.color,color) then return item end
+	end
+	return nil
+end
+function palette.prune()
+	for i=#palette.controls,1,-1 do
+		local item=palette.controls[i]
+		if item.invalid or not item.button:IsDescendantOf(playerGui) then palette.byButton[item.button]=nil;table.remove(palette.controls,i) end
+	end
+	if palette.opener and not palette.opener.button:IsDescendantOf(playerGui) then palette.opener=nil end
+	if palette.closer and not palette.closer.button:IsDescendantOf(playerGui) then palette.closer=nil end
+end
+function palette.assign()
+	palette.prune()
+	local available={}
+	for _,item in ipairs(palette.controls) do
+		if not item.invalid and item.button:IsDescendantOf(playerGui) then table.insert(available,item) end
+	end
+	local used={};local missing={}
+	for _,entry in ipairs(entries) do
+		if entry.civilColor then
+			local item=palette.find(entry.civilColor)
+			if not item or used[item.key] then return false,"Existing Civil assignment missing/duplicated; relearn palette or clear/reselect" end
+			used[item.key]=true
+		else table.insert(missing,entry) end
+	end
+	local free={};for _,item in ipairs(available) do if not used[item.key] then table.insert(free,item) end end
+	if #free<#missing then
+		return false,string.format("Civil War needs %d unique native colors; %d learned and available. Palette/source setup required.",#entries,#available)
+	end
+	-- Validate the complete assignment before changing any target.
+	for i,entry in ipairs(missing) do entry.civilColor=free[i].color;entry.civilKey=free[i].key end
+	return true
+end
+function palette.summary()
+	local keys={};local assigned,duplicate=0,0
+	for _,entry in ipairs(entries) do
+		if entry.civilColor then assigned+=1;local key=colorKey(entry.civilColor);if keys[key] then duplicate+=1 end;keys[key]=true end
+	end
+	local unique=0;for _ in pairs(keys) do unique+=1 end
+	return {CivilSelectedCount=#entries,UniqueAssignedCivilColors=unique,DuplicateAssignedCivilColors=duplicate,
+		UnassignedCivilColors=#entries-assigned,LearnedPaletteColors=#palette.controls,PaletteStatus=palette.status}
+end
+function palette.click(item,token)
+	if not item or not palette.visible(item.button) then return false,"Learned palette control is absent/hidden" end
+	if item.viewport~=Workspace.CurrentCamera.ViewportSize or item.size~=item.button.AbsoluteSize or item.inset~=GuiService:GetGuiInset() then
+		return false,"Palette geometry changed; relearn the native control coordinates"
+	end
+	if not settleRelease() or not alive or not running or token~=workerToken or not focused then return false,"Palette canceled/release unresolved" end
+	if not virtualInput or not primaryMethod then return false,"VirtualInput unavailable for native palette" end
+	local point=item.button.AbsolutePosition+item.offset
+	if palette.topButton(point)~=item.button then return false,"Palette control is obscured; no click sent" end
+	local activated=false
+	local connection=item.button.Activated:Connect(function() activated=true end) -- observation only
+	local ok,problem=pcall(function()
+		local moved,why=callInput(function() virtualInput:SendMousePosition(point) end)
+		if not moved then error(tostring(why)) end
+		if not alive or not running or token~=workerToken or not focused then error("Palette canceled") end
+		if palette.topButton(point)~=item.button then error("Palette moved or became obscured") end
+		local owner={Method=primaryMethod,Tool=activationTool,Down=downSeen,EquippedDown=equippedDownSeen,ToolDown=toolDownSeen,Started=os.clock(),Kind="PALETTE"}
+		ownedInput,held=owner,true
+		local down,whyDown=callInput(function() virtualInput:SendMouseButton(point,Enum.UserInputType.MouseButton1,true,0) end)
+		owner.DownFailed=not down
+		if not down then error(tostring(whyDown)) end
+		if not settleRelease() then error("Palette UP unresolved") end
+		local deadline=os.clock()+CFG.PaletteTimeout
+		while alive and running and token==workerToken and not activated and os.clock()<deadline do RunService.Heartbeat:Wait() end
+		if not activated then error("Native palette button activation not observed") end
+	end)
+	connection:Disconnect()
+	if ownedInput then settleRelease() end
+	return ok,ok and item.path or tostring(problem)
+end
+function palette.prepare(entry,token,service)
+	local item=palette.find(entry.civilColor)
+	if not item then return false,"No learned native palette button for this assignment" end
+	service.attributeBefore=paletteColor();service.attributeAfterSet=nil -- no attribute write is performed
+	service.previousIntended=v7.previousIntended;v7.previousIntended=entry.civilColor
+	if not palette.visible(item.button) then
+		local ok,why=palette.click(palette.opener,token);if not ok then return false,why end
+		local visibleDeadline=os.clock()+CFG.PaletteTimeout
+		while alive and running and token==workerToken and not palette.visible(item.button) and os.clock()<visibleDeadline do RunService.Heartbeat:Wait() end
+	end
+	local ok,why=palette.click(item,token);service.paletteUISelection=why
+	if not ok then return false,why end
+	local deadline=os.clock()+CFG.PaletteTimeout
+	while running and alive and token==workerToken and not colorsMatch(paletteColor(),entry.civilColor) and os.clock()<deadline do RunService.Heartbeat:Wait() end
+	service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()
+	if not colorsMatch(service.attributeAfter,entry.civilColor) then return false,"Native UI click did not establish the intended exposed color" end
+	if palette.closer and palette.visible(palette.closer.button) then
+		local closed,whyClose=palette.click(palette.closer,token);if not closed then return false,whyClose end
+	end
+	service.paletteProof="Native palette Activated observed + normalized attribute match; working color pending province result"
+	return alive and running and token==workerToken
+end
+function palette.inspect()
+	local lines={"PALETTE UI INVENTORY (read-only; names/visual colors are NOT proof of working controls)"};local count=0
+	for _,o in ipairs(playerGui:GetDescendants()) do
+		if (o:IsA("TextButton") or o:IsA("ImageButton")) and not o:IsDescendantOf(playerGui:FindFirstChild(GUI_NAME)) then
+			local path=o:GetFullName();local lower=string.lower(path)
+			if lower:find("paint",1,true) or lower:find("color",1,true) or lower:find("palette",1,true) then
+				count+=1;if count<=80 then table.insert(lines,path.." | Visible="..tostring(palette.visible(o)).." | BackgroundRGB="..rgbText(o.BackgroundColor3)) end
+			end
+		end
+	end
+	table.insert(lines,"Matching buttons="..count.."; inventory capped at 80 lines; no controls clicked")
+	return table.concat(lines,"\n")
 end
 
 local function saveView()
@@ -525,6 +708,7 @@ local function screenRayHits(camera, screenPoint, part)
 end
 
 local function acquireTarget(entry)
+	if not shouldTarget(entry) then return false end
 	if not saveView() then
 		lastAcquireDetail = "Could not take camera control"
 		return false
@@ -542,6 +726,7 @@ local function acquireTarget(entry)
 	local cached = cameraCache[entry.part]
 
 	local function tryPoint(point, origin, deadline)
+		if not shouldTarget(entry) then return false end
 		if not alive or not running then return false end
 		if cached and origin == nil then
 			camera.CFrame = cached
@@ -554,6 +739,7 @@ local function acquireTarget(entry)
 		for _ = 1, CFG.AcquireFrames do
 			if not alive or not running or os.clock() >= deadline then return false end
 			RunService.RenderStepped:Wait()
+			if not shouldTarget(entry) then return false end
 
 			if mouse.Target == entry.part then
 				cameraCache[entry.part] = camera.CFrame
@@ -575,6 +761,7 @@ local function acquireTarget(entry)
 				-- The visible ray is already on the province. Give PlayerMouse a few
 				-- frames to refresh before trying another surface point.
 				for _ = 1, 3 do
+					if not shouldTarget(entry) then return false end
 					refreshMouseTarget()
 					RunService.RenderStepped:Wait()
 					if mouse.Target == entry.part then
@@ -617,7 +804,6 @@ local freshHead,freshTail,freshCount=nil,nil,0
 local wake = Instance.new("BindableEvent")
 local transitionCount, projectionsLeft, raysLeft = 0, CFG.MaxProjections, CFG.MaxRays
 local nextWorkerAt,nextReconcileAt=nil,0
-local lastPreparedColor, lastPreparedTool = nil, nil
 local metrics = { Acquisitions=0, Corrections=0, CachedCursorHits=0, CachedCameraHits=0,
 	FullCameraSearches=0, Deferred=0, Stalled=0, Projections=0, Raycasts=0, Candidates=0,
 	AcquireTotal=0, ColorTotal=0, SwitchTotal=0, Switches=0, QueueEvaluations=0,
@@ -645,6 +831,13 @@ local function markFresh(entry,now)
 end
 local function expireFresh(now)
 	while freshTail and (freshTail.recentUntil<=now or not freshTail.dirtyIndex) do unlinkFresh(freshTail) end
+end
+function v7.draw(entry)
+	if not entry.box or not entry.active then return end
+	if not CFG.ShowDirtyState then entry.box.LineThickness=0.025;entry.box.Color3=targetColor(entry) or paletteColor();return end
+	if v7.lock==entry then entry.box.LineThickness=0.085;entry.box.Color3=Color3.fromRGB(255,220,0)
+	elseif entry.dirtyIndex then entry.box.LineThickness=0.07;entry.box.Color3=Color3.fromRGB(255,55,70)
+	else entry.box.LineThickness=0.025;entry.box.Color3=Color3.fromRGB(75,230,145) end
 end
 local function removeDirty(entry)
 	local index = entry.dirtyIndex
@@ -711,6 +904,7 @@ end
 function policy.decide()
 	if policy.locked or CFG.ActivationStrategy~="ADAPTIVE" then return end
 	local p,c=policy.normal.PER_TARGET,policy.normal.CONTINUOUS
+	if p.Successes<3 then policy.choice="PER_TARGET";policy.reason="Waiting for three normalized paint successes before continuous sampling";return end
 	if p.Attempts<CFG.StrategyMinAttempts then policy.choice="PER_TARGET";return end
 	if c.Attempts<CFG.StrategyMinAttempts then policy.choice="CONTINUOUS";return end
 	-- A series of singleton holds cannot establish the value of held target transfers.
@@ -741,6 +935,7 @@ end
 function policy.strategy()
 	policy.session()
 	if mode=="CIVIL WAR" then return "PER_TARGET",policy.civil end
+	if CFG.ActivationStrategy=="CONTINUOUS" and policy.normal.PER_TARGET.Successes<3 then return "PER_TARGET",policy.normal.PER_TARGET end
 	if CFG.ActivationStrategy=="CONTINUOUS" or CFG.ActivationStrategy=="PER_TARGET" then
 		return CFG.ActivationStrategy,policy.normal[CFG.ActivationStrategy]
 	end
@@ -764,9 +959,60 @@ function policy.learn(arm,success,latency)
 	end
 	arm.dwell=math.clamp(arm.dwell,CFG.TargetDwellMin,CFG.TargetDwellMax)
 end
+function v7.lockTarget(entry)
+	assert(not v7.lock,"Another target still owns the transaction")
+	v7.lock=entry;v7.draw(entry)
+	local now=os.clock()
+	if v7.lastTargetId~=entry.id then
+		v7.TargetSwitches+=1;table.insert(v7.switches,now)
+		while #v7.switches>64 do table.remove(v7.switches,1) end
+		local seq=v7.sequence or {};v7.sequence=seq;table.insert(seq,entry.id);if #seq>3 then table.remove(seq,1) end
+		if #seq==3 and seq[1]==seq[3] and seq[1]~=seq[2] then
+			v7.AtoBtoASequences+=1
+			local pair=tostring(math.min(seq[1],seq[2]))..":"..tostring(math.max(seq[1],seq[2]))
+			if v7.lastPair==pair then v7.SamePairOscillations+=1 else v7.SamePairOscillations=1;v7.lastPair=pair end
+			if v7.SamePairOscillations>=2 then
+				v7.OscillationDetected=true;v7.OscillationStops+=1;entry.forceFullService=true
+				v7.sequence={};v7.SamePairOscillations=0
+			end
+		end
+	end
+	v7.lastTargetId=entry.id
+end
+function v7.unlockTarget(entry)
+	if v7.lock==entry then v7.lock=nil;v7.draw(entry) end
+end
+function v7.record(service,stalled)
+	if service.record then return end
+	local e=service.entry;local actual=e.part.Color;local normalized=colorsMatch(actual,service.target)
+	local result=service.success and "SUCCESS" or service.result or (stalled and "VALID_SERVICE_MISS" or "INTERRUPTED")
+	local record={EntryId=e.id,Position=tostring(e.part.Position),Label=entryLabel(e),IntendedRGB=rgbText(service.target),
+		PaletteAttributeBefore=rgbText(service.attributeBefore),AttributeAfterSet="NOT WRITTEN BY AUTOPAINTER",
+		PaletteAttributeAfter=rgbText(service.attributeAfter),AttributeAfterEquip=rgbText(service.attributeAfterEquip),
+		PaletteUISelection=service.paletteUISelection or "normal palette chosen by player",
+		PaletteProof=service.paletteProof or "NORMAL exposed palette; no internal closure assumption",
+		PreviousIntendedRGB=rgbText(service.previousIntended),ActualRGBBefore=rgbText(service.actualBefore),ActualRGBAfter=rgbText(actual),
+		NormalizedMatch=normalized,DeltaRGB=colorDelta(actual,service.target),MouseTargetCorrect=service.qualified,
+		AcquisitionMs=service.acquiredAt and (e.lastAcquireSeconds or 0)*1000 or 0,QueueWaitMs=service.queueWaitMs or 0,
+		PalettePreparationMs=service.paletteMs or 0,ServiceMs=service.validAt and math.max(0,os.clock()-service.validAt)*1000 or 0,AcquiredToCorrectMs=service.latency and service.latency*1000 or "unobserved",
+		Result=result,ActualChanged=not colorsMatch(service.actualBefore,actual)}
+	service.record=record
+	if #v7.records>=20 then table.remove(v7.records,1) end;table.insert(v7.records,record)
+	v7.ActualRGB,v7.TargetRGB,v7.DeltaRGB=record.ActualRGBAfter,record.IntendedRGB,record.DeltaRGB
+	if service.civil and service.qualified and not normalized and record.ActualChanged then
+		local previous=v7.previousCivilResult
+		if previous and not colorsMatch(previous.target,service.target) and colorsMatch(previous.actual,actual) then
+			v7.SuspectedStalePalette=true;palette.status="Different intended Civil colors yielded the same observed result; stopped for palette diagnosis"
+			running=false;lastMessage=palette.status
+		end
+		v7.previousCivilResult={target=service.target,actual=actual}
+	end
+end
 function policy.begin(entry,strategy,arm,started)
 	local service={entry=entry,strategy=strategy,arm=arm,started=started,normal=mode=="NORMAL",
-		generation=equippedGeneration,qualified=false,success=false,retained=false,dwell=arm.dwell,benchmark=true}
+		generation=equippedGeneration,qualified=false,success=false,retained=false,dwell=arm.dwell,benchmark=true,
+		target=targetColor(entry),actualBefore=entry.part.Color,attributeBefore=paletteColor(),civil=mode=="CIVIL WAR",
+		paletteValid=false,attackAt=entry.attackAt,queueWaitMs=entry.dirtyQueueInsertTime and (started-entry.dirtyQueueInsertTime)*1000 or 0}
 	policy.current=service;entry.service=service
 	return service
 end
@@ -775,18 +1021,23 @@ function policy.qualify(service)
 	service.qualified=true
 	service.validAt=math.max(service.entry.acquiredAt or os.clock(),ownedInput and ownedInput.MouseObservedAt or os.clock())
 	service.entry.lastPaintAttempt=service.validAt
+	service.entry.lastValidService=service
+	service.method=ownedInput and ownedInput.Method or nil
+	service.acquiredAt=service.entry.acquiredAt
 	metrics.Attempts+=1
 end
 function policy.finish(service,stalled)
 	if not service or service.finished then return end
-	service.finished=true;policy.account()
+	service.finished=true;service.endedAt=os.clock();policy.account()
 	local arm=service.arm
-	if service.qualified and service.benchmark and (service.success or stalled) then
+	if service.qualified and service.benchmark and (service.success or (stalled and service.paletteValid)) then
 		local ended=os.clock();local latency=service.latency or 0
 		arm.Attempts+=1;if service.success then arm.Successes+=1 end
 		if service.retained then arm.RetainedAttempts+=1 end
 		local sample={success=service.success,latency=latency,
 			elapsed=math.max(0.001,arm.workSeconds-arm.lastSampleSeconds),service=math.max(0,ended-(service.validAt or ended))}
+		service.sample=sample
+		if stalled and not service.success then v7.FailedValidServices+=1;service.failedCounted=true end
 		arm.lastSampleSeconds=arm.workSeconds
 		if #arm.window>=CFG.StrategyWindow then table.remove(arm.window,1) end
 		table.insert(arm.window,sample)
@@ -796,6 +1047,42 @@ function policy.finish(service,stalled)
 	elseif service.qualified then arm.Aborted+=1;metrics.AbortedServices+=1 end
 	if service.entry.service==service then service.entry.service=nil end
 	if policy.current==service then policy.current=nil end
+	v7.record(service,stalled)
+	v7.unlockTarget(service.entry)
+end
+
+function v7.stats()
+	local r={};for _,key in ipairs({"RawMismatchButNormalizedMatch","ActualRGB","TargetRGB","DeltaRGB","CleanSkippedBeforeCursor","CleanSkippedBeforeDown","CursorMovesToAlreadyCleanProvince","CursorMovesTriggeredByReconciliation","ReleasesSent","ReleasesObserved","ReleasesConfirmedByButtonState","ReleaseTimeouts","TargetSwitches","AtoBtoASequences","SamePairOscillations","OscillationDetected","OscillationStops","ServicesPreempted","FailedValidServices","PaletteFailures","SuspectedStalePalette","LateCorrections"}) do r[key]=v7[key] end
+	local count=0;for _,at in ipairs(v7.switches) do if os.clock()-at<=1 then count+=1 end end;r.TargetSwitchesPerSecond=count
+	r.ActiveTargetLock=v7.lock and entryLabel(v7.lock) or "none"
+	local times=table.clone(v7.defense);table.sort(times)
+	r.MedianDefenseResponseMs=#times>0 and times[math.ceil(#times*0.5)] or 0
+	r.P90DefenseResponseMs=#times>0 and times[math.ceil(#times*0.9)] or 0
+	r.AverageDefenseResponseMs=metrics.FreshAttackCorrections>0 and metrics.AttackResponseTotal/metrics.FreshAttackCorrections or 0
+	r.FastestDefenseResponseMs=metrics.MinimumAttackResponseMs;r.SlowestDefenseResponseMs=metrics.MaximumAttackResponseMs
+	local queue,pal,paint=0,0,0
+	for _,record in ipairs(v7.records) do queue+=record.QueueWaitMs;pal+=record.PalettePreparationMs;paint+=record.ServiceMs end
+	r.AverageQueueWaitMs=#v7.records>0 and queue/#v7.records or 0
+	r.AveragePalettePreparationMs=#v7.records>0 and pal/#v7.records or 0
+	r.AveragePaintServiceMs=#v7.records>0 and paint/#v7.records or 0
+	r.ReconciliationRepairs=metrics.ReconciliationFinds
+	for k,value in pairs(palette.summary()) do r[k]=value end
+	return r
+end
+function v7.report()
+	local lines={"V7 CORRECTNESS / RELEASE / COLOR AUTHORITY", "Server -> client replication latency is unknown without a server timestamp.",
+		"RawMismatchButNormalizedMatch counts comparisons, not distinct provinces. Tolerance: at most 1 RGB byte/channel."}
+	local stats=v7.stats();local keys={};for key in pairs(stats) do table.insert(keys,key) end;table.sort(keys)
+	for _,key in ipairs(keys) do table.insert(lines,key.."="..tostring(stats[key])) end
+	table.insert(lines,"CIVIL ASSIGNMENTS (native palette controls, not arbitrary RGB)")
+	for _,e in ipairs(entries) do table.insert(lines,entryLabel(e).." | AssignedCivilRGB="..rgbText(e.civilColor).." | AssignedCivilColorKey="..colorKey(e.civilColor)) end
+	table.insert(lines,"LAST 20 TARGET TRANSACTIONS (normalized local observations; not server acknowledgments)")
+	local fields={"EntryId","Position","IntendedRGB","PaletteAttributeBefore","AttributeAfterSet","PaletteAttributeAfter","AttributeAfterEquip","PaletteUISelection","PaletteProof","PreviousIntendedRGB","ActualRGBBefore","ActualRGBAfter","DeltaRGB","NormalizedMatch","MouseTargetCorrect","ActualChanged","QueueWaitMs","AcquisitionMs","PalettePreparationMs","ServiceMs","AcquiredToCorrectMs","Result"}
+	for _,record in ipairs(v7.records) do
+		table.insert(lines,record.Label)
+		for _,key in ipairs(fields) do table.insert(lines,"  "..key.."="..tostring(record[key])) end
+	end
+	return table.concat(lines,"\n")
 end
 
 local function reportPerformance()
@@ -804,7 +1091,7 @@ local function reportPerformance()
 	local acq, corrected = 0, 0
 	for _, bin in pairs(rateBins) do if now-bin.tick/2 < 5 then acq+=bin.Acquisitions;corrected+=bin.Corrections end end
 	local result = table.clone(metrics); local window=math.min(5,math.max(1,duration))
-	result.ActiveTarget=currentEntry and currentEntry.active and currentEntry.part:GetFullName() or "none"
+	result.ActiveTarget=currentEntry and currentEntry.active and entryLabel(currentEntry) or "none"
 	result.DirtyCount=#dirty;result.AcquisitionsPerSecond=acq/window;result.CorrectionsPerSecond=corrected/window
 	result.AverageAcquisitionMs=metrics.Acquisitions>0 and metrics.AcquireTotal*1000/metrics.Acquisitions or 0
 	result.AverageAcquiredToColorMs=metrics.Corrections>0 and metrics.ColorTotal*1000/metrics.Corrections or 0
@@ -829,6 +1116,7 @@ local function reportPerformance()
 	result.AverageColorEventToDirtyQueueMs=metrics.ColorEventQueued>0 and metrics.ColorEventQueueTotal/metrics.ColorEventQueued or 0
 	result.AverageAttackColorChangeToCorrectedMs=metrics.FreshAttackCorrections>0 and metrics.AttackResponseTotal/metrics.FreshAttackCorrections or 0
 	result.RecentlyChangedQueueDepth=freshCount
+	for key,value in pairs(v7.stats()) do result[key]=value end
 	result.Strategies={PER_TARGET=policy.stats(policy.normal.PER_TARGET),CONTINUOUS=policy.stats(policy.normal.CONTINUOUS),CIVIL_WAR=policy.stats(policy.civil)}
 	return result
 end
@@ -844,33 +1132,52 @@ local function deferEntry(entry, stalled, cause)
 	if stalled then metrics.Stalled+=1;noEffect+=1 end
 end
 noteCorrection = function(entry)
-	if entry.corrected or currentEntry~=entry or not held or not ownedInput
-		or ownedInput.ReleaseSent or mouse.Target~=entry.part then return end
-	inputEvidence(ownedInput)
-	if not ownedInput.MouseObserved then return end
-	if not entry.acquiredAt then entry.earlyCorrectionAt=os.clock();return end
-	entry.corrected=true;entry.failures=0;entry.retryAt=0
+	if not colorsMatch(entry.part.Color,targetColor(entry)) then return end
+	local service=entry.service or entry.lastValidService
+	if not service or service.success or not colorsMatch(service.target,targetColor(entry)) then return end
+	if not service.paletteValid then return end
+	local releasing=service.qualified and ownedInput and ownedInput.ReleaseSent
+	if service.finished or releasing then
+		-- Replication may arrive during the paired UP boundary, before policy.finish.
+		local boundary=service.endedAt or (ownedInput and ownedInput.ReleaseAt) or 0
+		if not service.qualified or os.clock()-boundary>CFG.LateConfirmation then return end
+	else
+		if currentEntry~=entry or not held or not ownedInput or ownedInput.Kind=="PALETTE"
+			or ownedInput.ReleaseSent or mouse.Target~=entry.part then return end
+		inputEvidence(ownedInput);if not ownedInput.MouseObserved then return end
+		if not entry.acquiredAt then entry.earlyCorrectionAt=os.clock();return end
+		policy.qualify(service)
+	end
 	local observedAt=entry.earlyCorrectionAt or os.clock()
-	local latency=math.max(0,observedAt-entry.acquiredAt)
+	local latency=math.max(0,observedAt-(service.acquiredAt or entry.acquiredAt or observedAt))
+	entry.corrected=true;entry.failures,entry.retryAt=0,0;entry.lastCorrectedTime=observedAt
 	corrections+=1;metrics.Corrections+=1;metrics.ColorTotal+=latency;bumpRate("Corrections")
-	entry.lastCorrectedTime=observedAt
-	local service=entry.service
-	if service then
-		policy.qualify(service);service.success,service.latency=true,latency
-		if entry.attackAt then
-			local ms=math.max(0,observedAt-entry.attackAt)*1000
-			metrics.FreshAttackCorrections+=1;metrics.AttackResponseTotal+=ms
-			if metrics.FreshAttackCorrections==1 then metrics.MinimumAttackResponseMs=ms
-			else metrics.MinimumAttackResponseMs=math.min(metrics.MinimumAttackResponseMs,ms) end
-			metrics.MaximumAttackResponseMs=math.max(metrics.MaximumAttackResponseMs,ms)
-			entry.attackAt=nil
+	service.success,service.latency,service.paletteValid=true,latency,true
+	if service.finished then
+		v7.LateCorrections+=1
+		if service.sample and not service.sample.success then
+			service.sample.success=true;service.sample.latency=latency;service.arm.Successes+=1
+			if service.failedCounted then v7.FailedValidServices=math.max(0,v7.FailedValidServices-1);service.failedCounted=false end
+		end
+		if service.record then
+			service.record.Result="SUCCESS_LATE";service.record.NormalizedMatch=true;service.record.ActualRGBAfter=rgbText(entry.part.Color)
+			service.record.DeltaRGB=colorDelta(entry.part.Color,service.target);service.record.AcquiredToCorrectMs=latency*1000
 		end
 	end
+	local attack=service.attackAt or entry.attackAt
+	if attack then
+		local ms=math.max(0,observedAt-attack)*1000
+		metrics.FreshAttackCorrections+=1;metrics.AttackResponseTotal+=ms
+		if metrics.FreshAttackCorrections==1 then metrics.MinimumAttackResponseMs=ms else metrics.MinimumAttackResponseMs=math.min(metrics.MinimumAttackResponseMs,ms) end
+		metrics.MaximumAttackResponseMs=math.max(metrics.MaximumAttackResponseMs,ms)
+		if #v7.defense>=64 then table.remove(v7.defense,1) end;table.insert(v7.defense,ms);entry.attackAt=nil
+	end
+	v7.sequence={};v7.lastPair=nil;v7.SamePairOscillations=0
 	activation.ColorChanged,activation.TargetColorObserved=true,true
-	if ownedInput.Method==primaryMethod then
+	if service.method==primaryMethod and service.generation==equippedGeneration then
 		activation.Preferred=primaryMethod;confirmedGeneration=equippedGeneration;primaryFailures=0;holdStalls=0
 	end
-	activation.Status="Mouse.Button1Down + target color observed"
+	activation.Status="Normalized target color locally observed after valid native activation"
 	switchedAt=observedAt
 end
 syncDirty = function(entry,source)
@@ -879,8 +1186,8 @@ syncDirty = function(entry,source)
 	if not validProvince(entry.part) then removeProvince(entry.part);return end
 	local now,color,target=os.clock(),entry.part.Color,targetColor(entry)
 	local wasDirty=entry.dirtyIndex~=nil
-	local changed=entry.lastSeenColor~=color
-	local wrong=target~=nil and color~=target -- Eligibility uses Color only; never Mouse.Target.
+	local changed=not colorsMatch(entry.lastSeenColor,color)
+	local wrong=target~=nil and not colorsMatch(color,target) -- Eligibility uses Color only; never Mouse.Target.
 	local colorEvent=source=="color"
 	local hovered=false
 	if colorEvent then
@@ -888,18 +1195,21 @@ syncDirty = function(entry,source)
 		hovered=mouse.Target==entry.part -- Diagnostics only; not used by eligibility.
 	end
 	entry.lastSeenColor=color
+	if wrong and changed then entry.lastWrongColorChange=now end
 	if wrong then
 		addDirty(entry,now)
-		if changed and (colorEvent or source=="reconcile") then
-			entry.attackAt=now;entry.failures,entry.retryAt=0,0
+		if not wasDirty and entry.wasClean and (colorEvent or source=="reconcile") then
+			entry.attackAt=now;entry.freshAttackAt=now;entry.failures,entry.retryAt=0,0
 			markFresh(entry,now)
 		end
 		if colorEvent then
 			if not hovered then metrics.DirtyEventsWithoutHover+=1 end
 			local latency=(os.clock()-now)*1000
+			entry.localQueueLatencyMs=latency
 			metrics.ColorEventQueued+=1;metrics.ColorEventQueueTotal+=latency
 			metrics.MaxColorEventToDirtyQueueMs=math.max(metrics.MaxColorEventToDirtyQueueMs,latency)
-			local record={Path=entry.part:GetFullName(),Time=now,HoveredAtEvent=hovered,
+			local record={Path=entryLabel(entry),Time=now,HoveredAtEvent=hovered,
+				LocalColorEventReceivedAt=now,LocalDirtyQueuedAt=entry.dirtyQueueInsertTime,LocalColorEventToQueueMs=latency,QueueWasAlreadyDirty=wasDirty,
 				DirtyQueued=entry.dirtyIndex~=nil,QueueLatencyMs=latency,Color=tostring(color),Target=tostring(target)}
 			if #eventLog>=24 then table.remove(eventLog,1) end
 			table.insert(eventLog,record);if not hovered then lastOffHoverEvent=record end
@@ -911,6 +1221,8 @@ syncDirty = function(entry,source)
 		if not entry.service then entry.attackAt=nil end
 	end
 	if source=="reconcile" and wasDirty~=wrong then metrics.ReconciliationFinds+=1 end
+	entry.wasClean=not wrong
+	v7.draw(entry)
 	if colorEvent or wasDirty~=wrong then wakeWork() end
 end
 local function reconcile()
@@ -923,10 +1235,10 @@ local function reconcile()
 end
 local function dirtyEventReport()
 	local lines={"HOVER-INDEPENDENT DIRTY EVENTS (callback time; not server replication time)",
-		"Eligibility = province.Color ~= targetColor(entry); hover is diagnostic only."}
+		"Eligibility = not colorsMatch(province.Color, targetColor(entry)); hover is diagnostic only."}
 	local e=lastOffHoverEvent
 	if e then
-		table.insert(lines,string.format("Last off-cursor province: %s\nColorChanged received=true\nHovered at event=%s\nDirty queued=%s\nQueue latency=%.3f ms\nEvent time=%.3f",e.Path,tostring(e.HoveredAtEvent),tostring(e.DirtyQueued),e.QueueLatencyMs,e.Time))
+		table.insert(lines,string.format("Last off-cursor province: %s\nColorChanged received=true\nHovered at event=%s\nDirty queued=%s\nQueue latency=%.3f ms\nLocalColorEventReceivedAt=%.3f\nLocalDirtyQueuedAt=%.3f\nLocalColorEventToQueueMs=%.3f\nQueueWasAlreadyDirty=%s",e.Path,tostring(e.HoveredAtEvent),tostring(e.DirtyQueued),e.QueueLatencyMs,e.Time,e.LocalDirtyQueuedAt,e.LocalColorEventToQueueMs,tostring(e.QueueWasAlreadyDirty)))
 	else table.insert(lines,"No off-cursor wrong-color event observed yet; external recolor needed.") end
 	for _,event in ipairs(eventLog) do
 		table.insert(lines,string.format("%.3f %s | Hovered=%s DirtyQueued=%s QueueMs=%.3f",event.Time,event.Path,tostring(event.HoveredAtEvent),tostring(event.DirtyQueued),event.QueueLatencyMs))
@@ -1004,7 +1316,7 @@ local function chooseFast(now)
 		if now<entry.retryAt then minimumRetry=math.min(minimumRetry,entry.retryAt);return end
 		metrics.Candidates+=1
 		if not validProvince(entry.part) then removeProvince(entry.part);return end
-		if entry.part.Color==targetColor(entry) then syncDirty(entry,"check");return end
+		if colorsMatch(entry.part.Color,targetColor(entry)) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return end
 		local candidate,budget=visiblePoint(entry)
 		if budget then exhausted=true;return end
 		candidate=candidate or {entry=entry,tier=entry.lastCamera and 2 or 3}
@@ -1045,6 +1357,7 @@ local function ownedTargetSafe(entry,previous)
 end
 local function moveCursor(candidate,token)
 	local entry,point=candidate.entry,candidate.point
+	if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return false end
 	if not liveToken(token) or not entry.active or not validProvince(entry.part) then return false end
 	local before=mouse.Target
 	if not ownedTargetSafe(entry,before) then if not settleRelease() then return false end end
@@ -1054,6 +1367,7 @@ local function moveCursor(candidate,token)
 		local ok
 		local readable, mover = pcall(function() return virtualInput and virtualInput.SendMousePosition end)
 		if readable and type(mover)=="function" then
+			if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return false end
 			ok=callInput(function() virtualInput:SendMousePosition(destination) end)
 			if not ok then
 				settleRelease();lastAcquireDetail="Virtual cursor movement rejected; recovering through camera";return false
@@ -1063,6 +1377,7 @@ local function moveCursor(candidate,token)
 			-- Movement recovery is serialized and released before trying a different API.
 			if not settleRelease() then return false end
 			if type(mousemoverel)=="function" then
+				if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return false end
 				local cursor=UserInputService:GetMouseLocation()
 				ok=callInput(function() mousemoverel(math.round(point.X-cursor.X),math.round(point.Y-cursor.Y)) end)
 			end
@@ -1091,6 +1406,7 @@ local function moveCursor(candidate,token)
 end
 local function acquireFast(candidate,token)
 	local entry=candidate.entry
+	if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return false end
 	if candidate.point then
 		metrics.CursorAcquireAttempts+=1
 		if moveCursor(candidate,token) then metrics.CursorAcquireSuccesses+=1;return true end
@@ -1108,6 +1424,7 @@ local function acquireFast(candidate,token)
 		local point=visiblePoint(entry)
 		if point and moveCursor(point,token) then metrics.CachedCameraHits+=1;return true end
 	end
+	if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return false end
 	metrics.FullCameraSearches+=1
 	if not acquireTarget(entry) or not liveToken(token) or not entry.active then return false end
 	-- Existing proven camera alignment is retained. Prefer a projected point once exposed.
@@ -1127,6 +1444,7 @@ local function rememberAcquired(entry,started)
 	activation.ColorChanged,activation.TargetColorObserved=false,false
 end
 local function startOrRetainHold(entry,token)
+	if not shouldTarget(entry) then v7.CleanSkippedBeforeDown+=1;syncDirty(entry,"check");return false end
 	local tool=activationTool
 	if not guiClear(UserInputService:GetMouseLocation()) then settleRelease();activation.Status="Interactive GUI blocks native input";return false end
 	if not tool or tool.Parent~=player.Character or not tool.Enabled or not inputAllowed(entry,tool,token) then return false end
@@ -1138,6 +1456,7 @@ local function startOrRetainHold(entry,token)
 	if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
 		activation.Status="External Mouse1 is held; stopping";running=false;return false
 	end
+	if not shouldTarget(entry) then v7.CleanSkippedBeforeDown+=1;syncDirty(entry,"check");return false end
 	local owner={Method=primaryMethod,Tool=tool,Before=entry.part.Color,Down=downSeen,
 		EquippedDown=equippedDownSeen,ToolDown=toolDownSeen,Started=os.clock()}
 	ownedInput,held=owner,true
@@ -1153,33 +1472,12 @@ local function startOrRetainHold(entry,token)
 end
 
 local function preparePalette(target)
-	if typeof(target) ~= "Color3" then return false end
-	if not settleRelease() then return false end
-	local tool = findBucket()
-	local hum = humanoid()
-	if not tool or not hum then return false end
-	pcall(function() hum:UnequipTools() end)
-	player:SetAttribute("PaintBucketColor", target)
-	task.wait(0.02)
-	if not ensureBucket() then return false end
-	task.wait(CFG.PaletteSettle)
-	return paletteColor() == target
+	-- NORMAL follows the real palette; never write its attribute or assume re-equip resets a closure.
+	return ensureBucket()~=nil and colorsMatch(paletteColor(),target)
 end
-
-local function prepareCivil(entry)
-	if not preparePalette(entry.civilColor) then return false end
-	civilPaletteDirty = true
-	return true
-end
-
 local function restorePalette()
-	if ownedInput or workerActive or starting then restorePending = true; return end
-	restorePending = false
-	if not civilPaletteDirty or typeof(paletteBeforeRun) ~= "Color3" then return end
-	civilPaletteDirty = false
-	local value = paletteBeforeRun
-	player:SetAttribute("PaintBucketColor", value)
-	if alive then pcall(function() preparePalette(value) end) end
+	restorePending=false
+	-- No unverified attribute restore. Select the normal palette color before the next NORMAL run.
 end
 
 local function stop(reason)
@@ -1218,6 +1516,8 @@ local function worker(token)
 		end
 		transitionCount+=1
 		local entry=candidate.entry
+		if not shouldTarget(entry) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");continue end
+		v7.lockTarget(entry)
 		currentEntry=entry;activation.TargetAcquired=false
 		entry.acquiredAt,entry.earlyCorrectionAt,entry.corrected=nil,nil,false
 		local target=targetColor(entry)
@@ -1225,19 +1525,30 @@ local function worker(token)
 		if not tool then lastMessage="PaintBucket unavailable; stopped";running=false;break end
 		discoverActivation(tool)
 		local strategy,arm=policy.strategy()
+		if entry.forceFullService then strategy="PER_TARGET";arm=mode=="CIVIL WAR" and policy.civil or policy.normal.PER_TARGET end
 		policy.setCharge(arm)
 		-- A benchmark phase boundary also ends the old hold; samples cannot mix strategies.
 		if strategy=="PER_TARGET" or (ownedInput and ownedInput.Strategy~=strategy) then
 			if not settleRelease() then running=false;break end
 		end
-		if mode=="CIVIL WAR" and (lastPreparedColor~=target or lastPreparedTool~=tool) then
-			if not prepareCivil(entry) then deferEntry(entry,false,"input");waitWork();continue end
-			lastPreparedColor,lastPreparedTool=target,tool
-		end
-		if not liveToken(token) or not entry.active then break end
-		if not entry.dirtyIndex or entry.part.Color==target then syncDirty(entry,"check");continue end
 		local began=os.clock()
 		local service=policy.begin(entry,strategy,arm,began)
+		local paletteStarted=os.clock()
+		if mode=="CIVIL WAR" then
+			local prepared,why=palette.prepare(entry,token,service)
+			service.paletteMs=(os.clock()-paletteStarted)*1000
+			if not prepared then
+				service.result="PALETTE_PREPARATION_FAILED: "..tostring(why);v7.PaletteFailures+=1
+				lastMessage=service.result;palette.status=lastMessage;running=false;policy.finish(service,false);break
+			end
+			service.paletteValid=true
+		else
+			service.paletteValid=colorsMatch(paletteColor(),target)
+			service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor();service.paletteMs=0
+		end
+		if not liveToken(token) or not entry.active then break end
+		if not entry.dirtyIndex or colorsMatch(entry.part.Color,target) then syncDirty(entry,"check");policy.finish(service,false);continue end
+		began=os.clock()
 		service.retained=ownedInput~=nil and not ownedInput.ReleaseSent
 		metrics.AcquisitionAttempts+=1
 		if not acquireFast(candidate,token) then
@@ -1249,7 +1560,8 @@ local function worker(token)
 		-- Camera recovery may have released the hold; only actual transfers count as retained.
 		service.retained=service.retained and ownedInput~=nil and not ownedInput.ReleaseSent
 		rememberAcquired(entry,began)
-		if entry.part.Color==target then
+		if colorsMatch(entry.part.Color,target) then
+			v7.CleanSkippedBeforeDown+=1
 			noteCorrection(entry);syncDirty(entry,"check")
 			if strategy=="PER_TARGET" then settleRelease() end
 			policy.finish(service,false);continue
@@ -1284,11 +1596,15 @@ local function worker(token)
 				settleRelease();break
 			end
 			if ownedInput.MouseObserved then policy.qualify(service) end
-			if entry.part.Color==target or service.success then
+			if colorsMatch(entry.part.Color,target) or service.success then
 				noteCorrection(entry);syncDirty(entry,"check");break
 			end
 			-- Full dwell begins only once genuine acquisition AND input observation are valid.
-			if service.qualified and os.clock()>=service.validAt+service.dwell then
+			if service.qualified and service.paletteValid and os.clock()>=service.validAt+service.dwell then
+				if service.civil and service.previousIntended and colorsMatch(entry.part.Color,service.previousIntended) and not colorsMatch(entry.part.Color,target) then
+					service.result="SUSPECTED_PREVIOUS_PALETTE_COLOR";service.paletteValid=false;v7.PaletteFailures+=1
+					deferEntry(entry,false,"input");break
+				end
 				stalled=true;deferEntry(entry,true);holdStalls+=1
 				activation.Status="Full adaptive dwell elapsed; target deferred, native cooldown unchanged"
 				if strategy=="CONTINUOUS" and holdStalls>=CFG.StallsBeforeHoldRecovery then holdStalls=0;settleRelease() end
@@ -1300,10 +1616,15 @@ local function worker(token)
 			if not settleRelease() then running=false end
 		end
 		policy.finish(service,stalled)
+		if entry.forceFullService then
+			entry.forceFullService=nil
+			if entry.dirtyIndex then entry.retryAt=math.max(entry.retryAt,os.clock()+0.5) end
+		end
 	end
 	if settleRelease() then restoreView() end
 	policy.finish(policy.current,false)
 	policy.setCharge(nil)
+	if v7.lock then v7.unlockTarget(v7.lock) end
 	currentEntry=nil
 	if runStartedAt then runSeconds+=os.clock()-runStartedAt;runStartedAt=nil end
 end
@@ -1317,7 +1638,7 @@ local function addProvince(part)
 		active = true,
 		retryAt = 0,
 		waitSince = os.clock(),
-		civilColor = uniqueColor(part.Color),
+		civilColor = nil,
 	}
 	entry.index=#entries+1
 	entries[entry.index] = entry
@@ -1328,7 +1649,7 @@ local function addProvince(part)
 	box.Adornee = part
 	box.SurfaceTransparency = 1
 	box.LineThickness = 0.025
-	box.Color3 = mode == "CIVIL WAR" and entry.civilColor or paletteColor()
+	box.Color3 = targetColor(entry) or paletteColor()
 	box.Parent = playerGui:FindFirstChild(GUI_NAME)
 	entry.box = box
 
@@ -1346,7 +1667,6 @@ removeProvince = function(part)
 	removeDirty(entry)
 	if currentEntry==entry then forceRelease() end
 	lookup[part] = nil
-	usedColors[colorKey(entry.civilColor)]=nil
 	cameraCache[part]=nil
 	local last=table.remove(entries)
 	if entry.index<=#entries then entries[entry.index],last.index=last,entry.index end
@@ -1355,7 +1675,7 @@ removeProvince = function(part)
 	wakeWork()
 	if entry.colorConn then entry.colorConn:Disconnect() end
 	if entry.destroyConn then entry.destroyConn:Disconnect() end
-	entry.service=nil
+	entry.service=nil;entry.lastValidService=nil
 	if entry.box then entry.box:Destroy() end
 end
 
@@ -1364,8 +1684,6 @@ local function clearAll()
 	while #entries>0 do removeProvince(entries[#entries].part) end
 	table.clear(entries)
 	table.clear(lookup)
-	table.clear(usedColors)
-	colorIndex, hueSeed = 0, math.random()
 end
 
 -- UI -------------------------------------------------------------------------
@@ -1377,8 +1695,8 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(410, 500)
-frame.Position = UDim2.fromOffset(12, 80)
+frame.Size = UDim2.fromOffset(410, 575)
+frame.Position = UDim2.fromOffset(12, 12)
 frame.BackgroundColor3 = Color3.fromRGB(30,30,40)
 frame.BorderSizePixel = 0
 frame.Active = true
@@ -1388,7 +1706,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v6"
+title.Text = "AutoPainter · HANDS FREE v7"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -1455,6 +1773,10 @@ local removeButton = button("Unprotect Province", 340)
 local clearButton = button("Clear Provinces", 380)
 local startButton = button("START AUTO", 420)
 local copyButton = button("Copy Activation Report", 460)
+v7.learnButton=button("Learn native palette colors",500);v7.learnButton.Size=UDim2.fromOffset(190,30)
+v7.openerButton=button("Learn palette opener",500);v7.openerButton.Position=UDim2.fromOffset(210,500);v7.openerButton.Size=UDim2.fromOffset(190,30)
+v7.closerButton=button("Learn palette closer",535);v7.closerButton.Size=UDim2.fromOffset(190,30)
+v7.dirtyButton=button("Dirty markers: ON",535);v7.dirtyButton.Position=UDim2.fromOffset(210,535);v7.dirtyButton.Size=UDim2.fromOffset(190,30)
 local performanceFields={"ActivationStrategy","StrategyConfigured","StrategyDecisionCached","StrategyDecisionReason","VirtualInputHold",
 	"DownEvents","UpEvents","Attempts","CompletedServices","AbortedServices","SuccessfulPaints","SuccessRate","CorrectionsPerSecond","OverallCorrectionsPerSecond",
 	"AverageTargetDwellMs","AdaptiveDwellMs","AverageAcquisitionMs","AverageAcquiredToColorMs","AverageSwitchMs","ActiveTarget","DirtyCount","Deferred","Stalled",
@@ -1463,7 +1785,7 @@ local performanceFields={"ActivationStrategy","StrategyConfigured","StrategyDeci
 	"FreshAttackCorrections","AverageAttackColorChangeToCorrectedMs","MinimumAttackResponseMs","MaximumAttackResponseMs","RecentlyChangedQueueDepth",
 	"SessionConfirmed","Runtime","AutoPainterRPCs"}
 local function performanceReport()
-	local m=reportPerformance();local lines={"AUTOPAINTER v6 — observed corrections; native RPCs unobserved"}
+	local m=reportPerformance();local lines={"AUTOPAINTER v7 — observed corrections; native RPCs unobserved"}
 	for _,key in ipairs(performanceFields) do table.insert(lines,key.."="..tostring(m[key])) end
 	table.insert(lines,"STRATEGY BENCHMARK (rolling completed services; work time includes acquisition/release/retry; clean idle excluded)")
 	for _,name in ipairs({"PER_TARGET","CONTINUOUS","CIVIL_WAR"}) do
@@ -1473,10 +1795,11 @@ local function performanceReport()
 		end
 	end
 	table.insert(lines,dirtyEventReport())
+	table.insert(lines,v7.report())
 	return table.concat(lines,"\n")
 end
 local function copyActivationReport()
-	local report=activationReport().."\n"..performanceReport()
+	local report=activationReport().."\n"..performanceReport().."\n"..palette.inspect()
 	if type(setclipboard)=="function" and pcall(setclipboard,report) then return true end
 	if type(writefile)=="function" and pcall(writefile,"AutoPainterActivationReport.txt",report) then return true end
 	return false
@@ -1491,7 +1814,7 @@ doneButton.BackgroundColor3 = Color3.fromRGB(35,145,110)
 doneButton.BorderSizePixel = 0
 doneButton.TextColor3 = Color3.new(1,1,1)
 doneButton.TextSize = 18
-doneButton.Text = "DONE SELECTING"
+doneButton.Text = "DONE / FINISH SETUP"
 doneButton.Visible = false
 doneButton.Parent = gui
 
@@ -1501,7 +1824,7 @@ local function dirtyCount() return #dirty end
 local function updateUI()
 	if not alive then return end
 	frame.Visible = not running and not selecting
-	liveStatus.Visible = running
+	liveStatus.Visible = running or selecting=="PALETTE"
 	modeButton.Text = "Mode: " .. mode
 	startButton.Text = running and "STOP AUTO" or "START AUTO"
 	local c = normalTarget or paletteColor()
@@ -1509,7 +1832,7 @@ local function updateUI()
 		"Selected: %d · Dirty: %d · Mode: %s\nCorrections: %d · Aim fails: %d · No effect: %d · Input errors: %d",
 		activeCount(), dirtyCount(), mode, corrections, aimFailures, noEffect, inputErrors
 	)
-	status.Text = lastMessage
+	status.Text = lastMessage.."\n"..palette.status
 		.. "\nAcquire: " .. lastAcquireDetail
 		.. "\nTarget acquired: " .. tostring(activation.TargetAcquired) .. " · Method: " .. activation.Method
 		.. "\nActivation attempted: " .. tostring(activation.Attempted)
@@ -1519,7 +1842,7 @@ local function updateUI()
 			or "\nCivil War: unique target color per province")
 
 	local perf=reportPerformance()
-	liveStatus.Text=string.format("AUTO v6 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
+	liveStatus.Text=string.format("AUTO v7 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
 		perf.ActivationStrategy,activation.Method,activation.Observation,
 		perf.DirtyCount,perf.Attempts,perf.SuccessfulPaints,perf.SuccessRate*100,perf.CorrectionsPerSecond,
 		perf.AverageTargetDwellMs,perf.AdaptiveDwellMs,perf.AverageAcquisitionMs,perf.AverageAcquiredToColorMs,perf.AverageSwitchMs,
@@ -1527,6 +1850,10 @@ local function updateUI()
 		perf.CachedCursorHits,perf.CachedCameraHits,perf.FullCameraSearches,perf.Deferred,perf.Stalled,tostring(perf.VirtualInputHold),perf.DownEvents,perf.UpEvents,
 		perf.ColorEventsReceived,perf.DirtyEventsWithoutHover,perf.AverageColorEventToDirtyQueueMs,perf.MaxColorEventToDirtyQueueMs,
 		perf.RecentlyChangedQueueDepth,perf.FreshAttackCorrections,perf.AverageAttackColorChangeToCorrectedMs,perf.ActiveTarget)
+
+	if selecting=="PALETTE" then
+		liveStatus.Text="NATIVE PALETTE SETUP · "..tostring(palette.learning or "Captured").."\n"..palette.status.."\nClick only the normal game's palette controls, then DONE / FINISH SETUP."
+	end
 
 end
 
@@ -1540,12 +1867,29 @@ local function beginSelection(kind)
 end
 
 local function finishSelection()
+	palette.learning=nil;palette.pending=nil
 	selecting = nil
 	frame.Visible = true
 	doneButton.Visible = false
 	lastMessage = "Selection finished"
 	updateUI()
 end
+
+local function beginPaletteLearning(kind)
+	if running or workerActive or starting or ownedInput then stop("Stop before palette learning");return false end
+	palette.prune()
+	beginSelection("PALETTE")
+	palette.learning=kind or "COLORS";palette.pending=nil
+	lastMessage="Click the normal game's palette "..tostring(kind or "COLORS").." controls, then finish setup"
+	return true
+end
+v7.learnButton.Activated:Connect(function() beginPaletteLearning("COLORS") end)
+v7.openerButton.Activated:Connect(function() beginPaletteLearning("OPENER") end)
+v7.closerButton.Activated:Connect(function() beginPaletteLearning("CLOSER") end)
+v7.dirtyButton.Activated:Connect(function()
+	CFG.ShowDirtyState=not CFG.ShowDirtyState;v7.dirtyButton.Text="Dirty markers: "..(CFG.ShowDirtyState and "ON" or "OFF")
+	for _,entry in ipairs(entries) do v7.draw(entry) end
+end)
 
 local function startAutoImpl()
 	local startToken = workerToken
@@ -1567,9 +1911,11 @@ local function startAutoImpl()
 		return false
 	end
 
-	paletteBeforeRun = paletteColor()
-	lastPreparedColor,lastPreparedTool=nil,nil
-	normalTarget = paletteBeforeRun
+	if mode=="CIVIL WAR" then
+		local assigned,why=palette.assign()
+		if not assigned then lastMessage=why;palette.status=why;updateUI();return false end
+	end
+	normalTarget = paletteColor()
 	if mode == "NORMAL" and not preparePalette(normalTarget) then
 		lastMessage = "Could not prepare the normal PaintBucket color"
 		updateUI()
@@ -1603,6 +1949,7 @@ local function startAutoImpl()
 			settleRelease()
 		end
 		policy.finish(policy.current,false)
+		if v7.lock then v7.unlockTarget(v7.lock) end
 		workerActive = false
 		if not running and restorePending then restoringPalette=true;restorePalette();restoringPalette=false end
 		if not alive and finishClose then finishClose() end
@@ -1631,7 +1978,7 @@ modeButton.Activated:Connect(function()
 	rebuildDirty()
 	lastMessage = mode == "NORMAL"
 		and "Normal mode uses the current PaintBucket palette color"
-		or "Civil War gives every selected province a unique random target color"
+		or "Civil War assigns each province a distinct learned native palette color"
 	updateUI()
 end)
 
@@ -1642,6 +1989,8 @@ doneButton.Activated:Connect(finishSelection)
 startButton.Activated:Connect(toggleAuto)
 
 connectLifetime(UserInputService.InputBegan, function(input, processed)
+	if ownedInput and ownedInput.ReleaseSent and input.UserInputType==Enum.UserInputType.MouseButton1 then ownedInput.QuietSince=nil end
+	if palette.learning and input.UserInputType==Enum.UserInputType.MouseButton1 then palette.onClick(UserInputService:GetMouseLocation());return end
 	if input.KeyCode == Enum.KeyCode.Escape then
 		if selecting then finishSelection() else stop("Emergency stop") end
 		updateUI()
@@ -1652,7 +2001,7 @@ connectLifetime(UserInputService.InputBegan, function(input, processed)
 		toggleAuto()
 		return
 	end
-	if selecting and input.UserInputType == Enum.UserInputType.MouseButton1 then
+	if (selecting=="ADD" or selecting=="REMOVE") and input.UserInputType == Enum.UserInputType.MouseButton1 then
 		local part = mouse.Target
 		if selecting == "ADD" then addProvince(part) else removeProvince(part) end
 		updateUI()
@@ -1701,6 +2050,7 @@ local function closeController()
 	stop("Closed")
 	alive = false
 	disconnectInput(lifetimeConnections)
+	palette.learning=nil;palette.pending=nil;table.clear(palette.controls);table.clear(palette.byButton);palette.opener,palette.closer=nil,nil
 	while #entries>0 do removeProvince(entries[#entries].part) end
 	gui.Enabled = false
 	finishClose()
@@ -1709,7 +2059,8 @@ close.Activated:Connect(closeController)
 gui.Destroying:Connect(closeController)
 
 connectLifetime(player:GetAttributeChangedSignal("PaintBucketColor"), function()
-	if running and mode=="NORMAL" and paletteColor()~=normalTarget then stop("Normal palette changed; restart with the desired color") end
+	palette.onColor()
+	if running and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("Normal palette changed; restart with the desired color") end
 end)
 
 connectLifetime(UserInputService.WindowFocusReleased, function()
@@ -1752,11 +2103,24 @@ local api = {
 			LastCamera=e.lastCamera,AcquisitionSeconds=e.lastAcquireSeconds,RecentFailures=e.failures or 0,RetryAt=e.retryAt,
 			AcquisitionFailures=e.acquisitionFailures or 0,LastAcquiredTime=e.lastAcquiredTime,
 			GeometryCFrame=e.pointFrame,GeometrySize=e.pointSize,LastColorEventTime=e.lastColorEventTime,LastSeenColor=e.lastSeenColor,
+			EntryId=e.id,Position=e.part.Position,Label=entryLabel(e),AssignedCivilRGB=rgbText(e.civilColor),AssignedCivilColorKey=colorKey(e.civilColor),
+			ActualRGB=rgbText(e.part.Color),TargetRGB=rgbText(targetColor(e)),DeltaRGB=colorDelta(e.part.Color,targetColor(e)),
+			LocalColorEventReceivedAt=e.lastColorEventTime,LocalDirtyQueuedAt=e.dirtyQueueInsertTime,LocalColorEventToQueueMs=e.localQueueLatencyMs,
+			LastWrongColorChange=e.lastWrongColorChange,FreshAttackAt=e.freshAttackAt,
+			MarkerThickness=e.box and e.box.LineThickness,MarkerColor=e.box and e.box.Color3,
 			TargetColor=targetColor(e),DirtySince=e.dirtySince,DirtyQueueInsertTime=e.dirtyQueueInsertTime,
 			LastHoveredTime=e.lastHoveredTime,LastPaintAttempt=e.lastPaintAttempt,LastCorrectedTime=e.lastCorrectedTime,LastDirtyTime=e.lastDirtyTime}
 	end,
 	GetPerformanceReport = performanceReport,
 	GetDirtyEventReport = dirtyEventReport,
+	GetColorDiagnostics = v7.report,
+	GetPaletteInventory = palette.inspect,
+	BeginPaletteLearning = beginPaletteLearning,
+	FinishPaletteLearning = finishSelection,
+	GetServiceRecords = function()
+		local out={};for _,r in ipairs(v7.records) do table.insert(out,table.clone(r)) end;return out
+	end,
+	ColorsMatch = colorsMatch,
 	SetActivationStrategy = function(value)
 		if value~="ADAPTIVE" and value~="CONTINUOUS" and value~="PER_TARGET" then return false end
 		if running or workerActive or starting or ownedInput then return false end
@@ -1780,6 +2144,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
+			Version = 7,
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

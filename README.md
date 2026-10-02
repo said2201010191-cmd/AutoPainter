@@ -1,16 +1,18 @@
-# Current Hands Free build (v6)
+# Current Hands Free build (v7)
 
-**AutoPainterHandsFree.luau** now optimizes observed corrections instead of cursor-switch rate. NORMAL starts with fresh per-target VirtualInput activation, samples continuous hold on real dirty targets, and caches the better observed strategy for the equipped session. Dwell begins at 0.32 seconds, learns within 0.20–0.45 seconds, and always ends immediately on a matching color.
+**AutoPainterHandsFree.luau** now uses one normalized RGB matcher (rounded bytes, ±1/channel) for dirty state, palette validation and paint results. NORMAL starts with fresh per-target VirtualInput activation. Clean tiles are checked before cursor movement and DOWN. The targeting solver remains intact with added clean guards.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Close the old panel before loading. Dirty eligibility depends only on province Color and its target color. ColorChanged immediately updates the queue, recently recolored provinces receive priority, and a 150 ms queue-only reconciliation repairs missed signals. New reports show off-cursor event evidence, defense response time and separate strategy success/throughput. The existing cached cursor/camera targeting and Civil War palette preparation remain intact.
+Close older panels first: v7 starts new success/strategy evidence. Fresh priority now means clean → dirty only. Transactions lock palette/target/service/release ownership. Missing UP callbacks can resolve from quiet unpressed button state. Dwell starts at 250 ms and learns within 120–350 ms from valid outcomes. ColorChanged drives dirty markers and scheduling independently of hover; a 120 ms queue-only reconciliation remains.
 
-The normal PaintBucket remains the sole game-RPC sender. No native cooldown changes, hooks, fabricated mouse state, moderation bypasses, Studio or server installation are added. Civil War uses its own per-target dwell statistics and the same dirty engine.
+**Civil War now requires native palette learning.** The supplied files do not reveal the game's exact palette GUI paths. v7 records actual normal palette clicks and exposed color changes, then automates those same controls through VirtualInput. It never writes PaintBucketColor or assumes re-equip updates the cached tool color. Assignments must be unique and supported by learned controls. Missing/unsupported palette state stops with a report; see the guide before attempting the eight-province test.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for the exact live procedure, settings and report fields to send back. **614 deterministic tests pass; all 25 Luau files compile.** This new revision has not been live-benchmarked. Older Final/diagnostic controllers and the historical documentation below remain separate; do not run multiple painters together.
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for palette setup, exact NORMAL/Civil War/combat tests and the complete Copy Activation Report field list. Reports include stable entry IDs/positions, normalized RGB deltas, last twenty transactions, palette suspicion, local defense timings and release ownership.
+
+**572 deterministic tests pass; all 26 Luau files compile. Live Roblox correctness/speed remains unverified until the user tests v7.** The normal bucket remains the sole game-RPC sender; there are no hooks, spoofed targets, validator changes or server installation. Older Final/diagnostic controllers and their historical documentation below remain separate.
 
 ---
 
