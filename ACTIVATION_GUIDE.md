@@ -1,98 +1,100 @@
-# Hands Free v5 — continuous native hold
+# Hands Free v6 — adaptive paint service and immediate defense
 
-The user's live test confirmed `VirtualInput.SendMouseButton → Mouse.Button1Down → target color observed`. This revision builds on that evidence. NORMAL keeps one native hold across visible province targets, moves the genuine cursor, and uses ColorChanged events to advance immediately. It never sends a game RPC. The new continuous-targeting build has deterministic tests, but no live throughput benchmark yet.
+The live reports established that VirtualInput.SendMouseButton reaches Mouse.Button1Down and can paint, while v5's fast acquisition and continuous hold produced poor correction throughput. Civil War completed its targets. v6 preserves that targeting/camera code and Civil War palette preparation, then compares fresh activation with continuous hold using real selected-target outcomes. This new revision still requires live validation; deterministic tests cannot establish Roblox throughput.
 
-## Loader
+## Public client loader
 
-Close the previous Hands Free panel, then run:
+Close the previous Hands Free panel before loading v6. Duplicate loads deliberately return the existing controller.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-The file must be publicly readable. No Studio, place editing, server installation, credentials, or account-specific objects are required. Duplicate loads return the existing controller, so close v4 before loading v5. Run only one painter controller at a time. AutoPainterFinal, its loader, original reference files, and the locked diagnostics remain separate and unchanged.
+The public file needs no credentials, Studio, place edits or server installation. Players.LocalPlayer supplies each player's independent state. Run only one painter controller at a time. AutoPainterFinal and the locked diagnostics remain separate and unchanged.
 
-## Fast NORMAL path
+## NORMAL activation policy
 
-1. Choose the desired color through the normal bucket palette. START captures the exposed PaintBucketColor as the single desired color, using the existing one-time equip/palette preparation.
-2. Color signals maintain a dense dirty set with constant-time insertion/removal. Correct and unprotected provinces receive no scheduling work. START/mode changes rebuild eligibility once; there is no clean-province patrol.
-3. Prefer a cached cursor point, then another visible surface point, then a cached camera pose, then the existing camera search. Validate the visible ray and interactive GUI state, move the real cursor, and require the genuine PlayerMouse.Target to equal the selected province.
-4. Use VirtualInput first. Mouse.Button1Down plus a target-color transition confirms it for the equipped-tool session. It is retained across targets; source inspection, mouse1press and Tool:Activate trials do not run per province.
-5. Keep Mouse1 down while moving directly between usable visible targets. A matching ColorChanged event immediately makes the target clean and wakes the same worker. There is no fixed dwell or release gap after success.
-6. A target still wrong after 0.22 seconds is temporarily deferred. Continue other eligible work; retry later. An unchanged color does not invalidate the input method or claim the native contribution failed.
+`ActivationStrategy = "ADAPTIVE"` starts with PER_TARGET, based on the stronger recent live evidence for fresh activation. It then collects at least four completed target services for each strategy:
 
-There is one worker and one wake event, not a task per province. Target selection scans a bounded rotating window of dirty entries. Aging promotes waiting targets over the normal cache/visibility tiers. Cursor projections and raycasts share frame budgets; at most eight target transitions run before yielding to the next frame. The original proven camera-acquisition block is byte-for-byte preserved as the final fallback.
+- PER_TARGET: acquire genuine Mouse.Target, VirtualInput DOWN, wait for correction or the full adaptive dwell, then paired UP. There is no extra between-target sleep.
+- CONTINUOUS: retain the same DOWN across verified selected targets; color events advance immediately. Camera recovery, real target/input/tool/focus loss, stop, or no eligible dirty work releases it. One missed paint opportunity does not retire the method or force a release when another target is ready.
 
-Each target caches its screen point, world surface point, camera pose, geometry, acquisition duration, recent failures and retry deadline. Moving/resizing a province invalidates its geometric cache. Cached visibility is still ray-checked and real Mouse.Target remains authoritative.
+The comparison uses observed success rate, corrections per work-second, and acquired-to-color latency. Per-strategy work time includes targeting, paired-release overhead and deferred retry waits; fully clean idle is excluded. A 20-percentage-point success-rate difference or a 20% throughput improvement is meaningful evidence. Close results prefer PER_TARGET. At least two held transfers are needed to support CONTINUOUS; singleton fresh holds cannot prove its advantage. Sparse/inconclusive samples may extend to eight services per strategy, after which PER_TARGET is an explicitly unproven fallback if neither succeeds.
 
-## Release and recovery boundaries
+The decision is cached for the equipped-tool session. It does not oscillate on every target or stall. A new NORMAL equipped session starts a new sample. The one-time START palette preparation includes equipping, so a fresh START can establish a new equipped session. While stopped, `SetActivationStrategy("PER_TARGET")`, `SetActivationStrategy("CONTINUOUS")` or `SetActivationStrategy("ADAPTIVE")` allows controlled comparisons and clears prior policy evidence. The same setting is near the top of the file.
 
-NORMAL retains the hold across verified visible cursor jumps. It releases for STOP, focus/tool/target loss, no eligible dirty work, camera recovery, input errors, selection, Clear or closing. Eight consecutive no-effect targets also cause a hold restart while retaining the same activation method. Unexpected native mouse-up stops automation. Q or Escape stops and restores the saved camera.
+These are small observational samples of real target work, not a randomized causal experiment. Different target difficulty, native cooldown, replication and server timing can affect the result. Input API return speed is never a success criterion. Corrections can also have another player's cause; the report does not claim server acknowledgment.
 
-Camera fallback releases first: sweeping a camera while held could paint unselected provinces under the cursor. After a verified target is acquired, a new down resumes the native loop. Camera state otherwise remains in place between targets; it is restored when automation stops.
+VirtualInput stays primary. Mouse.Button1Down plus desired-color observation confirms it for the equipped session. Only repeated actual input errors/missing down observations, or API unavailability, unlock the existing sequential alternate-method recovery. Unchanged province color alone does not trigger mouse1press or Tool:Activate testing.
 
-A cursor update can take time to propagate. The controller permits the previous protected target for up to 0.035 seconds during a direct jump, then releases if the intended target is not acquired. An unexpected/unprotected target causes release as soon as observed. This cannot make independent native input, mouse callbacks and server processing atomic. A native request already sent during cursor propagation can finish later; zero unintended native paints cannot be guaranteed. No callback interception or fabricated mouse state is used to hide that limitation.
+## Dwell and retries
 
-Actual VirtualInput errors or missing Mouse.Button1Down on three holds unlock the existing bounded alternate-method recovery. A missing VirtualInput API allows recovery immediately. Alternate methods are tried sequentially with paired release and observable evidence; they do not use the fast continuous-VirtualInput path. A failed release blocks further input ownership. Target-color stalls alone never trigger activation-method rediscovery.
+Default target dwell is **0.32 seconds**, clamped to **0.20–0.45 seconds**. After four successful observations, each strategy learns from the 90th percentile of its last 24 acquired-to-color times plus an 80 ms margin. Decreases are limited to 20 ms per success. A full-window miss raises the limit by 40 ms, up to 450 ms, to avoid learning only from the fastest successes. Civil War has its own history.
 
-## Settings near the top of the source
+Dwell starts only after genuine acquisition and observed activation are valid. A successful target-color event ends service immediately; the limit is not a mandatory delay. Acquisition taking another frame does not count as a paint stall. Only a valid service that remains wrong through the full dwell increments Stalled. Targeting/input preparation failures are separate deferrals.
 
-| Setting | Default | Controls |
-|---|---:|---|
-| NoEffectWindow | 0.22 s | Maximum ordinary no-effect target service window |
-| Retry / MaxRetry | 0.08 / 1.6 s | Initial/exponential maximum stall deferral |
-| UnreachableRetry | 0.40 s | Initial targeting-failure deferral |
-| CursorAcquire | 0.10 s | Real cursor-target acquisition deadline |
-| HeldCursorGrace | 0.035 s | Previous protected target allowance during a cursor jump |
-| PriorityAge | 2.0 s | Promote waiting dirty targets over normal visibility tiers |
-| CandidatesPerStep | 32 | Dirty candidates considered per decision |
-| PointsPerCandidate | 9 | Maximum surface samples per candidate |
-| MaxProjections / MaxRays | 96 / 32 | Shared per-frame fast cursor-solver budgets |
-| MaxTransitionsPerFrame | 8 | Bound immediate target transitions |
-| StallsBeforeHoldRecovery | 8 | Consecutive stalls before paired release/restart |
+Stalls retry after 0.12 seconds, doubling up to 1.6 seconds. Targeting failures start at 0.40 seconds. A fresh wrong-color event resets that target's retry delay and grants recent-attack priority. Other targets continue while one waits. The single worker wakes for color changes and retry deadlines; there is no task per province.
 
-The preserved camera fallback has its own bounded deadline/rendered waits. These settings do not modify or reproduce the normal tool's paint cooldown. The short watchdog trades longer single-target holds for faster rotation; tune it from live evidence if native/server latency exceeds it.
+## Hover-independent dirty engine
 
-## CIVIL WAR and color authority
+For every protected entry, the dirty decision is solely:
 
-NORMAL uses one color and does not write the attribute or re-equip per target. Changing the global bucket color while NORMAL runs stops it so the user can restart with the new color. The exposed attribute alone is not proof of the native LocalScript's cached color; verify the normal palette by manually painting before the automated run.
+```lua
+entry.part.Color ~= targetColor(entry)
+```
 
-CIVIL WAR retains unique colors per protected province and the existing release/attribute/re-equip preparation between different colors. It uses the same dirty set and targeting caches but necessarily has extra palette/equip delay. Its native cached-color propagation needs separate live verification. It does not slow NORMAL's target-switch path.
+NORMAL returns the captured global normalTarget; CIVIL WAR returns entry.civilColor. Mouse.Target is consulted for acquisition, activation validation and diagnostic observation only, never to determine dirty eligibility.
 
-Selection pauses automation. Finish selection, then explicitly START. Holster the bucket while selecting if ordinary selection clicks would activate the game's independently running normal tool.
+Each selection subscribes to ColorChanged. Wrong color inserts it immediately in the dirty set and wakes the one worker; correct color removes it immediately. A separate intrusive recent-attack queue makes a newly recolored entry directly available without traversing earlier selections. Its priority lasts one second. Bounded rotating dirty traversal and two-second aging prevent a continuous stream of fresh attacks from starving older work. An already active target completes or reaches its bounded dwell before another takes over.
 
-## Telemetry
+Every 0.15 seconds, a reconciliation sweep reads selected province colors and repairs membership. It directly performs no cursor, camera or input operations; repairs wake the ordinary worker. This is intentionally O(number of selections) at about 6.7 sweeps/second, rather than a per-frame scan. Clean provinces otherwise retain only their listeners/cache; they are not hovered or targeted. A clean reconciliation does not wake an idle worker. Destroyed/removed entries are swap-removed and disconnected.
 
-The running panel is a non-interactive label so it does not consume automated cursor input. Copy Activation Report exports existing activation and performance observations, using setclipboard or the fallback `AutoPainterActivationReport.txt`. Copy never starts painting or inspection.
+Event diagnostics record callback receipt time, whether the real cursor was over that province, its queued state, and callback-to-queue latency. This proves local queuing without hover; it does not measure the unknown server-to-client replication delay or events never delivered to the client. ReconciliationFinds separately counts membership repairs.
 
-- Active target, dirty count and VirtualInput hold state describe current controller state.
-- Acquisitions/sec and corrections/sec use a rolling approximately five-second window (the first second is normalized to one second).
-- Average acquisition time measures target service acquisition, excluding palette preparation. Average acquired-to-color time measures the observed wait after a genuine target acquisition. A correction during a yielding cursor call is counted once with zero post-acquisition wait.
-- Average switch time runs from a correction to the next acquisition, including intervening recovery/deferral work. Intentional clean-idle time is excluded.
-- Cached cursor hits, cached camera hits, full camera searches, Deferred and Stalled are cumulative event counts since loading. Deferred/Stalled are not counts of distinct or currently waiting provinces.
-- SessionConfirmed means Mouse.Button1Down and desired target color have both been observed in that equipped session. It does not imply a server acknowledgment or causal proof.
-- AutoPainterRPCs remains 0. Native bucket requests are not intercepted or counted.
+## Targeting and color modes
 
-APIs: `GetPerformanceStats()`, `GetPerformanceReport()`, `GetTargetStats(part)`, `GetActivationReport()`, `CopyActivationReport()` and `GetStats()`. The display updates every 0.15 seconds; it does not scan all selected provinces.
+Cached cursor point → visible surface projection → cached camera pose → original camera fallback remains the targeting order. Fresh/aged queue priority can precede the ordinary cache tiers. Genuine Mouse.Target must match before relying on native painting. The original camera-acquisition block is byte-for-byte protected by a regression hash.
 
-## Live test procedure
+NORMAL captures the normal bucket's exposed PaintBucketColor at START. It does not rewrite the palette or re-equip per province. Choose the color in the native palette first. The attribute by itself is not proof of the native LocalScript's cached color; verify with ordinary manual painting before a run. Changing the global palette while running stops NORMAL for an explicit restart.
 
-1. Close the old controller and load v5. In the private-server environment where native hold was confirmed, choose the desired color using the normal palette and verify one ordinary manual paint.
-2. Holster while selecting three visible wrong-color provinces and one already-correct province. Finish selection, leave NORMAL selected and press START. No physical input should be needed after START.
-3. Expect VirtualInput.SendMouseButton, Mouse.Button1Down, then target-color observations. With no recovery needed, the three visible corrections should use one DOWN and one final UP when Dirty reaches 0. The correct province must not be targeted. The HUD should show no full camera search for usable visible targets.
-4. Have a friend recolor a selected province. It should wake immediately and prefer its cached cursor point. Once clean again, leave it idle and confirm there is no continued automated input.
-5. Add an offscreen province. Camera recovery should release first, reuse a cached pose when available, or run the existing camera acquisition. A new hold starts only after the real target is acquired. Expect additional down/up pairs for recovery.
-6. Include a contested target with several easy targets. Other targets should continue after the 0.22-second no-effect window; the contested target remains dirty with bounded retries. Compare acquisitions, corrections, switch time and deferrals using Copy Activation Report after stopping.
-7. Check Q/Escape, focus loss, unequip, Clear and close release the hold. Test CIVIL WAR separately after NORMAL is verified.
+CIVIL WAR preserves its working unique colors and release/attribute/re-equip preparation. It uses fresh per-target activation because different colors already require a release boundary. It shares dirty detection, reconciliation, recent-attack priority, target caches, adaptive dwell and retries. Civil War evidence does not contaminate NORMAL's strategy benchmark, and its dwell history survives its planned per-target equips.
 
-Native cooldown, native loop behavior, input delivery, render timing, replication and server response time remain limits. The continuous-hold route depends on the native tool's repeat behavior; a single-click-only server/tool cannot be made continuous by retaining one DOWN. Observed color changes can also come from other players. No claim is made that this revision is the fastest possible in every client or that a particular corrections/sec rate is guaranteed.
+Camera fallback releases first. Keeping DOWN while sweeping the map could let the normal tool paint intervening unselected tiles. Direct cursor jumps allow the previous protected target briefly while mouse state propagates; unexpected targets trigger release when observed. The client cannot atomically control an independent native callback or cancel requests the native tool already sent. No spoof or interception is used to hide that limit.
 
-## Validation
+## Exact live procedure
+
+1. Close v5 and load v6. In the private-server environment where native painting was confirmed, choose the desired color through the normal palette and verify one ordinary manual paint. Holster while selecting so native selection clicks do not paint.
+2. Select about **12 visible wrong-color provinces** plus one already-correct province. Finish selection; leave NORMAL and the default ADAPTIVE setting. Press START once, then leave physical input alone.
+3. Expect PER_TARGET first, followed by a small CONTINUOUS sample. Watch ActivationStrategy and the result in Copy Activation Report. At least four completed services per strategy are needed; if fewer targets stay dirty, more externally recolored targets may be needed to finish sampling. No artificial recolors or test paints are generated by the controller.
+4. Let the chosen strategy run for 20–30 seconds under comparable contest conditions. The useful results are actual corrections, success rate and attack-response time. Acquisition rate alone is not the goal. A clean map naturally makes rolling corrections/sec fall to zero.
+5. For the hover test, wait until DirtyCount=0, put the real cursor over selected Province A, and have a friend recolor selected Province B without moving your cursor toward B. AutoPainter should wake and acquire B itself. Afterward the report must contain B's full path, `ColorChanged received=true`, `Hovered at event=false`, `Dirty queued=true` and queue latency. Physical positioning here is only for the diagnostic setup, not required for automation.
+6. Repeat B's recolor several times and compare cached cursor hits, FreshAttackCorrections and response latency. Include one contested target; it must not hold up all other work. Test an offscreen target afterward to exercise camera recovery.
+7. Press Q/Escape to stop, then **Copy Activation Report** promptly. Clipboard fallback is `AutoPainterActivationReport.txt`. Copy exports existing observations; it does not activate input, inspect scripts or change game state. OverallCorrectionsPerSecond remains useful after stopping; rolling CorrectionsPerSecond decays after the last correction.
+8. Test CIVIL WAR separately with a fresh load for isolated totals. Verify all colors finish and external recolors wake defense. Finally check focus loss, unequip, Clear, respawn and close release held input.
+
+Send the **entire Copy Activation Report**, especially:
+
+- Activation method/observation, SessionConfirmed, ActivationStrategy, StrategyDecisionCached and StrategyDecisionReason.
+- PER_TARGET and CONTINUOUS attempts/successes, rolling success rates, corrections/sec, WorkSeconds, average service/color times and RetainedAttempts.
+- DirtyCount, Attempts, CompletedServices, SuccessfulPaints, SuccessRate, rolling and OverallCorrectionsPerSecond, AdaptiveDwellMs, Deferred and Stalled.
+- ColorEventsReceived, DirtyEventsWithoutHover, Average/MaxColorEventToDirtyQueueMs, ReconciliationFinds and the off-cursor event block.
+- FreshAttackCorrections, AverageAttackColorChangeToCorrectedMs, Minimum/MaximumAttackResponseMs and RecentlyChangedQueueDepth.
+- AverageAcquisitionMs, AverageSwitchMs, cache hits, CursorAcquireSuccessRate, CameraFallbackRate, hold state, DownEvents and UpEvents.
+
+## Metric definitions and APIs
+
+Global event/correction/defer counters and timing means accumulate since load. Attempts counts qualified native services, not RPCs. CompletedServices excludes interrupted services; AbortedServices is separate. SuccessfulPaints means target-color transitions observed during a valid held service, not proof of server causality. DownEvents/UpEvents are observed PlayerMouse events and may also include physical input. AverageTargetDwellMs includes service through release; AdaptiveDwellMs is the current maximum hold window.
+
+Global corrections/sec and acquisitions/sec use approximately five-second rolling bins. OverallCorrectionsPerSecond divides all observed corrections by accumulated running time, including clean idle. Each strategy's rates and means use its last 16 completed services and attributed active-work time, including retries; clean idle is excluded. Civil War has a separate statistics block. Deferred/Stalled count events, not unique provinces. FreshAttackCorrections counts service corrections following observed wrong-color changes; response time starts at the local callback/reconciliation observation, not the unseen server mutation.
+
+The latest 24 wrong-color event records and a last-off-cursor record are retained as strings/numbers only. `GetTargetStats(part)` exposes timestamps, last seen/target colors, dirty membership/insertion, cached points/pose/geometry, acquisition duration/failures and retry time. APIs also include `GetPerformanceStats()`, `GetPerformanceReport()`, `GetDirtyEventReport()`, `CopyActivationReport()` and `SetActivationStrategy(value)` while stopped.
+
+## Boundaries and validation
+
+AutoPainter sends **zero game RPCs**. The normal PaintBucket owns all paint requests and its cooldown. There are no Mouse.Target writes, ClientControls/GetMouseData hooks, metamethod hooks, protected-signal firing, validator replacement, script execution/require/decompile or moderation concealment. Input calls and releases remain serialized; no second worker can take cursor/camera/input ownership during pending cleanup.
 
 Run `python3 tests/run_tests.py /path/to/luau`.
 
-554 deterministic tests pass: 222 legacy native-controller tests, 246 locked-diagnostic tests and 86 Hands Free fast-hold tests (43 scenarios under immediate and deferred events). All 25 Luau files compile; only the original reference's Markdown fence is stripped in a temporary compilation copy. The standalone analyzer reports missing Roblox/executor globals/types; it is not a Roblox-engine type-check pass.
+**614 deterministic tests pass:** 222 legacy native-controller, 246 locked-diagnostic and 146 Hands Free tests (73 scenarios under immediate/deferred signals). All **25 Luau files compile**, stripping only the original reference's Markdown fence in a temporary compilation copy. Standalone analysis has only unavailable Roblox/executor globals/types; it is not a Roblox-engine type-check pass.
 
-Fast-hold scenarios cover one DOWN across targets, zero clean-idle work, early color-event switching, correction during a yielding cursor call, stalled-target fairness, cache reuse/invalidation, cursor propagation, camera release boundaries, frame budgets, repeated Clear, respawn, tool/focus loss, interrupted/yielding input, late releases, duplicate loads, palette changes, CIVIL WAR separation and zero game RPC calls. The native mock loop validates control flow, not real game throughput.
-
-Roblox API references: [CreateVirtualInput](https://create.roblox.com/docs/reference/engine/classes/UserInputService#CreateVirtualInput), [SendMouseButton](https://create.roblox.com/docs/reference/engine/classes/VirtualInput#SendMouseButton), [SendMousePosition](https://create.roblox.com/docs/reference/engine/classes/VirtualInput#SendMousePosition), [WorldToViewportPoint](https://create.roblox.com/docs/reference/engine/classes/Camera#WorldToViewportPoint). Exposed API restrictions remain intact.
+New tests cover both benchmark winners, minimum samples, inconclusive evidence, per-session caching, singleton limitations, adaptive dwell/slow successes/stalls, valid-input timing, early release, off-cursor/offscreen dirty events, lost-signal reconciliation, fresh priority and aging, retry-work accounting, Civil War isolation, bounded logs/windows and lifecycle cleanup. They model native behavior and do not demonstrate that this version fixes live throughput.

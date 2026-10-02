@@ -1,16 +1,16 @@
-# Current Hands Free build (v5)
+# Current Hands Free build (v6)
 
-**AutoPainterHandsFree.luau** now uses the live-confirmed VirtualInput path first. NORMAL keeps one Mouse1 hold across usable visible targets, jumps the real cursor, and advances on target-color events. Cached cursor points precede visible surface search, cached camera poses and the existing camera fallback. Clean provinces stay out of scheduling work; stalled targets receive a short deferral while other dirty targets proceed.
+**AutoPainterHandsFree.luau** now optimizes observed corrections instead of cursor-switch rate. NORMAL starts with fresh per-target VirtualInput activation, samples continuous hold on real dirty targets, and caches the better observed strategy for the equipped session. Dwell begins at 0.32 seconds, learns within 0.20–0.45 seconds, and always ends immediately on a matching color.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Close the older Hands Free panel first. The public client loader needs no Studio, server changes or credentials. AutoPainter sends zero game RPCs; the normal tool owns requests and cooldowns. Camera recovery releases before moving across the map. STOP, focus/tool loss, unexpected input and clean idle also end the hold. Genuine Mouse.Target is always required, with no hooks or fabricated mouse state.
+Close the old panel before loading. Dirty eligibility depends only on province Color and its target color. ColorChanged immediately updates the queue, recently recolored provinces receive priority, and a 150 ms queue-only reconciliation repairs missed signals. New reports show off-cursor event evidence, defense response time and separate strategy success/throughput. The existing cached cursor/camera targeting and Civil War palette preparation remain intact.
 
-NORMAL has no per-target palette/re-equip work. Optional CIVIL WAR retains its separate color preparation. The running HUD and Copy Activation Report include acquisition/correction rates, timing, cache hits, camera searches, deferrals and hold state.
+The normal PaintBucket remains the sole game-RPC sender. No native cooldown changes, hooks, fabricated mouse state, moderation bypasses, Studio or server installation are added. Civil War uses its own per-target dwell statistics and the same dirty engine.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for settings, metric definitions, input-propagation limits and the exact live procedure. **554 deterministic tests pass; all 25 Luau files compile.** The new continuous-hold flow is not yet live-benchmarked. The older Final controller and its documentation below are separate and unchanged; do not run both controllers together.
+See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for the exact live procedure, settings and report fields to send back. **614 deterministic tests pass; all 25 Luau files compile.** This new revision has not been live-benchmarked. Older Final/diagnostic controllers and the historical documentation below remain separate; do not run multiple painters together.
 
 ---
 
