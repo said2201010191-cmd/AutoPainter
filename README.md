@@ -1,18 +1,22 @@
-# Current Hands Free build: v8.2
+# Current Hands Free build: v8.2 Live Fix
 
-Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)** for the new build, based on v8.1. Full setup, tuning, all new report fields and exact NORMAL/Civil/30–45-minute live procedures are in [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md). [V82_SPEC_IMPLEMENTATION.md](V82_SPEC_IMPLEMENTATION.md) maps every required specification section to implementation and validation.
+Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Close the older panel first. The update preserves the genuine mouse/native PaintBucket input path and sends zero game RPCs.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-For repeatable tests/friend distribution, use the commit-pinned loader supplied with the implementation response. Public anonymous raw loading requires a public repository. No Studio/project access, credentials, server modifications, or direct AutoPainter paint RPCs are required.
+Use the commit-pinned loader from the release response for repeatable testing/friend distribution. Public raw loading requires a public repository. No credentials, Studio/project access or server installation.
 
-v8.2 adds automatic overload/fairness, separate eligible/deferred clocks, pathological group cooldowns, healthy-only dwell learning, generation-indexed native palette binding with observed verification of duplicate swatches, explicit Civil post-palette target reacquisition, camera safeguards, slower adaptive reconciliation, stronger outlines and genuine-target drag selection. PER_TARGET, normalized recognition, native palette click timing, input ownership and stable Civil assignments remain.
+- **NORMAL defaults/resets to 120 ms**; success releases immediately. Qualified no-effect penalties remain entry-local.
+- **Camera movement defaults LOCKED.** SAFE aliases LOCKED; zero automatic camera property writes. AGGRESSIVE is explicit opt-in, cursor-proof gated, bounded and circuit-broken.
+- Native validation persists disambiguation across GUI generations. READY means the full set rebound; no silent 128-to-118 downgrade. AUTO close requires a verified live opener; outages block repeated failing work until access changes.
+- Protected/hover markers are actual province silhouettes, not boxes. Palette/native paint click timings remain guarded against change.
+- Both reported custom-picker candidates have explicit UI-only probe buttons and a copy report. **Generated RGB colors remain conditional/unverified; no invented capacity or color reuse.**
 
-Export the v8.1 palette profile before closing the old controller. Import it in v8.2, open the native palette, then use **Validate Native Palette** to verify ambiguous mappings. Validation changes native palette selection but does not paint. Select the NORMAL palette color again afterward. Focus/tool loss now resumes after stable recovery; explicit STOP cancels resume.
+**846 deterministic tests pass; 32/32 Luau files compile. New behavior remains live-unverified until the user tests it.** Prior healthy NORMAL/Civil evidence was user-reported for earlier builds.
 
-**782 deterministic tests pass; all31 Luau files compile.** The user supplied live v8.1 evidence; **v8.2 correctness and speed remain live-unverified**. Generated colors beyond native capacity are disabled because no legitimate custom-picker protocol is confirmed. A137/128 selection reports shortage9 and blocks START/REROLL without reuse or dropping selections.
+Read [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact live tests, report fields and remaining game-dependent work; [V82_SPEC_IMPLEMENTATION.md](V82_SPEC_IMPLEMENTATION.md) maps all 178 sections; [V82_VALIDATION.md](V82_VALIDATION.md) records tests and limitations. Export your old profile, import it, validate once, then export the improved semantic profile. Choose NORMAL's desired native color again after validation.
 
 The historical native/diagnostic entry points below remain unchanged and are separate from Hands Free v8.2.
 

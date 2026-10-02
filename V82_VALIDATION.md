@@ -1,57 +1,45 @@
-# v8.2 validation record
+# v8.2 Live Fix validation
 
-Base: v8.1 `bcea953d87f29e6c5b368b715ec63f145ff8c16a`. Runtime: `AutoPainterHandsFree.luau`, version8.2. Specification coverage is recorded individually for all107 numbered sections in [V82_SPEC_IMPLEMENTATION.md](V82_SPEC_IMPLEMENTATION.md).
+Base `17be81eab4fbd520b2bdbac5c2e390a64c51553b`; build `8.2-live-fix`. See [spec coverage](V82_SPEC_IMPLEMENTATION.md) for all 178 sections and the subsequent NORMAL 120 ms regression instruction.
 
-## Results
-
-| Check | Result |
+| Suite/check | Result |
 |---|---|
-| Existing native-controller suites | 222 passed |
-| Locked diagnostic suites | 246 passed |
-| Existing Hands Free regression suite | 208 passed |
-| New v8.2 regression suite | 106 passed |
-| Total deterministic tests | **782 passed** |
-| All repository Luau files | **31/31 compiled** |
-| Normalized color matcher guard | Byte-identical to v8.1 |
-| Native palette click/settle/hold guard | Same native sequence/timings; new clean gate excluded from guard |
-| Cursor movement guard | Same implementation except explicit GUI-obstruction movement gate after palette work |
-| Forbidden active-runtime operations | No direct InvokeServer/FireServer, hooks, direct signal firing, Mouse.Target assignment, palette attribute write, require or decompile |
-| 128 duplicate-style swatches | All128 bound, zero ambiguous after observed native candidate selection |
-| 25 recreated palettes | Semantic identities/assignments preserved; binding work scales with generations |
-| Stable generation for three simulated minutes | Constant full traversal and rebind counts, including repeated Civil corrections |
-| Event-perfect reconciliation | More than10x fewer checks than120ms baseline; dropped event recovered |
-| 55 NORMAL / 80 Civil workload | Healthy work continues around hot, unpaintable or unavailable targets |
-| Eligible/deferred clock separation | Exact arithmetic including100s quarantine |
-| Camera / selection | Unsafe poses refused; original view restored; genuine-target drag add/remove; zero AutoPainter game requests |
+| Existing native controller |222 passed|
+| Locked diagnostics |246 passed|
+| Existing Hands Free |208 passed|
+| Existing v8.2 |106 passed|
+| New live-fix cases |64 passed|
+| **Total deterministic** |**846 passed**|
+| **Repository Luau compilation** |**32/32 passed**|
+| Normalized color matcher |Source hash unchanged|
+| Proven native cursor mover |Source hash unchanged, retaining prior v8.2 GUI obstruction gate|
+| Native palette click/settle/hold sequence |Source guard unchanged|
+| Active-runtime forbidden operation guard |No game RPC calls, hooks, signal firing, Mouse.Target assignment, PaintBucketColor write, require or decompile|
 
-Commands:
+Run:
 
 ```sh
 python3 tests/run_tests.py /path/to/luau
 python3 tests/check_luau.py /path/to/luau-compile
 ```
 
-The compiler checks the original Markdown-wrapped reference through a temporary unwrapped copy; the committed reference is untouched. The test-only lexical seam exists solely in `tests/v82_regression.spec.luau`, not in the shipped script. Both immediate and deferred signal delivery are covered. The mock fixture models input/tool/palette/color behavior; it does not call game remotes or simulate authoritative server validation.
+Reference scripts are preserved; Markdown-wrapped originals are compiled through temporary unwrapped copies only. Test lexical seams never ship in the runtime. Immediate and deferred signals are covered. Existing tests were updated where new requirements explicitly replaced old expectations (250 ms default, automatic SAFE camera movement, rectangular markers, initial START on an incomplete palette); their intended lifecycle/fairness checks remain.
 
-## Final review changes beyond the initial implementation
+New evidence includes:
 
-- Exhausted projection budgets wait for a fresh frame instead of triggering unnecessary camera fallback.
-- A correct PlayerMouse.Target does not skip cursor movement if an interactive GUI still owns its current position; before DOWN the real target and clear GUI are checked again.
-- Missing palette color/control defers locally; closed palette with already-correct selected color skips reopening.
-- Native candidate validation discovers the existing input handle once, owns the single worker slot, can be canceled, and cannot start painting or auto-resume a paint worker.
-- Longer group cooldowns keep their accounting category when a shorter overload retry is requested.
-- Root detachment and signature changes invalidate stale live bindings without deleting semantic identities or repeatedly scanning PlayerGui.
-- Failed candidate trials can retry their cached candidate list after cooldown without rescanning; profile geometry is schema-checked.
-- Relearning opener/closer retires old semantic references; recreated roots disconnect old listeners.
-- Selection refuses to arm when normal tool unequip fails; focus loss stops the stroke. Explicit STOP/mode changes cancel pending focus resume.
-- Paint/release/defense timings now exist for NORMAL and Civil, and late attribution is excluded from dwell training.
+- 120 ms initialization/reset/mode/benchmark paths, healthy quick corrections, no global poisoning by unqualified or target-local no-effects.
+- More than 100 failed acquisitions with zero CFrame/Focus/CameraType/CameraSubject writes; Civil failures/palette work likewise remain locked.
+- Fresh-frame budget and target refresh recovery without camera; proof states, one move per dirty episode, exact four-property restore, rotated/elevated map guard, three-failure breaker, manual camera override, clean/overload suppression.
+- Legacy 128-color import/validation, persistent signatures,25 newly constructed palettes with randomized child creation order, all 128 bindings recovered automatically without further clicks or manual Validate. Delayed layout resolves without another index traversal.
+- Semantic assignments and capacity survive detach/mismatch/recreation. Duplicate identical discriminators remain ambiguous; START/REROLL cannot partially assign.
+- Verified chrome persistence, AUTO close without opener suppression, real global outage blocking, failed-opener suppression until actual state changes, current-color work during outage, generation races.
+- Actual-geometry Highlight adornment without province property writes; selection/cleanup regressions remain.
+- Both specified native picker paths exercised through explicit GUI input; visible UI changes recorded but no invented generated capacity or paint. Focus cancellation releases and does not arm resume.
 
-## What these checks do not establish
+Final review additionally repaired an isolated missing swatch being incorrectly treated as a global outage, false reopening after an opener failure with unchanged prerequisites, stale deferred GUI indexing during explicit picker discovery, delayed layout binding, root-versus-swatch visibility diagnostics, and exact CameraSubject restoration. The healthy native paint path remains unchanged except the requested 120 ms default/state reset.
 
-**v8.2 is not live-proven.** The user’s v8.1 live evidence remains the only real-client performance baseline. Native input delivery, actual128-control duplication/layout, mouse/camera ray behavior, replication, server-side cooldown/state and long-session combat need the exact procedures in [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md), including30–45+minutes of Civil combat and real GUI recreation.
+**Not live-proven:** the new camera lock/rendering, automatic 128/128 rebinding, NORMAL long-run reliability and real corrections/sec. Older live evidence belongs to the user. Mock timing cannot predict Roblox server/replication/GUI behavior. Follow the exact NORMAL/Civil/10-minute camera procedures in [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md).
 
-Standalone `luau-analyze` was also inspected. Without Roblox/executor type definitions it reports unavailable globals/types and type-inference limits. Compilation and deterministic runtime tests passed; a clean Roblox engine typecheck is **not** claimed.
+**Conditional work not enabled:** arbitrary generated colors, guided RGB field mapping and the complete custom-color province verification adapter. Two real UI candidate paths have explicit inspection/probe controls; their RGB input/confirmation contract is still unverified. A live window was visible, but the desktop interaction did not complete as the app state changed. The script reports UNVERIFIED and exact native shortage, never bypasses this missing capability.
 
-Custom generated colors beyond the native palette were not enabled. No verified legitimate custom-color UI contract was supplied or observable in a live client here. Candidate controls are only inventoried and labeled UNVERIFIED; generated capacity remains0 and impossible unique assignments are blocked. This is the specification’s explicit game-support-dependent branch, not an alternative transport.
-
-Spatial camera occupancy uses conservative bounding boxes and may reject some otherwise viewable hollow/complex geometry. Restoring the user's saved camera returns their original view; safe-pose acceptance governs new automatic candidates. Dirty ColorChanged timestamps measure local callback/queue behavior, not unknown server-to-client latency. A successful color observation can also reflect another player's matching paint; it is not a server acknowledgment.
+Highlight rendering is subject to Roblox's 255 simultaneous effects limit and spatial camera occupancy is conservatively checked with bounding boxes. Compiler success is not a clean Roblox engine typecheck; standalone analyzer lacks Roblox/executor definitions. Local ColorChanged timing excludes server replication latency; matching paint can also be external and is not a server acknowledgement.

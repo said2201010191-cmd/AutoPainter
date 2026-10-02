@@ -142,12 +142,12 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."full 128 palette duplicate names bind through native verified candidates",function()
   local w,a,p,t=setup(deferred,0);w.makePalette(128);duplicatePalette(w,128);w.learn(a)
-  assert(#t.p.controls==128);local profile=a.GetPaletteProfile()
+  assert(#t.p.controls==128);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end
   w.recreatePalette(128);duplicatePalette(w,128);w.flush();assert(a.ImportPaletteData(profile))
   local m=a.GetPerformanceStats();assert(m.AmbiguousColors==10 and m.BoundNativeColors==118)
-  assert(a.ValidateNativePalette());w.step(5)
+  assert(a.ValidateNativePalette());w.step(12)
   m=a.GetPerformanceStats();assert(m.BoundNativeColors==128 and m.AmbiguousColors==0 and m.AmbiguousResolutionsSucceeded==10,a.GetPaletteInventory())
-  assert(w.paintCalls==0 and w.networkAttempts==0 and w.paletteClicks==10)
+  assert(w.paintCalls==0 and w.networkAttempts==0 and w.paletteClicks==128)
   for _,item in ipairs(t.p.controls) do if item.candidateCount==2 then assert(item.verifiedGeneration==item.rootRecord.generation) end end
   clean(w,a)
  end)
@@ -159,7 +159,7 @@ for _,deferred in ipairs({false,true}) do
   local connections=w.connections
   for _=1,25 do
    w.detachPalette();w.flush();assert(a.GetPerformanceStats().LearnedSemanticColors==128 and a.GetPerformanceStats().LivePaletteRoot=="CLOSED")
-   w.recreatePalette(128);duplicatePalette(w,128);w.flush();assert(a.ValidateNativePalette());w.step(3)
+   w.recreatePalette(128);duplicatePalette(w,128);w.flush();t.p.rebindAll();w.step(.05)
    assert(a.GetPerformanceStats().BoundNativeColors==128)
    for i,part in ipairs(p) do assert(a.GetTargetStats(part).AssignedCivilColorKey==colors[i]) end
   end
@@ -181,39 +181,39 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."closed palette preserves semantic capacity while clearly reporting detached live controls",function()
   local w,a,p,t=setup(deferred,12,128);w.detachPalette();w.flush();local m=a.GetPerformanceStats();local pf=a.GetCapacityPreflight()
   assert(m.LivePaletteRoot=="CLOSED" and pf.VerifiedNativeCapacity==128 and pf.CurrentlyBoundLiveControls==0 and pf.Shortage==0)
-  assert(m.GeneratedColorsAssigned==0 and m.GeneratedColorSupport:find("Unsupported",1,true));clean(w,a)
+  assert(m.GeneratedColorsAssigned==0 and m.GeneratedColorSupport:find("UNVERIFIED",1,true));clean(w,a)
  end)
  test(pre.."one failed ambiguous color does not corrupt remaining native mappings",function()
-  local w,a,p,t=setup(deferred,0);w.makePalette(128);duplicatePalette(w,128);w.learn(a);local profile=a.GetPaletteProfile()
+  local w,a,p,t=setup(deferred,0);w.makePalette(128);duplicatePalette(w,128);w.learn(a);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end
   w.recreatePalette(128);duplicatePalette(w,128);w.flush();assert(a.ImportPaletteData(profile))
   for _,button in ipairs(w.uiButtons) do if button.Name=="Black" then w.buttonColors[button]=w.Color3.new(1,0,0) end end
-  assert(a.ValidateNativePalette());w.step(6)
+  assert(a.ValidateNativePalette());w.step(12)
   assert(a.GetPerformanceStats().BoundNativeColors==127 and #t.p.controls==128 and t.p.controls[1].pendingVerification)
   assert(#t.p.controls[1].candidateFailures==2 and w.paintCalls==0);clean(w,a)
  end)
  test(pre.."failed native candidate retries cached list after cooldown without root scan",function()
-  local w,a,p,t=setup(deferred,0);w.makePalette(3);duplicatePalette(w,3);w.learn(a);local profile=a.GetPaletteProfile()
+  local w,a,p,t=setup(deferred,0);w.makePalette(3);duplicatePalette(w,3);w.learn(a);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end
   w.recreatePalette(3);duplicatePalette(w,3);w.flush();a.ImportPaletteData(profile);w.ignorePaletteClicks=true
   a.ValidateNativePalette();w.step(4);local scans=a.GetPerformanceStats().FullGuiTraversals
   w.ignorePaletteClicks=false;a.ValidateNativePalette();w.step(3)
   assert(a.GetPerformanceStats().BoundNativeColors==3 and a.GetPerformanceStats().FullGuiTraversals==scans);clean(w,a)
  end)
  test(pre.."v1 duplicate profile requires verification and never trusts saved coordinates",function()
-  local w,a,p,t=setup(deferred,0);w.makePalette(3);duplicatePalette(w,3);w.learn(a);local profile=a.GetPaletteProfile();profile.Version=1
+  local w,a,p,t=setup(deferred,0);w.makePalette(3);duplicatePalette(w,3);w.learn(a);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end;profile.Version=1
   for _,row in ipairs(profile.Controls) do row.Geometry=nil;row.NormalizedClick={-1000,9999} end
   w.recreatePalette(3);duplicatePalette(w,3);w.flush();assert(a.ImportPaletteData(profile));assert(a.GetPerformanceStats().AmbiguousColors==3)
   a.ValidateNativePalette();w.step(2);assert(a.GetPerformanceStats().BoundNativeColors==3 and w.paintCalls==0);clean(w,a)
  end)
  test(pre.."malformed semantic geometry is rejected without input or partial import",function()
-  local w,a,p,t=setup(deferred,1,4);local profile=a.GetPaletteProfile();profile.Controls[1].Geometry.Normalized={X="bad",Y=0}
+  local w,a,p,t=setup(deferred,1,4);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end;profile.Controls[1].Geometry.Normalized={X="bad",Y=0}
   assert(not a.ImportPaletteData(profile) and #t.p.controls==4 and w.paletteClicks==0);clean(w,a)
  end)
  test(pre.."Civil 80-target combat isolates one unavailable swatch and restores stable native assignments",function()
   local w,a,p,t=setup(deferred,80,128);a.SetMode("CIVIL WAR");local keys={}
   for i,part in ipairs(p) do keys[i]=a.GetTargetStats(part).AssignedCivilColorKey end
-  local missing=t.entry(p[1]).civilControl.button;missing.Parent=nil;w.flush()
+  local missing=t.entry(p[1]).civilControl.button;w.start(a,.01);missing.Parent=nil;w.flush()
   for tick=1,10 do w.schedule(tick*1.2,function() for i=2,6 do p[i].Color=w.Color3.fromRGB(tick,20,50) end end) end
-  w.start(a,28)
+  w.step(28)
   for i=2,#p do assert(a.ColorsMatch(p[i].Color,t.entry(p[i]).civilColor),"Civil healthy "..i) end
   assert(a.GetStats().Running and a.GetPerformanceStats().PaletteFailures>0 and a.GetPerformanceStats().ReleaseTimeouts==0)
   missing.Parent=w.paletteRoot;w.flush();w.step(5)
@@ -223,7 +223,7 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."palette success then target loss sends zero paint DOWN and skips color on retry",function()
   local w,a,p,t=setup(deferred,1,4);a.SetMode("CIVIL WAR");w.nativePaletteColor=w.color;w.player:SetAttribute("PaintBucketColor",w.color);w.flush();a.SetCameraMode("OFF")
   w.afterPaletteSelect=function() w.cannotAcquire[p[1]]=true end
-  w.start(a,.4);assert(w.paletteClicks==1 and next(w.downs)==nil and a.GetPerformanceStats().TargetLostAfterPalette>=1)
+  w.start(a,.65);assert(w.paletteClicks==1 and next(w.downs)==nil and a.GetPerformanceStats().TargetLostAfterPalette>=1)
   assert(a.ColorsMatch(w.player:GetAttribute("PaintBucketColor"),t.entry(p[1]).civilColor))
   w.afterPaletteSelect=nil;w.cannotAcquire[p[1]]=nil;w.step(1)
   assert(a.GetStats().Dirty==0 and w.paletteClicks==1 and a.GetPerformanceStats().GlobalDwellMs<=250 and a.GetPerformanceStats().TargetLostEventuallyRecovered>=1)
@@ -261,16 +261,16 @@ for _,deferred in ipairs({false,true}) do
   assert(t.v.safePose(e,good));t.v.blacklistPose(e,good,"test mismatch");assert(not t.v.safePose(e,good))
   assert(t.v.safePose(e,w.cf(w.v(0,110,20),p[1].Position)));clean(w,a)
  end)
- test(pre.."edge tiny and far targets use safe fallback and restore original camera",function()
+ test(pre.."AGGRESSIVE opt-in far targets use bounded fallback and restore original camera",function()
   local w,a,p,t=setup(deferred,0);local cf=w.workspace.CurrentCamera.CFrame
   for i=1,3 do local part=w.province(600+i*90,40);part.Size=w.v(i==1 and 2 or 30,1,i==1 and 2 or 30);a.AddProvince(part);w.protected[part]=true end
-  w.start(a,4);assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().CameraFallbackSuccesses>=3)
+  a.SetCameraMode("AGGRESSIVE");w.start(a,8);assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().CameraFallbackSuccesses>=3,a.GetStats().LastMessage)
   assert(w.workspace.CurrentCamera.CFrame==cf and a.GetPerformanceStats().CameraRestores>=3 and a.GetPerformanceStats().UnderMapCandidatesRejected==0);clean(w,a)
  end)
  test(pre.."camera OFF and manual zoom never move camera during recovery",function()
   local w,a,p,t=setup(deferred,0);local part=w.province(900,0);a.AddProvince(part);w.protected[part]=true
   local cf=w.workspace.CurrentCamera.CFrame;a.SetCameraMode("OFF");w.start(a,.5);assert(w.workspace.CurrentCamera.CFrame==cf and a.GetStats().Dirty==1)
-  a.Stop();w.step(.1);a.SetCameraMode("SAFE");t.v.camera.manualUntil=w.now+1;w.start(a,.5)
+  a.Stop();w.step(.1);a.SetCameraMode("AGGRESSIVE");t.v.camera.manualUntil=w.now+1;w.start(a,.5)
   assert(w.workspace.CurrentCamera.CFrame==cf and a.GetPerformanceStats().UserCameraDeferrals>0)
   w.step(2);assert(a.GetStats().Dirty==0 and w.workspace.CurrentCamera.CFrame==cf);clean(w,a)
  end)
@@ -293,7 +293,7 @@ for _,deferred in ipairs({false,true}) do
   for _,part in ipairs(p) do w.mouse.Target=part;w.mouse.Move:Fire();w.flush() end
   for i=#p,1,-1 do w.mouse.Target=p[i];w.mouse.Move:Fire();w.flush() end
   assert(a.GetStats().Selected==30 and t.v.selection.adds==30 and w.paintCalls==0 and next(w.downs)==nil)
-  for _,part in ipairs(p) do assert(t.marker(part).Adornee==part and t.marker(part).LineThickness>=.065 and t.marker(part).SurfaceTransparency==1) end
+  for _,part in ipairs(p) do assert(t.marker(part).Adornee==part and t.marker(part).ClassName=="Highlight" and t.marker(part).FillTransparency==1) end
   w.button=false;w.input.InputEnded:Fire({UserInputType=w.env.Enum.UserInputType.MouseButton1});w.flush();t.finishSelection();w.step(.15)
   assert(w.bucket.Parent==w.character and not a.GetStats().Running and not t.v.selection.held and next(t.v.selection.visited)==nil);clean(w,a)
  end)
@@ -317,9 +317,9 @@ for _,deferred in ipairs({false,true}) do
   w.button=false;w.input.WindowFocused:Fire();w.flush();t.finishSelection();w.step(.2);assert(not a.GetStats().Running);clean(w,a)
  end)
  test(pre.."outlines remain persistent toggle locally and never alter province Color",function()
-  local w,a,p,t=setup(deferred,2);local c=p[1].Color;a.SetProtectedOutlines(false);assert(not t.marker(p[1]).Visible)
-  a.SetProtectedOutlines(true);assert(t.marker(p[1]).Visible and p[1].Color==c)
-  p[1].Color=w.color;w.flush();assert(t.marker(p[1]).LineThickness>=.065 and t.marker(p[1]).SurfaceTransparency==1);clean(w,a)
+  local w,a,p,t=setup(deferred,2);local c=p[1].Color;a.SetProtectedOutlines(false);assert(not t.marker(p[1]).Enabled)
+  a.SetProtectedOutlines(true);assert(t.marker(p[1]).Enabled and p[1].Color==c)
+  p[1].Color=w.color;w.flush();assert(t.marker(p[1]).ClassName=="Highlight" and t.marker(p[1]).FillTransparency==1);clean(w,a)
  end)
  test(pre.."selection cycles do not leak listeners roots or workers",function()
   local w,a,p,t=setup(deferred,0);local before=w.connections
@@ -336,7 +336,7 @@ for _,deferred in ipairs({false,true}) do
   local hud=w.instance("ScreenGui");hud.Name="GameToolbar";hud.Enabled=true;hud.Parent=w.playerGui;opener.Parent=hud
   assert(a.BeginPaletteLearning("OPENER"));w.humanSelect(opener);a.FinishPaletteLearning()
   w.buttonActions[opener]=function() w.recreatePalette(4);table.insert(w.uiButtons,opener) end
-  w.detachPalette();w.flush();a.SetMode("CIVIL WAR");w.start(a,2)
+  a.SetMode("CIVIL WAR");w.start(a,.01);w.detachPalette();w.flush();w.step(2)
   assert(a.GetStats().Dirty==0 and a.GetPerformanceStats().OpenerUses>=1 and a.GetPerformanceStats().LearnedSemanticColors==4);clean(w,a)
  end)
  test(pre.."semantic signature edits invalidate only the used color without a full root scan",function()
@@ -359,7 +359,7 @@ for _,deferred in ipairs({false,true}) do
   assert(a.GetStats().Selected==0 and next(w.downs)==nil);w.button=false;clean(w,a)
  end)
  test(pre.."validation cancellation releases input and never starts a paint worker",function()
-  local w,a,p,t=setup(deferred,2);w.makePalette(8);duplicatePalette(w,8);w.learn(a);local profile=a.GetPaletteProfile()
+  local w,a,p,t=setup(deferred,2);w.makePalette(8);duplicatePalette(w,8);w.learn(a);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end
   w.recreatePalette(8);duplicatePalette(w,8);w.flush();a.ImportPaletteData(profile)
   w.onPaletteDown=function() a.Stop() end;assert(a.ValidateNativePalette());w.step(.5)
   assert(not a.GetStats().Running and not a.GetStats().Held and w.paintCalls==0 and not t.p.validating)
@@ -383,7 +383,7 @@ for _,deferred in ipairs({false,true}) do
  end)
 
  test(pre.."closed palette and already selected native color need zero opener or swatch clicks",function()
-  local w,a,p,t=setup(deferred,1,1);a.SetMode("CIVIL WAR");w.detachPalette();w.flush();w.start(a,.7)
+  local w,a,p,t=setup(deferred,1,1);a.SetMode("CIVIL WAR");w.start(a,.001);w.detachPalette();w.flush();w.step(.7)
   assert(a.GetStats().Dirty==0 and w.paletteClicks==0 and a.GetPerformanceStats().PaletteSkipsAlreadyCorrect>=1);clean(w,a)
  end)
  test(pre.."mode change cancels focus-resume intent instead of silently changing paint mode",function()
