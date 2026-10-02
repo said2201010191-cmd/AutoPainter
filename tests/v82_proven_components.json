@@ -1,0 +1,17 @@
+{
+  "baseCommit": "bcea953d87f29e6c5b368b715ec63f145ff8c16a",
+  "blocks": [
+    {
+      "name": "normalized matcher",
+      "start": "local function normalizedRGB(c)",
+      "end": "local function entryLabel(entry)",
+      "sha256": "3f72ccc2b81f1e3e4b96de6c9033496839305c1f5e6b5a179db033c1cd6e1ed4"
+    },
+    {
+      "name": "native cursor movement",
+      "start": "local function moveCursor(",
+      "end": "local function acquireFast(",
+      "sha256": "7ed0f12479071f6ddce680aa3ed6b0bf4387ef24a5385dcdec6d4d2a72b29aff"
+    }
+  ]
+}

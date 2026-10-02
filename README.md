@@ -1,18 +1,20 @@
-# Current Hands Free build (v8.1)
+# Current Hands Free build: v8.2
 
-NORMAL retains its proven genuine-target/native-input architecture with per-entry circuit breakers, cache recovery, fair retry scheduling, qualified-only dwell learning and native button-state resynchronization. Healthy services get no new recovery delay; PER_TARGET remains the default.
+Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)** for the new build, based on v8.1. Full setup, tuning, all new report fields and exact NORMAL/Civil/30–45-minute live procedures are in [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md). [V82_SPEC_IMPLEMENTATION.md](V82_SPEC_IMPLEMENTATION.md) maps every required specification section to implementation and validation.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Civil War retains the user's live-proven v8 palette click/settle/hold/verification path. Learned semantic mappings now survive PaletteGui recreation and lazily bind replacement controls by exact relative path and signature. Swatches, opener, closer and existing unique Civil assignments persist. Missing GUI means temporarily unavailable capacity, not deleted learning. Focus return requires explicit RESUME.
+For repeatable tests/friend distribution, use the commit-pinned loader supplied with the implementation response. Public anonymous raw loading requires a public repository. No Studio/project access, credentials, server modifications, or direct AutoPainter paint RPCs are required.
 
-**Before upgrading from v8, STOP and Export Palette Profile, then close its panel.** Load v8.1 and import the profile. This preserves learning across controller reloads; recreation of native GUI within v8.1 needs no export or relearning. Native input and public loading require the client environment's exposed APIs; no Studio, server changes, credentials or direct game RPCs are used.
+v8.2 adds automatic overload/fairness, separate eligible/deferred clocks, pathological group cooldowns, healthy-only dwell learning, generation-indexed native palette binding with observed verification of duplicate swatches, explicit Civil post-palette target reacquisition, camera safeguards, slower adaptive reconciliation, stronger outlines and genuine-target drag selection. PER_TARGET, normalized recognition, native palette click timing, input ownership and stable Civil assignments remain.
 
-See [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact NORMAL stress/Civil GUI-recreation tests, recovery rules, profile import, tuning and new report fields.
+Export the v8.1 palette profile before closing the old controller. Import it in v8.2, open the native palette, then use **Validate Native Palette** to verify ambiguous mappings. Validation changes native palette selection but does not paint. Select the NORMAL palette color again afterward. Focus/tool loss now resumes after stable recovery; explicit STOP cancels resume.
 
-**676 deterministic tests pass; 28 Luau files compile.** NORMAL and Civil v8 painting were previously live-verified by the user. **v8.1 long-run NORMAL recovery and PaletteGui rebinding remain live-unverified until the user tests them.** The normalized matcher, camera solver and palette click/preparation behavior retain v8 source guards; recovery/scheduler code is intentionally revised. Historical reference/Final/diagnostic files below remain separate.
+**782 deterministic tests pass; all31 Luau files compile.** The user supplied live v8.1 evidence; **v8.2 correctness and speed remain live-unverified**. Generated colors beyond native capacity are disabled because no legitimate custom-picker protocol is confirmed. A137/128 selection reports shortage9 and blocks START/REROLL without reuse or dropping selections.
+
+The historical native/diagnostic entry points below remain unchanged and are separate from Hands Free v8.2.
 
 ---
 

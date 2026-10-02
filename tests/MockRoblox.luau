@@ -82,7 +82,14 @@ function Mock.new(deferredSignals)
 				if index then table.remove(old._children, index) end
 				old.ChildRemoved:Fire(object)
 			end
-			if value then table.insert(value._children, object); value.ChildAdded:Fire(object) end
+			if value then
+    table.insert(value._children, object); value.ChildAdded:Fire(object)
+    local function added(child,ancestor)
+     ancestor.DescendantAdded:Fire(child)
+     for _,descendant in ipairs(child._children) do added(descendant,ancestor) end
+    end
+    local ancestor=value;while ancestor do added(object,ancestor);ancestor=ancestor.Parent end
+   end
 			ancestry(object)
 		end
 		if object._changed[key] then object._changed[key]:Fire() end
@@ -90,7 +97,7 @@ function Mock.new(deferredSignals)
 	function world.instance(class)
 		local object = setmetatable({ _props = { ClassName = class, Name = class },
 			_children = {}, _signals = {}, _changed = {}, _attributes = {}, _destroyed = false }, mt)
-		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantRemoving",
+		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
 			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat",
 			"Button1Down", "Button1Up", "Move", "WindowFocused", "WindowFocusReleased", "FocusLost" }) do
 			object._signals[name] = signal()
