@@ -1,4 +1,4 @@
--- AutoPainter Hands Free v8.2 Cadence Follow-up
+-- AutoPainter Hands Free v8.2 Public 150 ms
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
 -- NORMAL paints every protected province to one palette color.
@@ -21,7 +21,7 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
-	assert(existing.GetStats().Build=="8.2-followup","Close the older Hands Free panel; v8.2 must load its recovery and palette binding state")
+	assert(existing.GetStats().Build=="8.2-public150","Export your palette and close the older Hands Free panel before loading the 150 ms build")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
@@ -36,7 +36,8 @@ local CFG = {
 	EntryCooldowns = {0.25,0.40,0.65,1.0},
 	EntryExtraDwellMax = 0.10,
 	ActivationStrategy = "PER_TARGET", -- Native hold failed live; experimental ADAPTIVE/CONTINUOUS are explicit opt-in.
- NormalDownSpacingDefault = 0.226, -- User 40/40 native row P90 225.02 ms, rounded up; independent of dwell.
+ NormalDownSpacingDefault = 0.150, -- REQUESTED spacing: two public runs 78/80; actual ~158.33 ms, not a universal cooldown.
+ NormalCadenceSource = "PUBLIC_LIVE_2RUN_150MS_BASELINE",
 	TargetDwellDefault = 0.12,
 	TargetDwellMin = 0.12,
 	TargetDwellMax = 0.35,
@@ -222,7 +223,7 @@ local toolConnections, equippedMouseConnections = {}, {}
 local ownedInput, inputBusy, pendingRelease = nil, false, false
 local workerActive, releaseBlocked, starting = false, false, false
 local benchmark: any = {active=false,state="SETUP",detail="Not started",rows={}}
-local pacing: any = {interval=CFG.NormalDownSpacingDefault,source="USER_200MS_ROW_P90 (not minimum proven)",normal={},civil={}}
+local pacing: any = {interval=CFG.NormalDownSpacingDefault,source=CFG.NormalCadenceSource,normal={},civil={}}
 local finishClose, restorePending, restoringPalette = nil, false, false
 local focused = true
 local lifetimeConnections = {}
@@ -794,7 +795,7 @@ function palette.preflight()
  local shortage=math.max(0,selected-verified)
  return {PaletteGenerationState=state,NativeVerifiedThisSession=nativeVerified,CustomColorUIAvailable=palette.custom and palette.custom.state or "UNVERIFIED",GeneratedUniqueAssigned=0,TotalUniqueAssignmentCapacity=verified,CurrentlyBoundLiveControls=bound,SemanticKnownCapacity=known,VerifiedNativeCapacity=verified,GeneratedVerifiedCapacity=0,GeneratedColorCreation="PROVEN",GeneratedColorApplicationViaCurrentNativePath="UNVERIFIED",NativeApplicationCapacity=verified,GeneratedAdditionalRequired=shortage,SelectedCount=selected,Shortage=shortage,
   Message=string.format("Selected provinces: %d | Verified native unique learned colors: %d | Additional colors required: %d%s",selected,verified,shortage,
-   shortage>0 and " | RGB generation is proven; applying the additional RGB colors through the native tool is unverified. Use fewer provinces until that application path is established." or " | Unique assignments available")}
+   shortage>0 and " | BLOCKED: RGB generation is proven; additional province application needs a supported native RGB/hex/HSV control or working-color setter. Fixed swatches cannot select extra RGB colors; no direct-remote fallback is allowed." or " | Unique assignments available")}
 end
 
 function palette.topButton(point)
@@ -2610,8 +2611,9 @@ end
 local function liveToken(token)
 	return alive and running and workerToken==token and focused
 end
--- Cadence is independent of dwell. The initial floor uses the user's 40/40 row
--- (native spacing P90 225.02 ms), rounded upward; it is not a discovered minimum.
+-- Requested NORMAL cadence is independent of dwell and measured native spacing.
+-- Public evidence: 150 requested -> ~158.33 actual, 78/80 successes across two runs.
+-- Private-server benchmark suggestions never lower this production policy.
 function pacing.context()
  local upgrades=player:FindFirstChild("Upgrades");local level=upgrades and upgrades:FindFirstChild("EquippedPaintCooldown")
  local ok,value=pcall(function() return level and level.Value end)
@@ -2635,9 +2637,13 @@ function pacing.wait(entry,token,service)
  if benchmark.active or mode~="NORMAL" or service.strategy~="PER_TARGET" then return true end
  local context=pacing.context()
  if pacing.calibratedContext and context~=pacing.calibratedContext then
-  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source="UPGRADE_CHANGED: benchmark again"
+  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source=CFG.NormalCadenceSource.." (UPGRADE_CHANGED)"
  elseif pacing.calibratedGeneration and pacing.calibratedGeneration~=equippedGeneration then
-  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source="TOOL_SESSION_CHANGED: benchmark again"
+  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source=CFG.NormalCadenceSource.." (TOOL_SESSION_CHANGED)"
+ end
+ -- Defence against stale measured/private recommendations; Civil and benchmark bypass this gate.
+ if pacing.interval<CFG.NormalDownSpacingDefault then
+  pacing.interval=CFG.NormalDownSpacingDefault;pacing.source=CFG.NormalCadenceSource
  end
  local started=os.clock();local deadline=pacing.lastTool==activationTool and (pacing.lastDown or -math.huge)+pacing.interval or -math.huge
  while os.clock()<deadline do
@@ -2648,7 +2654,10 @@ function pacing.wait(entry,token,service)
  return liveToken(token) and shouldTarget(entry) and mouse.Target==entry.part
 end
 function pacing.stats()
- local r={NormalMinimumDownSpacingMs=pacing.interval*1000,NormalCadenceSource=pacing.source,NormalCadenceCalibratedContext=pacing.calibratedContext or "none",NormalCadenceToolGeneration=pacing.calibratedGeneration or "none"}
+ local r={NormalMinimumDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,
+  NormalRequestedDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,
+  NormalProductionFloorMs=CFG.NormalDownSpacingDefault*1000,NormalCadencePolicySource=CFG.NormalCadenceSource,
+  NormalCadenceSource=pacing.source,NormalCadenceCalibratedContext=pacing.calibratedContext or "none",NormalCadenceToolGeneration=pacing.calibratedGeneration or "none"}
  for name,values in pairs({Normal=pacing.normal,Civil=pacing.civil}) do
   local sum=0;for _,v in ipairs(values) do sum+=v end
   r[name.."ActualDownSpacingMeanMs"]=#values>0 and sum/#values or 0
@@ -3186,7 +3195,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v8.2 Cadence Follow-up"
+title.Text = "AutoPainter · HANDS FREE v8.2 Public 150 ms"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -3892,7 +3901,7 @@ function benchmark.resetCohort(excluded)
    local failures=0
    while benchmark.open() and benchmark.usable(entry) and not colorsMatch(entry.part.Color,benchmark.resetColor) do
     benchmark.detail=string.format("Resetting same provinces and replacement reserves: %d/%d\nNext interval: %d ms. No action required.",i-2,#benchmark.pool,benchmark.current.IntervalMs)
-    local record=benchmark.safeShot(entry,math.max(CFG.NormalDownSpacingDefault,pacing.interval),"RESETTING")
+    local record=benchmark.safeShot(entry,math.max(0.226,CFG.NormalDownSpacingDefault,pacing.interval),"RESETTING") -- Preserve the proven reset cadence; independent of NORMAL's new floor.
     if not record then break end
     benchmark.reset.Attempts+=1
     if record.Qualified then
@@ -4047,7 +4056,7 @@ function benchmark.report()
  table.insert(lines,"ObservedReliabilityKnee="..(knee or "not observed in available rows"))
  local best=complete and benchmark.recommend(99)
  table.insert(lines,"SuggestedProductionCadenceMs="..tostring(best and best.Seconds*1000 or "none").." (actual P90 of fastest >=99% qualified row; SUGGESTION ONLY, never applied)")
- table.insert(lines,"Production NORMAL cadence unchanged. 226 ms is the provisional baseline, NOT a proven minimum.")
+ table.insert(lines,string.format("Production NORMAL requested cadence: %.1f ms | floor %.1f ms | %s. Benchmark suggestions are never applied; actual spacing is measured separately, not guaranteed.",math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,CFG.NormalDownSpacingDefault*1000,CFG.NormalCadenceSource))
  table.insert(lines,"RESET PHASE ONLY — excluded from measured rows, production dwell and strategy")
  table.insert(lines,"ResetRGB="..rgbText(benchmark.resetColor).." | CurrentNativePaletteRGB="..rgbText(paletteColor()))
  for _,key in ipairs({"Phases","Attempts","Successes","Failures","Unqualified","AcquireFailures","PaletteMs","TotalMs"}) do table.insert(lines,"Reset"..key.."="..tostring(benchmark.reset and benchmark.reset[key] or 0)) end
@@ -4568,7 +4577,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
-			Version = 8.2, Build = "8.2-followup",
+			Version = 8.2, Build = "8.2-public150",
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

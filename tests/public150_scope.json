@@ -1,0 +1,71 @@
+{
+  "baseCommit": "9900a73e73aee8a5e703a27e29d4bc75ebc6dedf",
+  "baseSourceSHA256": "1912cc5c4ff12982c8f50ea41d3688bc0c89f558187ad6f651365ff36a319e34",
+  "allowedChanges": [
+    {
+      "before": "Cadence Follow-up",
+      "after": "Public 150 ms",
+      "count": 2
+    },
+    {
+      "before": "8.2-followup",
+      "after": "8.2-public150",
+      "count": 2
+    },
+    {
+      "before": "Close the older Hands Free panel; v8.2 must load its recovery and palette binding state",
+      "after": "Export your palette and close the older Hands Free panel before loading the 150 ms build",
+      "count": 1
+    },
+    {
+      "before": "NormalDownSpacingDefault = 0.226, -- User 40/40 native row P90 225.02 ms, rounded up; independent of dwell.",
+      "after": "NormalDownSpacingDefault = 0.150, -- REQUESTED spacing: two public runs 78/80; actual ~158.33 ms, not a universal cooldown.\n NormalCadenceSource = \"PUBLIC_LIVE_2RUN_150MS_BASELINE\",",
+      "count": 1
+    },
+    {
+      "before": "source=\"USER_200MS_ROW_P90 (not minimum proven)\"",
+      "after": "source=CFG.NormalCadenceSource",
+      "count": 1
+    },
+    {
+      "before": "-- Cadence is independent of dwell. The initial floor uses the user's 40/40 row\n-- (native spacing P90 225.02 ms), rounded upward; it is not a discovered minimum.",
+      "after": "-- Requested NORMAL cadence is independent of dwell and measured native spacing.\n-- Public evidence: 150 requested -> ~158.33 actual, 78/80 successes across two runs.\n-- Private-server benchmark suggestions never lower this production policy.",
+      "count": 1
+    },
+    {
+      "before": "pacing.source=\"UPGRADE_CHANGED: benchmark again\"",
+      "after": "pacing.source=CFG.NormalCadenceSource..\" (UPGRADE_CHANGED)\"",
+      "count": 1
+    },
+    {
+      "before": "pacing.source=\"TOOL_SESSION_CHANGED: benchmark again\"",
+      "after": "pacing.source=CFG.NormalCadenceSource..\" (TOOL_SESSION_CHANGED)\"",
+      "count": 1
+    },
+    {
+      "before": " local started=os.clock();local deadline=pacing.lastTool==activationTool",
+      "after": " -- Defence against stale measured/private recommendations; Civil and benchmark bypass this gate.\n if pacing.interval<CFG.NormalDownSpacingDefault then\n  pacing.interval=CFG.NormalDownSpacingDefault;pacing.source=CFG.NormalCadenceSource\n end\n local started=os.clock();local deadline=pacing.lastTool==activationTool",
+      "count": 1
+    },
+    {
+      "before": "local r={NormalMinimumDownSpacingMs=pacing.interval*1000,NormalCadenceSource=pacing.source,",
+      "after": "local r={NormalMinimumDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,\n  NormalRequestedDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,\n  NormalProductionFloorMs=CFG.NormalDownSpacingDefault*1000,NormalCadencePolicySource=CFG.NormalCadenceSource,\n  NormalCadenceSource=pacing.source,",
+      "count": 1
+    },
+    {
+      "before": "benchmark.safeShot(entry,math.max(CFG.NormalDownSpacingDefault,pacing.interval),\"RESETTING\")",
+      "after": "benchmark.safeShot(entry,math.max(0.226,CFG.NormalDownSpacingDefault,pacing.interval),\"RESETTING\") -- Preserve the proven reset cadence; independent of NORMAL's new floor.",
+      "count": 1
+    },
+    {
+      "before": "table.insert(lines,\"Production NORMAL cadence unchanged. 226 ms is the provisional baseline, NOT a proven minimum.\")",
+      "after": "table.insert(lines,string.format(\"Production NORMAL requested cadence: %.1f ms | floor %.1f ms | %s. Benchmark suggestions are never applied; actual spacing is measured separately, not guaranteed.\",math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,CFG.NormalDownSpacingDefault*1000,CFG.NormalCadenceSource))",
+      "count": 1
+    },
+    {
+      "before": " | RGB generation is proven; applying the additional RGB colors through the native tool is unverified. Use fewer provinces until that application path is established.",
+      "after": " | BLOCKED: RGB generation is proven; additional province application needs a supported native RGB/hex/HSV control or working-color setter. Fixed swatches cannot select extra RGB colors; no direct-remote fallback is allowed.",
+      "count": 1
+    }
+  ]
+}

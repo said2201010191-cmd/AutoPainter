@@ -19,10 +19,10 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."production uses PER_TARGET and a separate evidence-based native spacing gate",function()
   local w,a,p,t=setup(deferred,6,nil,.05);w.start(a,2)
   assert(a.GetStats().Dirty==0 and t.cfg.ActivationStrategy=="PER_TARGET")
-  local m=a.GetPerformanceStats();assert(m.GlobalDwellMs==120, "dwell="..tostring(m.GlobalDwellMs));assert(m.NormalMinimumDownSpacingMs==226 and m.Strategies.CONTINUOUS.Attempts==0)
+  local m=a.GetPerformanceStats();assert(m.GlobalDwellMs==120, "dwell="..tostring(m.GlobalDwellMs));assert(m.NormalMinimumDownSpacingMs==150 and m.Strategies.CONTINUOUS.Attempts==0)
   local downs={};for _,e in ipairs(w.activationEvents) do if e.kind=="down" then table.insert(downs,e.at) end end
-  assert(#downs==6, "downs="..#downs);for i=2,#downs do assert(downs[i]-downs[i-1]>=.225999) end
-  assert(m.NormalActualDownSpacingMinMs>=225.999 and m.SuccessfulPaints==6);clean(w,a)
+  assert(#downs==6, "downs="..#downs);for i=2,#downs do assert(downs[i]-downs[i-1]>=.149999) end
+  assert(m.NormalActualDownSpacingMinMs>=149.999 and m.SuccessfulPaints==6);clean(w,a)
  end)
  test(pre.."solo sweep resets same 30 provinces using real learned palette and preserves Civil assignments",function()
   local w,a,p,t=setup(deferred,30,128,.06);w.humanoid:EquipTool(w.bucket);w.flush();a.RerollCivilColors(42);local assigned={};for i,part in ipairs(p) do assigned[i]=a.GetTargetStats(part).AssignedCivilColorKey end
@@ -32,7 +32,7 @@ for _,deferred in ipairs({false,true}) do
   assert(b.reset.Phases==12 and b.reset.Successes==360 and b.reset.Attempts==360)
   assert(w.paletteClicks>=24 and a.GetPerformanceStats().Strategies.PER_TARGET.Attempts==0 and a.GetPerformanceStats().SuccessfulPaints==0)
   for i,part in ipairs(p) do assert(a.GetTargetStats(part).AssignedCivilColorKey==assigned[i]) end
-  assert(t.pacing.source=="USER_200MS_ROW_P90 (not minimum proven)" and t.pacing.interval==.226)
+  assert(t.pacing.source=="PUBLIC_LIVE_2RUN_150MS_BASELINE" and t.pacing.interval==.150)
   assert(w.networkAttempts==0 and w.violations==0);clean(w,a)
  end)
  test(pre.."Escape preserves partial row and Resume continues without discarding evidence",function()
@@ -65,7 +65,7 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p,t=setup(deferred,31,2,.06);w.humanoid:EquipTool(w.bucket);w.flush();w.cannotAcquire[p[1]]=true
   assert(a.StartPaintCooldownBenchmark({SamplesPerInterval=30}));w.step(11)
   local b=t.benchmark;assert(b.rows[1].Status=="COMPLETE" and b.rows[1].Unqualified==1 and b.rows[1].Successes==30,b.detail)
-  assert(b.active and not b.paused and t.pacing.interval==.226);clean(w,a)
+  assert(b.active and not b.paused and t.pacing.interval==.150);clean(w,a)
  end)
  test(pre.."RGB generation and native application have independent honest statuses",function()
   local w,a,p,t=setup(deferred,186,128,nil);local cap=a.GetCapacityPreflight();local m=a.GetPerformanceStats()
@@ -79,7 +79,7 @@ for _,deferred in ipairs({false,true}) do
   local paced=0
   for _,r in ipairs(a.GetServiceRecords()) do
    assert(r.Result=="SUCCESS" and r.NativeDownToCorrectionMs<80 and r.EffectivePaintWindowMs==120)
-   if r.CadenceWaitMs>100 then paced+=1;assert(r.AcquiredToCorrectMs>r.NativeDownToCorrectionMs+90) end
+   if r.CadenceWaitMs>50 then paced+=1;assert(r.AcquiredToCorrectMs>r.NativeDownToCorrectionMs+40) end
   end
   assert(paced>5 and a.GetPerformanceStats().GlobalDwellMs==120);clean(w,a)
  end)
@@ -171,7 +171,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."upgrade change invalidates measured cadence without touching dwell",function()
   local w,a,p,t=setup(deferred,3,nil,.05);t.pacing.interval=.08;t.pacing.calibratedContext="old level";t.pacing.source="mock prior sweep"
-  w.start(a,1);assert(t.pacing.interval==.226 and t.pacing.source:find("UPGRADE_CHANGED",1,true))
+  w.start(a,1);assert(t.pacing.interval==.150 and t.pacing.source:find("UPGRADE_CHANGED",1,true))
   assert(a.GetPerformanceStats().GlobalDwellMs==120 and a.GetStats().Dirty==0);clean(w,a)
  end)
  test(pre.."benchmark keeps mode and camera locked through the actual menu and API",function()

@@ -1,4 +1,4 @@
-# Current Hands Free build: v8.2 Autonomous Cooldown Benchmark
+# Current Hands Free build: v8.2 Public 150 ms
 
 Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Export your palette and close the older controller before loading. The normal PaintBucket remains the sole game paint sender: **AutoPainterRPCs=0**.
 
@@ -9,12 +9,12 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/Au
 Use the commit-pinned URL supplied with the release for reproducible tests/friend distribution. Anonymous raw loading requires a public file. No credentials, Studio, place edits or server installation.
 
 - **PER_TARGET default**, camera **LOCKED**. No automatic CONTINUOUS experiment. Existing dirty detection, fresh-attack priority, retry/fairness, native targeting and release protection remain.
-- Healthy NORMAL dwell remains **120 ms**. A separate **226 ms provisional native DOWN-spacing control** comes from the user's completed 40/40 row's measured P90. Waiting before DOWN does not train dwell. The benchmark reports suggestions only and never updates production cadence. The minimum reliable rate is still unknown.
+- Healthy NORMAL dwell remains **120 ms**. A separate **150 ms requested native DOWN-spacing floor** uses two public-server reports (78/80 successes; about 158.33 ms actual). The source is `PUBLIC_LIVE_2RUN_150MS_BASELINE`; private-server ~59 ms results never lower production policy. Waiting before DOWN does not train dwell. The benchmark reports suggestions only and never updates production cadence. This is a finite-sample public baseline, not a universal minimum cooldown.
 - **Paint Cooldown Benchmark** runs all 13 intervals asynchronously, using one unchanged measured color and **solo native resets of the same 30–40 provinces** between rows. Escape pauses, RESUME continues, focus/tool recovery retains evidence, and only explicit Cancel ends the run. Copy only exports collected data. Strict preflight refuses missing tool/palette/cohort conditions. Bad targets are quarantined/replaced without pausing; only global safety/cohort shortages pause. No manual recoloring is required.
 - Civil's native palette sequence, 128/128 semantic rebinding, unique assignments, shaped outlines, drag selection and deduplication are preserved.
 - **RGB creation is proven; extra RGB application through the current native tool is unverified.** The OG source trace and separate capability fields make this distinction explicit. 186 provinces require 58 additional applicable colors beyond 128 verified native swatches; no silent reuse or fake application capacity.
 
-See **[COOLDOWN_BENCHMARK_REVISION.md](COOLDOWN_BENCHMARK_REVISION.md)** for current setup, failure handling, report fields and validation (1,036 deterministic tests; 35 Luau files). **[GENERATED_COLOR_APPLICATION_BLOCKER.md](GENERATED_COLOR_APPLICATION_BLOCKER.md)** traces the OG application transport and states the exact capability missing for mandatory 129+ native RGB application. That feature remains incomplete. The benchmark still requires a full 13-row Roblox live run; no live minimum cadence is claimed. [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) and [V82_VALIDATION.md](V82_VALIDATION.md) describe the prior revision.
+See **[PUBLIC_150MS_REVISION.md](PUBLIC_150MS_REVISION.md)** for this revision, evidence, regression checks and the next NORMAL combat test. **[GENERATED_COLOR_APPLICATION_BLOCKER.md](GENERATED_COLOR_APPLICATION_BLOCKER.md)** traces the OG application transport and missing supported capability for mandatory 129+ native RGB application; that feature remains incomplete. Civil timing and the live-working benchmark are preserved, including the benchmark's independent 226 ms reset minimum. No new live speed claim is made. [COOLDOWN_BENCHMARK_REVISION.md](COOLDOWN_BENCHMARK_REVISION.md), [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) and [V82_VALIDATION.md](V82_VALIDATION.md) describe prior revisions.
 
 The material below describes historical entry points, not the current Hands Free build.
 

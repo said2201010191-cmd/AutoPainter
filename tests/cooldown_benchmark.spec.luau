@@ -35,7 +35,7 @@ for _,deferred in ipairs({false,true}) do
    assert(row.Records[2].DownAt<row.Records[1].ColorAt,"next DOWN waited for color")
   end
   assert(b.reset.Attempts==360 and b.reset.Successes==360 and b.reset.Unqualified==0 and b.reset.Phases==12)
-  assert(a.__test.pacing.interval==.226 and a.__test.pacing.source==source and a.GetPerformanceStats().GlobalDwellMs==120)
+  assert(a.__test.pacing.interval==.150 and a.__test.pacing.source==source and a.GetPerformanceStats().GlobalDwellMs==120)
   assert(a.GetPerformanceStats().Strategies.PER_TARGET.Attempts==0 and a.GetPerformanceStats().SuccessfulPaints==0)
   assert(w.networkAttempts==0 and w.violations==0 and not w.button);noPause(b);clean(w,a)
  end)
@@ -43,7 +43,7 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p,b=setup(deferred,30,nil);start(a);w.step(.15);assert(b.rows[1].ValidNoEffect==0)
   w.step(180);assert(b.state=="COMPLETE",b.detail)
   for _,row in ipairs(b.rows) do assert(row.QualifiedAttempts==30 and row.ValidNoEffect==30 and row.Successes==0 and row.SuccessPercentQualified==0) end
-  assert(a.GetPerformanceStats().GlobalDwellMs==120 and a.__test.pacing.interval==.226);noPause(b);clean(w,a)
+  assert(a.GetPerformanceStats().GlobalDwellMs==120 and a.__test.pacing.interval==.150);noPause(b);clean(w,a)
  end)
  for _,bad in ipairs({1,3}) do
   test(pre..bad.." unqualified targets are replaced without a pause and never retried",function()

@@ -73,7 +73,7 @@ for _,deferred in ipairs({false,true}) do
   assert(not w.button and m.ReleaseTimeouts==0 and w.networkAttempts==0);clean(w,a)
  end)
  test(pre.."continuous without a measured advantage falls back and exposes the actual chosen strategy",function()
-  local w,a,p,t=setup(deferred,25);t.pacing.interval=0 -- Isolate experimental throughput comparison from the conservative production cadence.
+  local w,a,p,t=setup(deferred,25);t.cfg.NormalDownSpacingDefault=0;t.pacing.interval=0 -- Isolate experimental throughput comparison from the conservative production cadence.
   a.SetActivationStrategy("CONTINUOUS");local slowHold=w.runService.Heartbeat:Connect(function() w.nativeInterval=t.policy.trial.State=="PROBING" and .14 or .04 end);w.start(a,6)
   local m=a.GetPerformanceStats();assert(m.NativeHoldMultiTargetProof and m.NativeHoldProbeAttempts==8,a.GetPerformanceReport())
   assert(m.NativeHoldExperimentState=="FALLBACK" and m.ActivationStrategy=="PER_TARGET" and m.ActivationStrategySetting=="CONTINUOUS",a.GetPerformanceReport())

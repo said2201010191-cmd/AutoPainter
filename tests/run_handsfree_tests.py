@@ -17,9 +17,19 @@ for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
 assert 'SetAttribute("PaintBucketColor"' not in source, 'Unverified palette attribute write'
-# Benchmark-only scope freeze: all production source, including pacing, Civil,
+# This revision permits only the reviewed cadence/identity/report changes.
+# Reverse that exact allowlist and compare the ENTIRE controller to main 9900a73.
+# Civil, input, target/dwell/scheduler and benchmark algorithms cannot drift silently.
+prior=source
+scope=json.loads((root/'tests/public150_scope.json').read_text())
+for change in reversed(scope['allowedChanges']):
+    assert prior.count(change['after'])==change['count'], 'Scope allowlist count changed'
+    prior=prior.replace(change['after'],change['before'])
+assert hashlib.sha256(prior.encode()).hexdigest()==scope['baseSourceSHA256'], 'Unreviewed production/benchmark change beyond public150 scope'
+print('Civil, native input/targeting/dwell/scheduler and benchmark match main 9900a73 after exact cadence/report allowlist',flush=True)
+# Historical benchmark-only scope freeze: all production source, including pacing, Civil,
 # generated-color diagnostics, camera/targeting and scheduler is byte-identical.
-frozen=source
+frozen=prior
 start=frozen.index('-- Isolated resumable diagnostic.')
 end=frozen.index('-- Explicit, bounded native-UI investigation.',start)
 frozen=frozen[:start]+frozen[end:]
@@ -29,7 +39,7 @@ frozen=re.sub(r'^ PausePaintCooldownBenchmark=.*\n','',frozen,flags=re.M)
 freeze=json.loads((root/'tests/benchmark_production_freeze.json').read_text())
 assert hashlib.sha256(frozen.encode()).hexdigest()==freeze['sha256'], 'Benchmark-only scope: production source changed'
 print('Entire production source matches e67a01b; benchmark-only implementation/bridges excepted',flush=True)
-for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau']:
+for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)
         f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(root/'tests'/suite).read_text())
