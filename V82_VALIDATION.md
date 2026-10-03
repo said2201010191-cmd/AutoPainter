@@ -1,45 +1,34 @@
-# v8.2 Live Fix validation
+# v8.2 Combat validation
 
-Base `17be81eab4fbd520b2bdbac5c2e390a64c51553b`; build `8.2-live-fix`. See [spec coverage](V82_SPEC_IMPLEMENTATION.md) for all 178 sections and the subsequent NORMAL 120 ms regression instruction.
+Base: `edcc47081643cf627a9d4e2eeba6eefaa3de577b`; build `8.2-combat`. See [COMBAT_REVISION.md](COMBAT_REVISION.md) for every section of the authoritative live-findings specification, the later isolated cooldown benchmark request, and exact live test procedures.
 
-| Suite/check | Result |
-|---|---|
-| Existing native controller |222 passed|
-| Locked diagnostics |246 passed|
-| Existing Hands Free |208 passed|
-| Existing v8.2 |106 passed|
-| New live-fix cases |64 passed|
-| **Total deterministic** |**846 passed**|
-| **Repository Luau compilation** |**32/32 passed**|
-| Normalized color matcher |Source hash unchanged|
-| Proven native cursor mover |Source hash unchanged, retaining prior v8.2 GUI obstruction gate|
-| Native palette click/settle/hold sequence |Source guard unchanged|
-| Active-runtime forbidden operation guard |No game RPC calls, hooks, signal firing, Mouse.Target assignment, PaintBucketColor write, require or decompile|
+| Suite / check | Result |
+|---|---:|
+| Historical native controller |222 passed|
+| Locked diagnostics, including custom-color source discovery |252 passed|
+| Existing Hands Free regressions |208 passed|
+| Existing v8.2 overload / palette / camera / selection |106 passed|
+| Existing live-fix regressions |64 passed|
+| New combat / guarded hold experiment |52 passed|
+| New isolated Paint Cooldown Benchmark |32 passed|
+| **Total deterministic tests** |**936 passed**|
+| **Every repository Luau file** |**34/34 compiled**|
 
-Run:
+Commands:
 
 ```sh
 python3 tests/run_tests.py /path/to/luau
 python3 tests/check_luau.py /path/to/luau-compile
 ```
 
-Reference scripts are preserved; Markdown-wrapped originals are compiled through temporary unwrapped copies only. Test lexical seams never ship in the runtime. Immediate and deferred signals are covered. Existing tests were updated where new requirements explicitly replaced old expectations (250 ms default, automatic SAFE camera movement, rectangular markers, initial START on an incomplete palette); their intended lifecycle/fairness checks remain.
+The compile checker unwraps Markdown fences only in temporary copies of historical reference scripts; original source files remain byte-identical. Compiler success is a syntax/bytecode check, not a Roblox-engine typecheck or a live executor/server guarantee. Source guards preserve the normalized matcher, native cursor mover (existing GUI obstruction check excepted), and native palette click/settle/hold sequence. Forbidden-operation checks reject game RPC calls, target assignment, hooks, signal firing, unverified PaintBucketColor writes, require and decompile in the active Hands Free runtime. The separate locked scanner performs source inspection only.
 
-New evidence includes:
+Changed old expectations are intentional: ADAPTIVE now starts PER_TARGET and runs the requested controlled experiment; NORMAL no longer accumulates per-entry dwell above the healthy baseline from misses; fresh NORMAL attacks clear stale hot delays. Their existing safety, fairness and cleanup scenarios remain.
 
-- 120 ms initialization/reset/mode/benchmark paths, healthy quick corrections, no global poisoning by unqualified or target-local no-effects.
-- More than 100 failed acquisitions with zero CFrame/Focus/CameraType/CameraSubject writes; Civil failures/palette work likewise remain locked.
-- Fresh-frame budget and target refresh recovery without camera; proof states, one move per dirty episode, exact four-property restore, rotated/elevated map guard, three-failure breaker, manual camera override, clean/overload suppression.
-- Legacy 128-color import/validation, persistent signatures,25 newly constructed palettes with randomized child creation order, all 128 bindings recovered automatically without further clicks or manual Validate. Delayed layout resolves without another index traversal.
-- Semantic assignments and capacity survive detach/mismatch/recreation. Duplicate identical discriminators remain ambiguous; START/REROLL cannot partially assign.
-- Verified chrome persistence, AUTO close without opener suppression, real global outage blocking, failed-opener suppression until actual state changes, current-color work during outage, generation races.
-- Actual-geometry Highlight adornment without province property writes; selection/cleanup regressions remain.
-- Both specified native picker paths exercised through explicit GUI input; visible UI changes recorded but no invented generated capacity or paint. Focus cancellation releases and does not arm resume.
+Immediate and deferred event delivery both pass. New coverage includes fresh/group episode reset; wrong→wrong coalescing; active combat versus stale misses; hard aging; new attacks during UP; successful native retained transfers; no hold benefit/one-shot tool fallback; bounded experiment evidence and per-session decision; post-confirmation reliability loss; STOP/focus/tool/mode loss; duplicate input recovery; real mouse-move release; complete local timing chain; excluded dwell samples; zero locked camera writes; 128-color recreation and stable Civil identity; expanded alternate-UI inventory with private-text omission; dormant deterministic native-excluding colors; shape/drag/dedup; and locked scanner source coverage/failures.
 
-Final review additionally repaired an isolated missing swatch being incorrectly treated as a global outage, false reopening after an opener failure with unchanged prerequisites, stale deferred GUI indexing during explicit picker discovery, delayed layout binding, root-versus-swatch visibility diagnostics, and exact CameraSubject restoration. The healthy native paint path remains unchanged except the requested 120 ms default/state reset.
+The benchmark suite runs all 13 actual production intervals with 30 distinct targets per interval, asynchronous late colors, external fixture replenishment between intervals, and unchanged color. It proves another DOWN can precede the previous color result. It tests final no-effect classification, no timing-model training, insufficient-target waiting, 30–50 bounds, single-worker Civil pause/restore, every safety interruption, real UI start/copy/cancel wiring, API failure, slow UP and delayed API dispatch versus native DOWN timestamps. Mock external color writes belong only to the test fixture, never the shipped runtime.
 
-**Not live-proven:** the new camera lock/rendering, automatic 128/128 rebinding, NORMAL long-run reliability and real corrections/sec. Older live evidence belongs to the user. Mock timing cannot predict Roblox server/replication/GUI behavior. Follow the exact NORMAL/Civil/10-minute camera procedures in [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md).
+**No new live claims:** user-reported earlier NORMAL/Civil performance and palette persistence are accepted historical evidence. This build's sustained corrections/sec, actual hold-and-move effectiveness, input cadence at +100% Paint Speed, queue improvement and rendering behavior require Roblox tests. No live benchmark was run by the agent.
 
-**Conditional work not enabled:** arbitrary generated colors, guided RGB field mapping and the complete custom-color province verification adapter. Two real UI candidate paths have explicit inspection/probe controls; their RGB input/confirmation contract is still unverified. A live window was visible, but the desktop interaction did not complete as the app state changed. The script reports UNVERIFIED and exact native shortage, never bypasses this missing capability.
-
-Highlight rendering is subject to Roblox's 255 simultaneous effects limit and spatial camera occupancy is conservatively checked with bounding boxes. Compiler success is not a clean Roblox engine typecheck; standalone analyzer lacks Roblox/executor definitions. Local ColorChanged timing excludes server replication latency; matching paint can also be external and is not a server acknowledgement.
+**Conditional feature not enabled:** generated native colors beyond the learned palette. OG arbitrary RGB was applied by direct RPC, and both known Picker candidates were live-rejected by the user. Broader UI and locked source discovery now covers alternate routes, but no actual arbitrary-RGB native writer/confirmation contract is available for end-to-end verification. Generated verified capacity stays 0; exact shortage is reported. A pure dormant generator is not advertised as paint capability.

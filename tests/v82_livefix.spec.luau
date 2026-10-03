@@ -55,7 +55,7 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p,t=setup(deferred,20);w.cannotAcquire[p[1]]=true;w.stalled={[p[2]]=true};w.start(a,8)
   assert(a.GetPerformanceStats().GlobalDwellMs==120)
   for i=3,20 do assert(a.ColorsMatch(p[i].Color,w.color)) end
-  assert(t.entry(p[2]).ExtraDwell>0 and t.entry(p[3]).ExtraDwell==0)
+  assert(t.entry(p[2]).ExtraDwell==0 and t.entry(p[2]).ConsecutiveValidNoEffects>0 and t.entry(p[3]).ExtraDwell==0)
   for _,r in ipairs(a.GetServiceRecords()) do assert(r.GlobalDwellBefore==120 and r.GlobalDwellAfter==120) end
   clean(w,a)
  end)

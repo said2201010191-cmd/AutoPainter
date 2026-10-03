@@ -52,7 +52,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 7 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 8 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -428,7 +428,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 7)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 8)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -1205,7 +1205,7 @@ end
 
 local function analyzePaintSource(source, id, path, checkpoint)
 	local sections, blocks, counts = {}, {}, { blocks = 0 }
-	for i = 1, 7 do sections[i] = {} end
+	for i = 1, 8 do sections[i] = {} end
 		local terms = { "PaintPart", "ServerControls", "ClientControls", "InvokeServer", "FireServer", "InvokeClient", "FireClient", "FireAllClients",
 			"Province", "Provinces", "PaintBucket", "PaintBucketColor", "Peace", "War", "IsBannable", "RemotesReady",
 			"admin", "developer", "private server", "test mode", "batch", "multi", "ownership", "capture", "paint", "color" }
@@ -1214,6 +1214,7 @@ local function analyzePaintSource(source, id, path, checkpoint)
 			[4] = { "admin", "developer", "privateserver", "private server", "isstudio", "testmode", "test mode", "vipserver" },
 			[5] = { "batch", "multi", "targets", "parts", "ipairs", "pairs" },
 			[6] = { "part", "target", "selected", "stored", "mouse", "instance" },
+			[8] = { "paintbucketcolor", "fromrgb", "fromhsv", "fromhex", "tohsv", "tohex", "colorpicker", "colourpicker", "customcolor", "customcolour", "textbox", "focuslost", "saturation", "hue", "hex", "slider", "colour", "rgb", "hsv" },
 			[7] = { "permission", "capability", "token", "nonce", "session", "isbannable", "remotesready", "getattribute", "onclientinvoke", "onclientevent" },
 		}
 		for i, term in ipairs(terms) do terms[i] = string.lower(term) end
@@ -1315,7 +1316,7 @@ local function analyzePaintSource(source, id, path, checkpoint)
 				if not checkpoint() then return nil end
 			end
 			-- Category indexes reference the same blocks once each: compact, conservative candidates.
-			for section = 3, 7 do
+			for section = 3, 8 do
 				local categoryBlocks = {}
 				for number = 1, #lines do
 					if hits[number] and hits[number][section] and not categoryBlocks[refs[number]] then
@@ -1731,7 +1732,7 @@ function api.GetFullPaintPathsReport()
 		"An external decompiler that blocks the whole VM cannot be preempted by this cooperative watchdog.",
 		"SCRIPT/MODULE MANIFEST" }
 	local sections, blocks, gaps = {}, {}, table.clone(run.gaps)
-	for i = 1, 7 do sections[i] = {} end
+	for i = 1, 8 do sections[i] = {} end
 	for _, row in ipairs(run.rows) do
 		local record = row.record
 		local status = record and record.status or (run.cancelled and "SKIPPED_CANCELLED" or "PENDING")
@@ -1741,7 +1742,7 @@ function api.GetFullPaintPathsReport()
 			if status ~= "TEXT_RETURNED_UNVERIFIED" then table.insert(gaps, row.path .. " [" .. row.class .. "] " .. status .. " " .. ((record.detail or ""):gsub("[%c]", " "))) end
 			if record.late then table.insert(output, "Late decompile result recovered from cache.") end
 			if record.analysis then
-				for i = 1, 7 do for _, line in ipairs(record.analysis.sections[i]) do table.insert(sections[i], line) end end
+				for i = 1, 8 do for _, line in ipairs(record.analysis.sections[i]) do table.insert(sections[i], line) end end
 				for _, block in ipairs(record.analysis.blocks) do table.insert(blocks, block) end
 			elseif status == "TEXT_RETURNED_UNVERIFIED" then table.insert(gaps, row.path .. ": text cached; context indexing incomplete, rerun to resume.") end
 		end
@@ -1760,6 +1761,10 @@ function api.GetFullPaintPathsReport()
 	table.insert(output, "\n9. FINAL SUPPORTED CLIENT ROUTES")
 	table.insert(output, "A stored/off-cursor route: UNRESOLVED. B batch route: UNRESOLVED. C ordinary-client admin/private/test route: UNRESOLVED. D alternate paint remote: UNRESOLVED.")
 	table.insert(output, "E coverage: see exact manifest, pending/read-failure/timeout counts and root exclusions. Text returned is unverified decompiler output, not live validation.")
+	table.insert(output, "\n10. NATIVE CUSTOM-COLOR WRITERS / UI PATHS")
+ table.insert(output, #sections[8]>0 and table.concat(sections[8],"\n") or "No indexed custom-color writer/UI text; inspect read gaps before drawing a conclusion.")
+ table.insert(output,"Trace each candidate from actual visible UI input to PaintBucketColor and the native bucket color reader. fromRGB/fromHSV/SetAttribute text alone is NOT a supported native setter. Do not execute/require sources or invoke their functions.")
+ table.insert(output,"Previously rejected by user live tests: PaletteGui.ColorPallet.PaintSGui.Picker and PaletteGui.ColorPallet.ColorTitle.ColorPicker. Investigate other UI/controller/module writers; no arbitrary-RGB capacity inferred.")
 	table.insert(output, "\nSHARED MERGED CONTEXT BLOCKS")
 	table.insert(output, "8 lines before / 12 after; overlapping/adjacent windows merge per script. Source appears once; indexes reference script-specific block IDs.")
 	table.insert(output, table.concat(blocks, "\n\n"))

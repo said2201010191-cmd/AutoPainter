@@ -1,3 +1,9 @@
+# Current release guidance
+
+Use [COMBAT_REVISION.md](COMBAT_REVISION.md) for v8.2 Combat, the guarded hold trial, fixed-cadence benchmark and generated-color findings. The previous revision notes below are historical; their default PER_TARGET and NORMAL extra-dwell description has been superseded.
+
+---
+
 # Hands Free v8.2 Live Fix
 
 Build `8.2-live-fix`, based on v8.2 commit `17be81eab4fbd520b2bdbac5c2e390a64c51553b`. The native PaintBucket remains the sole game paint sender. The controller uses genuine PlayerMouse.Target, province Color, native palette buttons and VirtualInput. It sends no game RPCs and writes no PaintBucketColor attribute. No Studio, place changes or credentials are required.

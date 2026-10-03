@@ -17,7 +17,7 @@ for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
 assert 'SetAttribute("PaintBucketColor"' not in source, 'Unverified palette attribute write'
-for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau']:
+for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)
         f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(root/'tests'/suite).read_text())

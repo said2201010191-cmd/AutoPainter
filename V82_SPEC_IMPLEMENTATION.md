@@ -1,3 +1,9 @@
+# Latest authoritative live-findings specification
+
+[COMBAT_REVISION.md](COMBAT_REVISION.md) maps every section of `AutoPainter_v8.2_Full_Live_Findings_For_Astra.md` and the later Paint Cooldown Benchmark request. Those replace older default activation and hot-target/miss-penalty policies. The 178-section implementation record below is retained as historical coverage.
+
+---
+
 # v8.2 specification implementation record
 
 Current base: `17be81eab4fbd520b2bdbac5c2e390a64c51553b` (v8.2). Specification: user-supplied `AutoPainter_v8.2_Astra_EVERYTHING_FINAL_LIVE_FIX.md`, all 178 numbered sections. Sections1–107 are text-identical to the earlier spec apart from a trailing separator. Newest sections and the subsequent NORMAL 120 ms instruction override older camera/default policies. The file is treated as requirements because the user explicitly requested full implementation.

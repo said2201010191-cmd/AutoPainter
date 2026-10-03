@@ -518,3 +518,38 @@ for _, deferred in ipairs({ false, true }) do
 	end)
 
 end
+
+-- Custom-color investigation reuses the exact locked, bounded game-only scanner.
+for _, deferred in ipairs({ false, true }) do
+ local prefix=(deferred and "deferred " or "immediate ").."custom-color source: "
+ test(prefix.."indexes RGB writers and UI handlers outside both rejected palette candidates",function()
+  local world, api, roots, sources, reads=fullFixture(deferred)
+  local writer=child(world,"LocalScript","NativeTintEditor",roots.PlayerScripts)
+  local module=child(world,"ModuleScript","ColorMath",roots.ReplicatedStorage)
+  sources[writer]=[[local box = PlayerGui.Settings.Tint.HexInput
+box.FocusLost:Connect(function(enter)
+ if enter then selected = Color3.fromHex(box.Text) end
+end)
+-- Hypothetical mock source only; not a demonstrated real-game capability.]]
+  sources[module]=[[return function(h,s,v) return Color3.fromHSV(h,s,v) end]]
+  local first=#world.writeLog;local report=scanReport(world,api,"GameOnly")
+  contains(report,"10. NATIVE CUSTOM-COLOR WRITERS / UI PATHS");contains(report,writer:GetFullName());contains(report,"fromHex");contains(report,"FocusLost");contains(report,"fromHSV")
+  contains(report,"NOT a supported native setter");contains(report,"Previously rejected by user live tests")
+  noGameWrites(world,first);noTraffic(world,api);api.Destroy()
+ end)
+ test(prefix.."read failures remain explicit and cannot prove custom UI absent",function()
+  local world,api,roots,sources=fullFixture(deferred)
+  local script=child(world,"LocalScript","ColorController",roots.PlayerGui)
+  world.env.decompile=function(object) if object==script then error("source unavailable") end;return "return {}" end
+  local report=scanReport(world,api,"GameOnly");contains(report,"ReadFailures=1");contains(report,script:GetFullName());contains(report,"never prove absence")
+  noTraffic(world,api);api.Destroy()
+ end)
+ test(prefix.."copying new source findings never starts extra inspection",function()
+  local world,api,roots,sources,reads=fullFixture(deferred)
+  local script=child(world,"ModuleScript","HueSelector",roots.ReplicatedStorage);sources[script]="local hue, saturation = 0.2, 0.8; return hue"
+  scanReport(world,api,"GameOnly");local count=#reads;local snapshot
+  world.env.setclipboard=function(text) snapshot=text end
+  assert(api.CopyCurrentReport());assert(#reads==count);contains(snapshot,"10. NATIVE CUSTOM-COLOR WRITERS / UI PATHS")
+  noTraffic(world,api);api.Destroy()
+ end)
+end

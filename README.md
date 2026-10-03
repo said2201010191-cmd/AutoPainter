@@ -1,24 +1,22 @@
-# Current Hands Free build: v8.2 Live Fix
+# Current Hands Free build: v8.2 Combat
 
-Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Close the older panel first. The update preserves the genuine mouse/native PaintBucket input path and sends zero game RPCs.
+Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Export your palette and close the older panel first. The controller uses the normal PaintBucket's genuine input path and sends **zero game RPCs**.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Use the commit-pinned loader from the release response for repeatable testing/friend distribution. Public raw loading requires a public repository. No credentials, Studio/project access or server installation.
+Use the commit-pinned URL supplied with the release for repeatable tests/friend distribution. Anonymous raw loading requires a public file. No credentials, Studio, place edits or server installation.
 
-- **NORMAL defaults/resets to 120 ms**; success releases immediately. Qualified no-effect penalties remain entry-local.
-- **Camera movement defaults LOCKED.** SAFE aliases LOCKED; zero automatic camera property writes. AGGRESSIVE is explicit opt-in, cursor-proof gated, bounded and circuit-broken.
-- Native validation persists disambiguation across GUI generations. READY means the full set rebound; no silent 128-to-118 downgrade. AUTO close requires a verified live opener; outages block repeated failing work until access changes.
-- Protected/hover markers are actual province silhouettes, not boxes. Palette/native paint click timings remain guarded against change.
-- Both reported custom-picker candidates have explicit UI-only probe buttons and a copy report. **Generated RGB colors remain conditional/unverified; no invented capacity or color reuse.**
+- NORMAL keeps a **120 ms healthy baseline**; no-effect misses no longer accumulate extra NORMAL dwell. Fresh clean→dirty episodes clear stale penalties; active fighting is separated from stale failing work.
+- **ADAPTIVE begins PER_TARGET**, then conducts a bounded genuine hold-and-move experiment when evidence permits. CONTINUOUS must demonstrate real retained-target corrections and a throughput advantage or fall back. Camera remains **LOCKED**.
+- **Paint Cooldown Benchmark** pauses the normal scheduler and tests all 13 requested DOWN intervals (200 through 50 ms), with 40 distinct dirty provinces per interval by default, asynchronous color observations and measured native DOWN spacing. Copy/report and Cancel are separate actions. It never invents dirty work or trains normal timing.
+- Civil's guarded native palette click sequence and full semantic rebinding are preserved. Province-shaped outlines, drag selection and deduplication remain.
+- Broader native UI/client-source inspection and a dormant OG-style generator are included. **Generated verified capacity remains 0** without a proven native custom-color path; 128 learned native colors still means 128 unique Civil assignments.
 
-**846 deterministic tests pass; 32/32 Luau files compile. New behavior remains live-unverified until the user tests it.** Prior healthy NORMAL/Civil evidence was user-reported for earlier builds.
+See **[COMBAT_REVISION.md](COMBAT_REVISION.md)** for all specification sections, exact live tests, benchmark setup, new report fields and the generated-color investigation. **[V82_VALIDATION.md](V82_VALIDATION.md)** lists deterministic results. New runtime behavior and live speed remain unverified until the user tests this build.
 
-Read [ACTIVATION_GUIDE.md](ACTIVATION_GUIDE.md) for exact live tests, report fields and remaining game-dependent work; [V82_SPEC_IMPLEMENTATION.md](V82_SPEC_IMPLEMENTATION.md) maps all 178 sections; [V82_VALIDATION.md](V82_VALIDATION.md) records tests and limitations. Export your old profile, import it, validate once, then export the improved semantic profile. Choose NORMAL's desired native color again after validation.
-
-The historical native/diagnostic entry points below remain unchanged and are separate from Hands Free v8.2.
+The material below describes historical entry points, not the current Hands Free build.
 
 ---
 

@@ -1,3 +1,9 @@
+# Current custom-color investigation extension
+
+The locked game-only scanner now also emits **10. NATIVE CUSTOM-COLOR WRITERS / UI PATHS**, covering PaintBucketColor, RGB/HSV/hex conversion, custom color/picker/slider/TextBox/FocusLost/hue/saturation routes anywhere in readable game client code. Existing bounded decompile watchdog, cancellation, result cache and coverage/read-failure reporting are preserved. Source matches identify candidates, not verified capability. See [COMBAT_REVISION.md](COMBAT_REVISION.md) for evidence already examined and the still-missing native arbitrary-RGB contract.
+
+---
+
 # Collector location after the native-input revision
 
 The collector now lives in **AutoPainterDiagnostics.luau** and LoaderDiagnostic.luau fetches that file. It is permanently locked even if false diagnostic options are passed. Its direct game-remote transport was removed. The native-input runtime has a separate entry point, AutoPainterFinal.luau. Close one panel before opening the other.
