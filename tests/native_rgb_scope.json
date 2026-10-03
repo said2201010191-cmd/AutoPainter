@@ -1,0 +1,190 @@
+{
+  "baseSourceSHA256": "ea83bb6dd1e3263cfd11e5cf10810e141cd78bc0f2f0765c5e23998a745842f2",
+  "allowedChanges": [
+    {
+      "before": "8.2-public150",
+      "after": "8.2-native-rgb",
+      "count": 2
+    },
+    {
+      "before": "v8.2 Public 150 ms",
+      "after": "v8.2 Native RGB",
+      "count": 2
+    },
+    {
+      "before": "before loading the 150 ms build",
+      "after": "before loading the Native RGB build",
+      "count": 1
+    },
+    {
+      "before": "function palette.preflight()",
+      "after": "-- Source-traced 2026-10-03: native LocalScript reloads its working color on Equipped.\n-- This is NOT an attribute-only shortcut. Every generated transaction proves a new\n-- native equip/GUI generation and native working-color echoes before any DOWN.\n-- Only a real target-color result records generated application evidence.\npalette.generated={minimumNative=128,assigned=0,attempts=0,prepared=0,failures=0,exact=0,normalized=0,\n status=\"SOURCE_TRACED_NOT_LIVE_VERIFIED\",current=nil,records={},reload=nil}\nfunction palette.generatedEnabled()\n return #palette.semanticAvailable()>=palette.generated.minimumNative\nend\nfunction palette.generatedCounts()\n local assigned,observed=0,0\n for _,entry in ipairs(entries) do\n  if entry.civilControl and entry.civilControl.generated then\n   assigned+=1;if entry.generatedObservedKey==entry.civilKey then observed+=1 end\n  end\n end\n return assigned,observed\nend\nfunction palette.generatedOwnsRemoval(object)\n local r=palette.generated.reload\n return r and r.tool==object and r.character==player.Character and r.token==workerToken\n  and v7.lock==r.entry and mode==\"CIVIL WAR\" and alive and running\nend\nfunction palette.preflight()",
+      "count": 1
+    },
+    {
+      "before": "local shortage=math.max(0,selected-verified)\n return {",
+      "after": "local shortage=math.max(0,selected-verified)\n local enabled=palette.generatedEnabled();local assigned,observed=palette.generatedCounts()\n return {",
+      "count": 1
+    },
+    {
+      "before": "GeneratedUniqueAssigned=0,TotalUniqueAssignmentCapacity=verified",
+      "after": "GeneratedUniqueAssigned=assigned,TotalUniqueAssignmentCapacity=enabled and math.max(verified,selected) or verified",
+      "count": 1
+    },
+    {
+      "before": "GeneratedColorApplicationViaCurrentNativePath=\"UNVERIFIED\",NativeApplicationCapacity=verified",
+      "after": "GeneratedColorApplicationViaCurrentNativePath=palette.generated.status,GeneratedAssignmentEnabled=enabled,GeneratedObservedProvinces=observed,NativeApplicationCapacity=verified",
+      "count": 1
+    },
+    {
+      "before": "SelectedCount=selected,Shortage=shortage,",
+      "after": "SelectedCount=selected,Shortage=enabled and 0 or shortage,",
+      "count": 1
+    },
+    {
+      "before": "shortage>0 and \" | BLOCKED: RGB generation is proven; additional province application needs a supported native RGB/hex/HSV control or working-color setter. Fixed swatches cannot select extra RGB colors; no direct-remote fallback is allowed.\" or \" | Unique assignments available\"",
+      "after": "shortage>0 and (enabled and \" | Extra RGB uses source-traced native Equip reload; application remains unverified until matching province results.\" or \" | Learn/restore 128 verified native colors before enabling generated overflow.\") or \" | Unique assignments available\"",
+      "count": 1
+    },
+    {
+      "before": "local item=palette.find(entry.civilColor)\n   if not item or used[item.key]",
+      "after": "local item=entry.civilControl and entry.civilControl.generated and entry.civilControl or palette.find(entry.civilColor)\n   if not item or used[item.key]",
+      "count": 1
+    },
+    {
+      "before": "if #all<#missing then return false,string.format(\"Civil capacity: %d unique learned colors; selected: %d. Reuse is disabled.\",#available,#entries) end",
+      "after": "local overflow=math.max(0,#missing-#all)\n if overflow>0 and not palette.generatedEnabled() then return false,\"Learn 128 native colors before generated overflow\" end",
+      "count": 1
+    },
+    {
+      "before": "local assignments={}\n for _,entry in ipairs(missing) do",
+      "after": "local assignments={}\n -- Native colors are exhausted first. Generated colors avoid every known native\n -- color and every retained/generated assignment under the shared RGB matcher.\n local generatedUsed={};for _,item in ipairs(palette.controls) do if item.color then table.insert(generatedUsed,item.color) end end\n for _,item in ipairs(chosen) do table.insert(generatedUsed,item.color) end\n for _,entry in ipairs(missing) do\n  if #filtered==0 then\n   local picked=nil\n   for _=1,4096 do\n    local c=Color3.fromRGB(random(256)-1,random(256)-1,random(256)-1);local unique=true\n    for _,old in ipairs(generatedUsed) do if colorsMatch(old,c) then unique=false;break end end\n    if unique then picked=c;break end\n   end\n   if not picked then return false,\"Bounded generated RGB search exhausted; assignments unchanged\" end\n   table.insert(generatedUsed,picked)\n   assignments[entry]={generated=true,color=picked,key=colorKey(picked),index=0,\n    signature={Name=\"Generated RGB \"..rgbText(picked)},path=\"PaintBucketColor -> native Tool.Equipped -> native Mouse.Button1Down\"}\n   continue\n  end",
+      "count": 1
+    },
+    {
+      "before": "for entry,item in pairs(assignments) do entry.civilColor=item.color;entry.civilKey=item.key;entry.civilControl=item end",
+      "after": "for entry,item in pairs(assignments) do entry.civilColor=item.color;entry.civilKey=item.key;entry.civilControl=item;entry.generatedObservedKey=nil end",
+      "count": 1
+    },
+    {
+      "before": "local semantic=#palette.semanticAvailable()\n return {",
+      "after": "local semantic=#palette.semanticAvailable()\n local generatedAssigned,generatedObserved=palette.generatedCounts()\n return {",
+      "count": 1
+    },
+    {
+      "before": "GeneratedColorApplicationViaCurrentNativePath=\"UNVERIFIED\",NativeApplicationCapacity=semantic",
+      "after": "GeneratedColorApplicationViaCurrentNativePath=palette.generated.status,GeneratedObservedProvinces=generatedObserved,GeneratedPreparationAttempts=palette.generated.attempts,GeneratedPreparations=palette.generated.prepared,GeneratedPreparationFailures=palette.generated.failures,GeneratedExactResults=palette.generated.exact,GeneratedNormalizedResults=palette.generated.normalized,NativeApplicationCapacity=semantic",
+      "count": 1
+    },
+    {
+      "before": "Shortage=math.max(0,#entries-semantic),SelectedCount=#entries",
+      "after": "Shortage=palette.generatedEnabled() and 0 or math.max(0,#entries-semantic),SelectedCount=#entries",
+      "count": 1
+    },
+    {
+      "before": "GeneratedColorsAssigned=0,",
+      "after": "GeneratedColorsAssigned=generatedAssigned,",
+      "count": 1
+    },
+    {
+      "before": "CapacityAvailable=semantic>=#entries,",
+      "after": "CapacityAvailable=semantic>=#entries or palette.generatedEnabled(),",
+      "count": 1
+    },
+    {
+      "before": "function palette.prepare(entry,token,service)",
+      "after": "function palette.prepareGenerated(entry,token,service)\n local g=palette.generated;local tool=activationTool;local character=player.Character;local hum=humanoid()\n local trace={EntryId=entry.id,Position=tostring(entry.part.Position),IntendedRGB=rgbText(entry.civilColor),\n  AttributeBefore=rgbText(paletteColor()),Step=\"RELEASE\",Result=\"PENDING\",NativeEchoes=false,ProvinceObserved=false}\n g.current=trace;g.attempts+=1\n if #g.records>=20 then table.remove(g.records,1) end;table.insert(g.records,trace)\n service.generatedTrace=trace;service.attributeBefore=paletteColor();service.previousIntended=v7.previousIntended\n v7.previousIntended=entry.civilColor\n local function valid()\n  return alive and running and workerToken==token and focused and player.Character==character\n   and v7.lock==entry and entry.active and validProvince(entry.part) and hum and hum.Health>0\n   and tool and tool.Parent and (tool.Parent==character or tool.Parent==backpack)\n end\n local function waitFor(predicate,timeout)\n  local deadline=os.clock()+timeout\n  repeat\n   if not valid() then return false end\n   if predicate() then return true end\n   RunService.Heartbeat:Wait()\n  until os.clock()>=deadline\n  return valid() and predicate()\n end\n local began=os.clock()\n local ok,why=pcall(function()\n  if not valid() or not shouldTarget(entry) or not tool.Enabled then error(\"Generated preparation precondition lost\") end\n  if not settleRelease() or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then error(\"Generated preparation requires resolved Mouse1 UP\") end\n  if not valid() or not shouldTarget(entry) then error(\"Generated transaction canceled before color preparation\") end\n  local oldGui=playerGui:FindFirstChild(\"PaletteGui\")\n  local generation=equippedGeneration\n  g.reload={tool=tool,entry=entry,character=character,token=token}\n  trace.Step=\"UNEQUIP\"\n  hum:UnequipTools()\n  if not waitFor(function() return tool.Parent==backpack end,0.6) then error(\"Native tool did not unequip\") end\n  -- Drain the native Unequipped callback before re-equipping; no input is held.\n  RunService.Heartbeat:Wait()\n  if not valid() or tool.Parent~=backpack then error(\"Tool/focus changed after unequip\") end\n  trace.Step=\"SET_NATIVE_EQUIP_STATE\"\n  player:SetAttribute(\"PaintBucketColor\",entry.civilColor)\n  trace.AttributeAfterSet=rgbText(paletteColor());service.attributeAfterSet=paletteColor()\n  if not colorsMatch(paletteColor(),entry.civilColor) then error(\"Native equip state rejected intended RGB\") end\n  trace.Step=\"EQUIP\"\n  hum:EquipTool(tool)\n  if not waitFor(function() return tool.Parent==character and equippedGeneration>generation end,0.6) then error(\"Native Equipped event not observed\") end\n  trace.Step=\"VERIFY_NATIVE_WORKING_COLOR_ECHOES\"\n  if not waitFor(function()\n   local guiNow=playerGui:FindFirstChild(\"PaletteGui\")\n   local pallet=guiNow and guiNow:FindFirstChild(\"ColorPallet\")\n   local title=pallet and pallet:FindFirstChild(\"ColorTitle\")\n   local picker=title and title:FindFirstChild(\"ColorPicker\")\n   local box=playerGui:FindFirstChild(\"PaintBucketSelectionBox\")\n   local line=playerGui:FindFirstChild(\"PaintBucketLineHandle\")\n   return guiNow and guiNow~=oldGui and picker and box and line\n    and colorsMatch(paletteColor(),entry.civilColor)\n    and colorsMatch(box.Color3,entry.civilColor) and colorsMatch(line.Color3,entry.civilColor)\n    and colorsMatch(picker.BackgroundColor3,entry.civilColor)\n  end,0.6) then error(\"Equipped occurred but native working-color echoes/new PaletteGui did not match; no paint input sent\") end\n  trace.NativeEchoes=true;trace.EquippedGeneration=equippedGeneration\n  trace.AttributeAfterEquip=rgbText(paletteColor())\n  service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()\n  service.paletteProof=\"Source-traced native Equipped reload + new PaletteGui/SelectionBox/LineHandle echoes; province result still required\"\n  service.paletteUISelection=\"Native Equip state reload (generated RGB)\"\n  -- This is an intentional session transition inside the existing exclusive worker.\n  service.generation=equippedGeneration\n  palette.rebindAll(\"Generated RGB native re-equip\")\n end)\n g.reload=nil\n trace.PreparationMs=(os.clock()-began)*1000\n if not ok then\n  trace.Step=\"FAILED\";trace.Result=tostring(why);g.failures+=1\n  return false,trace.Result\n end\n trace.Step=\"COMPLETE\";trace.Result=\"PREPARED_NOT_PAINT_PROOF\";g.prepared+=1\n return true\nend\nfunction palette.generatedResult(service)\n local t=service.generatedTrace;if not t then return end\n t.ActualRGB=rgbText(service.entry.part.Color);t.NativeDownObserved=service.qualified==true\n t.RealTargetAcquired=service.acquiredAt~=nil;t.Result=service.result;t.ProvinceObserved=service.success==true\n if service.success and service.qualified and t.NativeEchoes and not colorsMatch(service.actualBefore,service.target) then\n  service.entry.generatedObservedKey=service.entry.civilKey\n  if colorKey(service.entry.part.Color)==colorKey(service.target) then\n   palette.generated.exact+=1;palette.generated.status=\"LOCAL_NATIVE_EXACT_RESULT_OBSERVED\"\n   t.Result=\"EXACT_GENERATED_RGB_OBSERVED\"\n  else palette.generated.normalized+=1;t.Result=\"NORMALIZED_GENERATED_RGB_OBSERVED\" end\n end\nend\nfunction palette.generatedReport()\n local g=palette.generated\n local lines={\"GENERATED RGB NATIVE EQUIP PATH\", \"ApplicationStatus=\"..g.status,\n  \"Source trace: PaintBucket.LocalScript reads PaintBucketColor in Equipped, updates native color echoes, then normal Button1Down sends that working value.\",\n  \"No hidden working variable is read/written. Native echoes are preparation evidence; a genuine native DOWN plus province transition is required for application evidence.\",\n  \"AutoPainterRPCs=0; no hooks, signal firing, target spoofing, or direct game remotes.\",\n  \"PreparationAttempts=\"..g.attempts..\" Prepared=\"..g.prepared..\" Failed=\"..g.failures..\" ExactResults=\"..g.exact..\" NormalizedResults=\"..g.normalized}\n for _,t in ipairs(g.records) do\n  local keys={};for key in pairs(t) do table.insert(keys,key) end;table.sort(keys)\n  for _,key in ipairs(keys) do table.insert(lines,key..\"=\"..tostring(t[key])) end\n end\n return table.concat(lines,\"\\n\")\nend\nfunction palette.prepare(entry,token,service)\n if entry.civilControl and entry.civilControl.generated then return palette.prepareGenerated(entry,token,service) end",
+      "count": 1
+    },
+    {
+      "before": "\thealth.finish(service)\n if not service.success then",
+      "after": "\thealth.finish(service)\n palette.generatedResult(service)\n if not service.success then",
+      "count": 1
+    },
+    {
+      "before": "and (object==activationTool or object==player.Character) then",
+      "after": "and not palette.generatedOwnsRemoval(object) and (object==activationTool or object==player.Character) then",
+      "count": 1
+    },
+    {
+      "before": "palette.currentEntry=nil;palette.activeSnapshot=nil\n\t\t\tinputErrors",
+      "after": "palette.currentEntry=nil;palette.activeSnapshot=nil;palette.generated.reload=nil\n\t\t\tinputErrors",
+      "count": 1
+    },
+    {
+      "before": "CIVIL ASSIGNMENTS (native palette controls, not arbitrary RGB)",
+      "after": "CIVIL ASSIGNMENTS (native swatches + source-traced generated Equip colors)",
+      "count": 1
+    },
+    {
+      "before": "\ttable.insert(lines,\"PER-ENTRY HEALTH (all protected entries)\")",
+      "after": "\ttable.insert(lines,palette.generatedReport())\n\ttable.insert(lines,\"PER-ENTRY HEALTH (all protected entries)\")",
+      "count": 1
+    },
+    {
+      "before": " GetDormantGeneratedColorPreview=palette.generatedPreview,",
+      "after": " GetDormantGeneratedColorPreview=palette.generatedPreview,\n GetGeneratedColorReport=palette.generatedReport,",
+      "count": 1
+    },
+    {
+      "before": "\"GeneratedColorCreation=PROVEN (OG HSV/RGB algorithm). GeneratedColorApplicationViaCurrentNativePath=UNVERIFIED. Only additional native application capacity is gated on native UI -> intended PaintBucketColor -> matching province.\",",
+      "after": "\"GeneratedColorCreation=PROVEN; native Equip reload route now source-traced. ApplicationStatus=\"..palette.generated.status..\"; actual province results remain required.\",",
+      "count": 1
+    },
+    {
+      "before": "-- NORMAL follows the real palette; never write its attribute or assume re-equip resets a closure.",
+      "after": "-- NORMAL still follows the real palette. Generated Equip preparation is Civil-only.",
+      "count": 1
+    },
+    {
+      "before": "r.GeneratedColorApplicationViaCurrentNativePath=\"UNVERIFIED\"",
+      "after": "r.GeneratedColorApplicationViaCurrentNativePath=palette.generated.status",
+      "count": 1
+    },
+    {
+      "before": "r.GeneratedColorSupport=\"RGB creation proven by OG code; native application beyond verified swatches unverified. Two Picker candidates rejected, not a generation limit.\"",
+      "after": "r.GeneratedColorSupport=\"Source-traced native Equip color reload; generated application requires a genuine native DOWN and province result, never attribute/echo evidence alone.\"",
+      "count": 1
+    },
+    {
+      "before": "service.success,service.latency,service.paletteValid=true,latency,true;service.correctedAt=observedAt",
+      "after": "service.success,service.latency,service.paletteValid=true,latency,true;service.correctedAt=observedAt\n if service.generatedTrace then service.generatedActual=entry.part.Color;palette.generatedResult(service) end",
+      "count": 1
+    },
+    {
+      "before": "t.ActualRGB=rgbText(service.entry.part.Color);t.NativeDownObserved=service.qualified==true",
+      "after": "t.ActualRGB=rgbText(service.generatedActual or service.entry.part.Color);t.NativeDownObserved=service.qualified==true",
+      "count": 1
+    },
+    {
+      "before": "if service.success and service.qualified and t.NativeEchoes and not colorsMatch(service.actualBefore,service.target) then",
+      "after": "if not t.Counted and service.success and service.qualified and t.NativeEchoes and service.generatedActual and not colorsMatch(service.actualBefore,service.target) then\n  t.Counted=true",
+      "count": 1
+    },
+    {
+      "before": "if colorKey(service.entry.part.Color)==colorKey(service.target) then",
+      "after": "if colorKey(service.generatedActual)==colorKey(service.target) then",
+      "count": 1
+    },
+    {
+      "before": "t.RealTargetAcquired=service.acquiredAt~=nil;t.Result=service.result;t.ProvinceObserved=service.success==true",
+      "after": "t.RealTargetAcquired=service.acquiredAt~=nil;if not t.Counted then t.Result=service.result end;t.ProvinceObserved=service.success==true",
+      "count": 1
+    },
+    {
+      "before": "VerifiedNativeCapacity=verified,GeneratedVerifiedCapacity=0",
+      "after": "VerifiedNativeCapacity=verified,GeneratedVerifiedCapacity=observed",
+      "count": 1
+    },
+    {
+      "before": "CurrentlyBoundLiveControls=capacity,GeneratedVerifiedCapacity=0",
+      "after": "CurrentlyBoundLiveControls=capacity,GeneratedVerifiedCapacity=generatedObserved",
+      "count": 1
+    },
+    {
+      "before": "trace.Step=\"FAILED\";trace.Result=tostring(why);g.failures+=1\n  return false,trace.Result",
+      "after": "trace.Step=\"FAILED\";trace.Result=tostring(why);g.failures+=1\n  -- A missing native reader is a capability failure, not a province to spam.\n  -- Stop this run after one failed preparation; explicit START may retry after repair.\n  if valid() then running=false;palette.resumeNeeded=true end\n  return false,trace.Result",
+      "count": 1
+    }
+  ]
+}

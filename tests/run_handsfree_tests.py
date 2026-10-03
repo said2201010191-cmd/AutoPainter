@@ -16,11 +16,21 @@ print('Native palette click sequence/timings unchanged; clean gate added',flush=
 for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|hookmetamethod|firesignal|getconnections|require|decompile)\s*\(',r'\bmouse\.Target\s*=(?!=)',r'\.OnClientInvoke\s*=']:
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
-assert 'SetAttribute("PaintBucketColor"' not in source, 'Unverified palette attribute write'
+# The only new working-color write is inside the source-traced Civil equip transaction.
+assert source.count('SetAttribute("PaintBucketColor"')==1
+write=source.index('SetAttribute("PaintBucketColor"')
+assert source.index('function palette.prepareGenerated(')<write<source.index('function palette.generatedResult(')
+
 # This revision permits only the reviewed cadence/identity/report changes.
 # Reverse that exact allowlist and compare the ENTIRE controller to main 9900a73.
 # Civil, input, target/dwell/scheduler and benchmark algorithms cannot drift silently.
 prior=source
+native_scope=json.loads((root/'tests/native_rgb_scope.json').read_text())
+for change in reversed(native_scope['allowedChanges']):
+    assert prior.count(change['after'])==change['count'], 'Native RGB scope count changed'
+    prior=prior.replace(change['after'],change['before'])
+assert hashlib.sha256(prior.encode()).hexdigest()==native_scope['baseSourceSHA256'], 'Unreviewed change outside native RGB route'
+print('Native RGB changes isolated by exact reverse patch; prior NORMAL/Civil swatches/benchmark preserved',flush=True)
 scope=json.loads((root/'tests/public150_scope.json').read_text())
 for change in reversed(scope['allowedChanges']):
     assert prior.count(change['after'])==change['count'], 'Scope allowlist count changed'
@@ -39,7 +49,7 @@ frozen=re.sub(r'^ PausePaintCooldownBenchmark=.*\n','',frozen,flags=re.M)
 freeze=json.loads((root/'tests/benchmark_production_freeze.json').read_text())
 assert hashlib.sha256(frozen.encode()).hexdigest()==freeze['sha256'], 'Benchmark-only scope: production source changed'
 print('Entire production source matches e67a01b; benchmark-only implementation/bridges excepted',flush=True)
-for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau']:
+for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau', 'native_rgb.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)
         f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(root/'tests'/suite).read_text())

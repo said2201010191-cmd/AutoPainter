@@ -236,7 +236,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."capacity167 shows exact39 shortage independent of transient live118",function()
   local w,a,p,t=setup(deferred,167,128);for i=1,10 do t.p.detachBinding(t.p.controls[i]) end
-  local pf=a.GetCapacityPreflight();assert(pf.VerifiedNativeCapacity==128 and pf.Shortage==39 and pf.GeneratedVerifiedCapacity==0)
+  local pf=a.GetCapacityPreflight();assert(pf.VerifiedNativeCapacity==128 and pf.Shortage==0 and pf.GeneratedAdditionalRequired==39 and pf.GeneratedVerifiedCapacity==0)
   assert(not a.RerollCivilColors(1));a.SetMode("CIVIL WAR");w.start(a,.2);assert(not a.GetStats().Running and w.paintCalls==0);clean(w,a)
  end)
  test(pre.."custom UI inspection is read-only and nonexistent candidates remain unverified",function()

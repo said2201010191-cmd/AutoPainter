@@ -16,6 +16,7 @@ suite += "\n" + (root / "tests" / "source.spec.luau").read_text()
 suite += "\n" + (root / "tests" / "protocol.spec.luau").read_text()
 suite += "\n" + (root / "tests" / "full_paths.spec.luau").read_text()
 suite += "\n" + (root / "tests" / "game_only.spec.luau").read_text()
+suite += '\n' + (root / 'tests' / 'color_evidence.spec.luau').read_text()
 suite += '\nprint(string.format("%d diagnostic tests passed (mock engine; no live scan claim)", passed))\n'
 with tempfile.NamedTemporaryFile("w", suffix=".luau", dir=root / "tests", delete=False) as f:
     path = Path(f.name)

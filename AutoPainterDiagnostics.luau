@@ -4,6 +4,8 @@
 -- Each client uses its own LocalPlayer, UI, selection, and bounded request window.
 
 local CONFIG = {
+	ColorEvidenceMaxSourceBytes = 32 * 1024 * 1024, -- Explicit retained-corpus limit, reported as a gap.
+	ColorEvidenceMaxScriptBytes = 4 * 1024 * 1024,
 	DiagnosticDecompileTimeout = 6, -- Cooperative watchdog; never pretends to cancel native work.
 	DiagnosticMaxUnreturned = 2, -- Timed-out/cancelled calls retain slots until real return.
 	DiagnosticWatchdogPoll = 0.05,
@@ -52,7 +54,7 @@ local existing = playerGui:FindFirstChild(GUI_NAME)
 if existing then
 	local bridge = existing:FindFirstChild("Controller")
 	if bridge and bridge:IsA("BindableFunction") then
-		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 8 then
+		if diagnosticOnly and existing:GetAttribute("AutoPainterDiagnosticsVersion") ~= 9 then
 			error("Close the older AutoPainter panel before loading this diagnostic build; it lacks the current report.")
 		end
 		local running = bridge:Invoke()
@@ -428,7 +430,7 @@ end
 
 ui = make("ScreenGui", playerGui, { Name = GUI_NAME, ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
-ui:SetAttribute("AutoPainterDiagnosticsVersion", 8)
+ui:SetAttribute("AutoPainterDiagnosticsVersion", 9)
 main = make("Frame", ui, { Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.9, 0, 0.85, 0),
 	BackgroundColor3 = Color3.fromRGB(33, 33, 42), BorderSizePixel = 0 })
@@ -509,6 +511,8 @@ local quickPathsButton = reportAction("Quick Paint Path Scan")
 local fullPathsButton = reportAction("Game-Only Full Scan")
 local cancelScanButton = reportAction("CANCEL SCAN")
 local copyFullPathsButton = reportAction("Copy Current Report")
+local colorEvidenceButton = reportAction("Native Color Source Scan (full bodies)")
+local copyColorEvidenceButton = reportAction("Copy Native Color Evidence")
 local protocolButton = reportAction("Protocol Extract")
 local copyProtocolButton = reportAction("Copy Protocol Report")
 rowOrder += 1
@@ -1444,6 +1448,59 @@ function api.CancelDiagnosticScan()
 	updateScanProgress()
 	return true
 end
+-- Full evidence remains local. UI names are inventory, never proof of a setter.
+local colorEvidence = {}
+function colorEvidence.value(value)
+ local kind=typeof(value)
+ if kind=="Color3" then return string.format("Color3(%d,%d,%d)",math.round(value.R*255),math.round(value.G*255),math.round(value.B*255)) end
+ if kind=="number" or kind=="boolean" then return tostring(value) end
+ if kind=="Vector2" or kind=="Vector3" or kind=="UDim2" then return tostring(value) end
+ if kind=="string" then
+  if #value<=64 and value:match("^[%x#%s,%.%-]+$") then return value:gsub("[%c]"," ") end
+  return "<non-color string omitted>"
+ end
+ return "<"..kind..">"
+end
+function colorEvidence.snapshot(run,checkpoint)
+ local roots={playerGui};local seen={}
+ local function bucketAt(parent)
+  local tool=parent and parent:FindFirstChild("PaintBucket")
+  if tool and tool:IsA("Tool") then table.insert(roots,tool) end
+ end
+ bucketAt(player.Character);bucketAt(player:FindFirstChild("Backpack"))
+ local ok,c=pcall(function() return player:GetAttribute("PaintBucketColor") end)
+ run.exposedColor=ok and colorEvidence.value(c) or "<unreadable>"
+ local stack=table.clone(roots)
+ while #stack>0 do
+  if not checkpoint() then return end
+  local object=table.remove(stack)
+  -- Include alternate GUIs regardless of names; omit this tool's own diagnostics/controllers.
+  if not seen[object] and object~=ui and object.Name~="AutoPainterHandsFreeUI" then
+   seen[object]=true
+   local row={Path=safePath(object),Class=object.ClassName,Name=object.Name,Parent=object.Parent and safePath(object.Parent) or "<nil>",Properties={},Attributes={}}
+   for _,key in ipairs({"Enabled","Visible","Active","AbsolutePosition","AbsoluteSize","BackgroundColor3","ImageColor3","TextColor3","Value"}) do
+    local readable,v=pcall(function() return object[key] end)
+    if readable and v~=nil then row.Properties[key]=colorEvidence.value(v) end
+   end
+   -- Text fields can contain chat/private input; record only short numeric/hex syntax.
+   if object:IsA("TextBox") then local readable,v=pcall(function() return object.Text end);if readable then row.Properties.Text=colorEvidence.value(v) end end
+   local readable,attributes=pcall(function() return object:GetAttributes() end)
+   if readable then
+    for key,v in pairs(attributes) do
+     local lower=string.lower(key);local secret=false
+     for _,term in ipairs({"token","secret","password","credential","cookie","auth","apikey","api_key","session"}) do if lower:find(term,1,true) then secret=true;break end end
+     row.Attributes[key]=secret and "<redacted>" or colorEvidence.value(v)
+    end
+   else row.Attributes.ReadError="<unreadable>" end
+   table.insert(run.inventory,row)
+   local listed,children=pcall(function() return object:GetChildren() end)
+   if listed then for _,child in ipairs(children) do table.insert(stack,child) end
+   else table.insert(run.gaps,row.Path..": inventory children unreadable") end
+  end
+ end
+ table.sort(run.inventory,function(a,b) if a.Path~=b.Path then return a.Path<b.Path end;return a.Class<b.Class end)
+ run.inventoryComplete=true
+end
 local function runPaintScan(run)
 	local lastYield, sliceItems = os.clock(), 0
 	local function checkpoint(force)
@@ -1455,6 +1512,7 @@ local function runPaintScan(run)
 		end
 		return alive and not run.cancelled
 	end
+	if run.keepSource then run.status="SNAPSHOTTING ALL PLAYERGUI + OWN PAINTBUCKET STATE";updateScanProgress();colorEvidence.snapshot(run,checkpoint) end
 	local roots, seenRoots, seenScripts, visitedNodes = {}, {}, {}, {}
 	local exceptions, excludedLog, gameRows = {}, {}, {}
 	local function gap(message) table.insert(run.gaps, message) end
@@ -1566,7 +1624,9 @@ local function runPaintScan(run)
 				finishRow(row, { status = "SKIPPED_SCOPE", detail = "Script left current allowed game scope." })
 			else
 				local wasCached = readCache[row.object] ~= nil
-				local record = inspectWithWatchdog(row.object, decompile, function() return run.cancelled end)
+				local cachedRecord = readCache[row.object]
+				local needsFull = run.keepSource and cachedRecord and cachedRecord.status == "TEXT_RETURNED_UNVERIFIED" and not cachedRecord.source
+				local record = inspectWithWatchdog(row.object, decompile, function() return run.cancelled end, needsFull)
 				if record.status == "TEXT_RETURNED_UNVERIFIED" then
 					if not inScope(row.object, exceptions[row.object]) then
 						record = { status = "SKIPPED_SCOPE", detail = "Script left scope during read; cached text is not evidence of current scope." }
@@ -1576,11 +1636,17 @@ local function runPaintScan(run)
 						if references then
 							record.references = references
 							local analysis = analyzePaintSource(record.source, record.id, row.path, checkpoint)
-							if analysis then record.analysis, record.source, record.sourcePath = analysis, nil, row.path end
+							if analysis then record.analysis, record.sourcePath = analysis, row.path; if not run.keepSource then record.source = nil end end
 						end
 					end
 				end
-				finishRow(row, record, wasCached)
+				if run.keepSource and record.source then
+					if #record.source > CONFIG.ColorEvidenceMaxScriptBytes or run.sourceBytes + #record.source > CONFIG.ColorEvidenceMaxSourceBytes then
+						row.sourceGap = "FULL_SOURCE_NOT_RETAINED: explicit source byte budget exceeded"
+						record.source = nil; gap(row.path .. ": " .. row.sourceGap)
+					else run.sourceBytes += #record.source end
+				end
+				finishRow(row, record, wasCached and not needsFull)
 			end
 			updateScanProgress()
 		end
@@ -1632,7 +1698,7 @@ local function runPaintScan(run)
 		inspectBatch(batch)
 	end
 	phase(1)
-	if run.mode == "GameOnly" and checkpoint() then
+	if (run.mode == "GameOnly" or run.mode == "ColorEvidence") and checkpoint() then
 		local firstBroad = #roots + 1
 		-- Explicit allowlist only. Never enumerate game:GetChildren() or all Players.
 		for index, name in ipairs({ "ReplicatedFirst", "Workspace", "StarterGui", "StarterPlayer", "StarterPack" }) do
@@ -1684,11 +1750,11 @@ function api.StartDiagnosticScan(modeName)
 	if not alive then return false, "AutoPainter is closed." end
 	if not diagnosticOnly or not diagnosticLocked then return false, "Use the LOCKED diagnostic loader." end
 	if modeName == "Full" then modeName = "GameOnly" end -- legacy API is now restricted too.
-	if modeName ~= "Quick" and modeName ~= "GameOnly" then return false, "Scan mode must be Quick or GameOnly." end
+	if modeName ~= "Quick" and modeName ~= "GameOnly" and modeName ~= "ColorEvidence" then return false, "Scan mode must be Quick, GameOnly or ColorEvidence." end
 	if sourceInspectionBusy then return false, "Inspection is already running/stopping; no extra coordinator started." end
 	scan = { mode = modeName, status = "QUEUED " .. modeName, running = true, cancelled = false,
 		discovered = 0, processed = 0, returned = 0, failed = 0, timedOut = 0, skipped = 0, cached = 0,
-		rows = {}, rootLog = {}, gaps = {}, path = "", current = 0 }
+		rows = {}, rootLog = {}, gaps = {}, path = "", current = 0, keepSource = modeName == "ColorEvidence", sourceBytes = 0, inventory = {} }
 	local run = scan
 	sourceInspectionBusy = true
 	updateScanProgress()
@@ -1791,6 +1857,56 @@ function api.CopyCurrentReport()
 end
 api.CopyFullPaintPathsReport = api.CopyCurrentReport -- compatibility alias; no implicit scan.
 
+function api.GetNativeColorEvidence()
+ local out={"NATIVE_COLOR_SOURCE_EVIDENCE v1","LOCKED=true AutoPainterRPCs=0; sources are untrusted decompiler text, never executed.",
+  "Full source bodies are preserved for manual alias/callback/data-flow tracing. Keywords alone do not establish capability.",
+  "PaintBucketColor and GUI properties are exposed observations, NOT proof of the bucket's cached working color."}
+ if not alive then table.insert(out,"Status=CLOSED");return table.concat(out,"\n") end
+ if not scan or not scan.keepSource then table.insert(out,"Status=NOT_STARTED; run Native Color Source Scan (full bodies). Copy never starts reads.");return table.concat(out,"\n") end
+ local run=scan
+ table.insert(out,string.format("Status=%s Discovered=%d Processed=%d TextReturned=%d Failed=%d TimedOut=%d Skipped=%d RetainedSourceBytes=%d Outstanding=%d",run.status,run.discovered,run.processed,run.returned,run.failed,run.timedOut,run.skipped,run.sourceBytes,unreturnedReads))
+ table.insert(out,"InventoryComplete="..tostring(run.inventoryComplete==true).." ObjectsInspected="..#run.inventory.." ExposedPaintBucketColor="..tostring(run.exposedColor))
+ table.insert(out,"Scope/exclusions match Game-Only Full Scan. Missing/failed reads, budget gaps, dynamic module references, server-only handlers and decompiler inaccuracies limit completeness.")
+ table.insert(out,"FULL PLAYERGUI / OWN PAINTBUCKET INVENTORY (includes alternate roots and hidden controls)")
+ local function fields(values)
+  local names={};for name in pairs(values) do table.insert(names,name) end;table.sort(names)
+  local parts={};for _,name in ipairs(names) do table.insert(parts,name.."="..values[name]) end;return table.concat(parts," | ")
+ end
+ for _,r in ipairs(run.inventory) do
+  table.insert(out,r.Path.." ["..r.Class.."] Name="..r.Name.." Parent="..r.Parent)
+  table.insert(out,"  "..fields(r.Properties));table.insert(out,"  Attributes: "..fields(r.Attributes))
+ end
+ table.insert(out,"FULL SCRIPT/MODULE BODIES — no keyword-window truncation")
+ local rows=table.clone(run.rows);table.sort(rows,function(a,b) if a.path~=b.path then return a.path<b.path end;return (a.record and a.record.id or "")<(b.record and b.record.id or "") end)
+ for _,row in ipairs(rows) do
+  local r=row.record
+  table.insert(out,string.format("SCRIPT %s | %s [%s] | %s | SourceBytes=%s",r and r.id or "pending",row.path,row.class,r and r.status or "PENDING",tostring(r and r.bytes or "unknown")))
+  if r and r.source then
+   table.insert(out,"BEGIN FULL SOURCE "..r.id);table.insert(out,r.source);table.insert(out,"END FULL SOURCE "..r.id)
+  else table.insert(out,row.sourceGap or r and r.detail or "Full text unavailable/pending; not absence of a path.") end
+ end
+ table.insert(out,"COVERAGE GAPS / ROOTS")
+ for _,line in ipairs(run.rootLog) do table.insert(out,line) end
+ for _,line in ipairs(run.gaps) do table.insert(out,line) end
+ table.insert(out,"Data-flow conclusion=PENDING MANUAL TRACE. Native arbitrary RGB -> working color -> native activation -> province color is NOT established by this export alone.")
+ return table.concat(out,"\n")
+end
+function api.CopyNativeColorEvidence()
+ if not alive or not scan or not scan.keepSource then return false,"Run Native Color Source Scan first; no implicit scan started." end
+ if protocolExportBusy then return false,"Another export is running." end
+ protocolExportBusy=true
+ local ok,success,message=pcall(function()
+  local snapshot=api.GetNativeColorEvidence()
+  -- Full corpus is file-first so the complete exported bodies can be inspected locally.
+  if type(writefile)=="function" and pcall(writefile,"AutoPainterNativeColorEvidence.txt",snapshot) then return true,"Saved AutoPainterNativeColorEvidence.txt (complete collected bodies + UI inventory)." end
+  if not alive then return false,"Closed; no clipboard fallback started." end
+  if type(setclipboard)=="function" and pcall(setclipboard,snapshot) then return true,"Copied full Native Color Evidence; paste into a local text file." end
+  return false,"File/clipboard export unavailable; GetNativeColorEvidence() returns the collected text."
+ end)
+ protocolExportBusy=false
+ return ok and success or false,ok and message or "Evidence export failed; collected data retained."
+end
+
 function api.Destroy(fromDestroying)
 	if not alive then return end
 	if scan and scan.running then scan.cancelled = true end
@@ -1799,7 +1915,7 @@ function api.Destroy(fromDestroying)
 	reportText = ""
 	protocolReport = nil
 	table.clear(readCache)
-	if scan then table.clear(scan.rows); table.clear(scan.gaps); table.clear(scan.rootLog) end
+	if scan then table.clear(scan.rows); table.clear(scan.gaps); table.clear(scan.rootLog); table.clear(scan.inventory) end
 	table.clear(reportOffsets)
 	disconnectAll(connections)
 	disconnectAll(cacheConnections)
@@ -1856,6 +1972,14 @@ connect(copyFullPathsButton.Activated, function()
 		showReport(api.GetFullPaintPathsReport())
 		exportStatus.Text, exportStatus.Visible = message, true
 	end
+end)
+connect(colorEvidenceButton.Activated,function()
+ local _,message=api.StartDiagnosticScan("ColorEvidence")
+ if alive then exportStatus.Text,exportStatus.Visible=message,true end
+end)
+connect(copyColorEvidenceButton.Activated,function()
+ local _,message=api.CopyNativeColorEvidence()
+ if alive then exportStatus.Text,exportStatus.Visible=message,true end
 end)
 connect(sourceButton.Activated, function()
 	if sourceInspectionBusy or not alive then return end

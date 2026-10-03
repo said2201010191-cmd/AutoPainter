@@ -1,3 +1,5 @@
+> Historical blocker, superseded 2026-10-03 by [the full native source trace](NATIVE_GENERATED_COLOR_TRACE.md). The missing Equip reader was obtained and an application transaction implemented. Live non-palette province application still requires testing.
+
 # Mandatory generated-color application: incomplete, exact blocker
 
 The requested end state remains **unimplemented**: first 128 provinces use verified native colors; provinces 129+ receive distinct generated RGB colors, retained until reroll. A generator, preview, capacity warning, or outline does not fulfill that request. This is a missing application feature, not an optional cosmetic improvement.

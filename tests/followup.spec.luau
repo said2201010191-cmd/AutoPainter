@@ -69,7 +69,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."RGB generation and native application have independent honest statuses",function()
   local w,a,p,t=setup(deferred,186,128,nil);local cap=a.GetCapacityPreflight();local m=a.GetPerformanceStats()
-  assert(cap.GeneratedColorCreation=="PROVEN" and cap.GeneratedColorApplicationViaCurrentNativePath=="UNVERIFIED")
+  assert(cap.GeneratedColorCreation=="PROVEN" and cap.GeneratedColorApplicationViaCurrentNativePath=="SOURCE_TRACED_NOT_LIVE_VERIFIED")
   assert(cap.NativeApplicationCapacity==128 and cap.GeneratedAdditionalRequired==58 and m.GeneratedVerifiedCapacity==0)
   local preview=a.GetDormantGeneratedColorPreview(58,17)
   assert(#preview==58 and not cap.Message:find("no generated capacity",1,true));clean(w,a)
@@ -198,15 +198,10 @@ for _,deferred in ipairs({false,true}) do
   end
   assert(next(w.downs)==nil and t.entry(p[129]).civilColor==nil and a.GetPerformanceStats().GeneratedColorsAssigned==0);clean(w,a)
  end)
- test(pre.."capacity warning is printed once and distinguishes generation from transport",function()
-  local w,a,p,t=setup(deferred,186,128,nil);a.SetMode("CIVIL WAR");w.start(a,.4)
-  assert(not a.GetStats().Running);local found=false
-  for _,o in ipairs(w.playerGui:GetDescendants()) do
-   if o.ClassName=="TextLabel" and type(o.Text)=="string" and o.Text:find("Selected provinces:",1,true) then
-    local _,n=o.Text:gsub("Selected provinces:","");assert(n==1 and o.Text:find("RGB generation is proven",1,true));found=true
-   end
-  end
-  assert(found and a.GetCapacityPreflight().GeneratedAdditionalRequired==58);clean(w,a)
+ test(pre.."capacity distinguishes generated assignments from native application proof",function()
+  local w,a,p,t=setup(deferred,186,128,nil);a.SetMode("CIVIL WAR");assert(a.RerollCivilColors(22))
+  local c=a.GetCapacityPreflight();assert(c.GeneratedAdditionalRequired==58 and c.GeneratedUniqueAssigned==58 and c.GeneratedObservedProvinces==0)
+  assert(c.Message:find("source-traced native Equip reload",1,true) and next(w.downs)==nil);clean(w,a)
  end)
  test(pre.."repeated pause resume keeps one worker and bounded evidence",function()
   local w,a,p,t=setup(deferred,40,2,.06);w.humanoid:EquipTool(w.bucket);w.flush();a.StartPaintCooldownBenchmark();w.step(.3)

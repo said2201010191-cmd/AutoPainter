@@ -1,3 +1,7 @@
+## Full native-color evidence collection
+
+Use the locked diagnostic build's **Native Color Source Scan (full bodies)**, then **Copy Native Color Evidence**. The scan inventories every current PlayerGui object (hidden/alternate roots included) and retains complete game-only client source bodies for alias/callback tracing. Export is file-first: `AutoPainterNativeColorEvidence.txt`, clipboard fallback. Copy never scans. The same bounded cooperative watchdog, cancellation and read cache apply. Full corpus limits: 4 MiB per script / 32 MiB per scan; omitted bodies are explicit gaps. Locked inspection makes zero game-remote calls, executes/requires no inspected scripts and writes no game color/tool state. Only its own diagnostic UI and explicit local export are written.
+
 # Current custom-color investigation extension
 
 The locked game-only scanner now also emits **10. NATIVE CUSTOM-COLOR WRITERS / UI PATHS**, covering PaintBucketColor, RGB/HSV/hex conversion, custom color/picker/slider/TextBox/FocusLost/hue/saturation routes anywhere in readable game client code. Existing bounded decompile watchdog, cancellation, result cache and coverage/read-failure reporting are preserved. Source matches identify candidates, not verified capability. See [COMBAT_REVISION.md](COMBAT_REVISION.md) for evidence already examined and the still-missing native arbitrary-RGB contract.
