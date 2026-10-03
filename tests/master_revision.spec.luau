@@ -18,18 +18,18 @@ for _,deferred in ipairs({false,true}) do
  for _,count in ipairs({128,255,256,300,500,900,1000}) do
   test(pre..count.." proxy resources all attached and OFF ON rebuilt",function()
    local w,a,p=setup(deferred,count);local before=w.connections
-   local m=a.GetVisualRendererStats();assert(m.VisualizedProvinceCount==count and m.VisualMissingCount==0)
-   assert(m.HighlightInstanceCount<=40 and m.ProxyPartCount==count)
+   local m=a.GetVisualRendererStats();assert(m.AttachedProxyProvinceCount==count and m.VisualMissingCount==0)
+   assert(m.GroupedHighlightCount<=40 and m.HighlightInstanceCount<=232 and m.ProxyPartCount==count)
    local old=a.__master.entry(p[1]).proxy
    for _,part in ipairs(p) do local e=a.__master.entry(part);assert(e.proxy.ClassName==part.ClassName and e.proxy.CFrame==part.CFrame and e.proxy.Size==part.Size)
     assert(e.proxy.CanQuery==false and e.proxy.CanTouch==false and e.proxy.CanCollide==false and e.proxy.Anchored)
     assert(e.proxy.Parent==e.box.Adornee and part.Parent==w.provinces)
    end
    a.SetProtectedOutlines(false);m=a.GetVisualRendererStats();assert(m.HighlightInstanceCount==0 and m.ProxyPartCount==0 and old._destroyed and a.GetStats().Selected==count)
-   a.SetProtectedOutlines(true);m=a.GetVisualRendererStats();assert(m.VisualizedProvinceCount==count and m.VisualMissingCount==0 and m.VisualRebuilds==1)
+   a.SetProtectedOutlines(true);m=a.GetVisualRendererStats();assert(m.AttachedProxyProvinceCount==count and m.VisualMissingCount==0 and m.VisualRebuilds==1)
    assert(a.__master.entry(p[1]).proxy~=old and w.connections==before)
-   local extra=w.province(320,180);a.AddProvince(extra);assert(a.GetVisualRendererStats().VisualizedProvinceCount==count+1)
-   a.RemoveProvince(p[1]);assert(a.GetVisualRendererStats().VisualizedProvinceCount==count)
+   local extra=w.province(320,180);a.AddProvince(extra);assert(a.GetVisualRendererStats().AttachedProxyProvinceCount==count+1)
+   a.RemoveProvince(p[1]);assert(a.GetVisualRendererStats().AttachedProxyProvinceCount==count)
    a.Clear();assert(a.GetVisualRendererStats().ProxyPartCount==0 and a.GetVisualRendererStats().HighlightInstanceCount==0)
    assert(w.networkAttempts==0 and next(w.downs)==nil);cleanup(w,a)
   end)
@@ -215,8 +215,8 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p=setup(deferred,500);a.SetProtectedFill(true)
   assert(a.__master.entry(p[1]).box.FillTransparency==.90)
   a.SetProtectedOutlines(false);a.SetProtectedOutlines(true)
-  assert(a.__master.entry(p[1]).box.FillTransparency==.90 and a.GetVisualRendererStats().VisualizedProvinceCount==500)
-  assert(a.GetVisualRendererStats().HighlightInstanceCount<=40 and next(w.downs)==nil);cleanup(w,a)
+  assert(a.__master.entry(p[1]).box.FillTransparency==.90 and a.GetVisualRendererStats().AttachedProxyProvinceCount==500)
+  assert(a.GetVisualRendererStats().HighlightInstanceCount<=232 and next(w.downs)==nil);cleanup(w,a)
  end)
  test(pre.."diagnostic reports and inspection do not move cursor or create input",function()
   local w,a,p=setup(deferred,129);a.SetMode("CIVIL WAR");a.RerollCivilColors(92);local moves=w.cursorMoves

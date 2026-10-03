@@ -1,0 +1,389 @@
+{
+  "baseSourceSHA256": "d707550b3f14e40a34c6d282d0b3a94c8ada37229548aaf98ef736780b4300de",
+  "allowedChanges": [
+    {
+      "start": 0,
+      "end": 1,
+      "before": "-- AutoPainter Hands Free v8.2 Native Lifecycle\n",
+      "after": "-- AutoPainter Hands Free v8.2 V2 Recovery\n"
+    },
+    {
+      "start": 3,
+      "end": 4,
+      "before": "-- NORMAL paints every protected province to one palette color.\n",
+      "after": "-- NORMAL paints every protected province to one native or random-generated target color.\n"
+    },
+    {
+      "start": 23,
+      "end": 24,
+      "before": "\tassert(existing.GetStats().Build==\"8.2-master-ab\",\"Export your palette and close the older Hands Free panel before loading the Native Lifecycle build\")\n",
+      "after": "\tassert(existing.GetStats().Build==\"8.2-v2-recovery\",\"Export your palette and close the older Hands Free panel before loading the Native Lifecycle build\")\n"
+    },
+    {
+      "start": 29,
+      "end": 30,
+      "before": "",
+      "after": " TargetStormWindow=2,TargetStormDistinct=4,TargetStormProbes=2,TargetStormRetry=0.5,VisibilityRetry=0.5,\n"
+    },
+    {
+      "start": 226,
+      "end": 227,
+      "before": "v82.normalAB = {active=false,production=\"A\",state=\"NOT_RUN\",phases={},index=1}\n",
+      "after": "v82.normalAB = {active=false,production=\"B\",state=\"NOT_RUN\",phases={},index=1}\n"
+    },
+    {
+      "start": 943,
+      "end": 944,
+      "before": "palette.perceptual = {PoolSize=1536,Metric=\"OKLab Euclidean x100\",serial=0}\n",
+      "after": "palette.perceptual = {PoolSize=3072,RefinementSteps=32,Metric=\"OKLab Euclidean x100\",serial=0}\n"
+    },
+    {
+      "start": 953,
+      "end": 954,
+      "before": "function palette.perceptual.make(random,used,required)\n",
+      "after": "function palette.perceptual.rawPool(random,used,required,sizeOverride)\n"
+    },
+    {
+      "start": 955,
+      "end": 956,
+      "before": " local size=math.max(palette.perceptual.PoolSize,required*2);size=math.min(size,16384)\n",
+      "after": " local size=sizeOverride or math.max(palette.perceptual.PoolSize,required*2);size=math.min(size,16384)\n"
+    },
+    {
+      "start": 974,
+      "end": 975,
+      "before": "",
+      "after": " if pool.planned then local nextColor=table.remove(pool,1);return nextColor and nextColor.color end\n"
+    },
+    {
+      "start": 985,
+      "end": 1041,
+      "before": "",
+      "after": "end\n-- Seed-preserving refinement: start with the exact old greedy sequence, then\n-- exchange its weakest point only when BOTH worst-case native and generated\n-- distances cannot decrease. A larger fresh greedy pool alone has no such guarantee.\nfunction palette.perceptual.distribution(colors,used)\n local native={};for _,c in ipairs(used) do table.insert(native,palette.perceptual.lab(c)) end\n local labs={};for _,c in ipairs(colors) do table.insert(labs,palette.perceptual.lab(c)) end\n local r={native=math.huge,generated=math.huge,nearest={},weak=1}\n for i,lab in ipairs(labs) do\n  local dn,dg=math.huge,math.huge\n  for _,old in ipairs(native) do dn=math.min(dn,palette.perceptual.distance(lab,old)) end\n  for j,other in ipairs(labs) do if i~=j then dg=math.min(dg,palette.perceptual.distance(lab,other)) end end\n  r.native=math.min(r.native,dn);r.generated=math.min(r.generated,dg);r.nearest[i]=math.min(dn,dg)\n  if r.nearest[i]<r.nearest[r.weak] then r.weak=i end\n end\n local sorted=table.clone(r.nearest);table.sort(sorted)\n r.p10=sorted[math.max(1,math.ceil(#sorted*.1))] or 0;r.p50=sorted[math.max(1,math.ceil(#sorted*.5))] or 0\n return r\nend\nfunction palette.perceptual.make(random,used,required)\n local began=os.clock();local c=palette.perceptual\n local oldSize=math.min(16384,math.max(1536,required*2))\n local base=c.rawPool(random,used,required,oldSize)\n if required<=1 then\n  local extra=c.rawPool(random,used,required,math.max(0,c.PoolSize-oldSize))\n  for _,v in ipairs(extra) do table.insert(base,v) end\n  return base\n end\n local picked={}\n for _=1,required do local color=c.take(base);if not color then break end;table.insert(picked,color) end\n local before=c.distribution(picked,used)\n local extra=c.rawPool(random,used,required,math.max(0,c.PoolSize-oldSize))\n for _,v in ipairs(extra) do table.insert(base,v) end\n local accepted=0;local nativeLabs={};for _,old in ipairs(used) do table.insert(nativeLabs,c.lab(old)) end\n for _=1,c.RefinementSteps do\n  local current=c.distribution(picked,used);local weak=current.weak;local best=nil;local bestScore=current.nearest[weak]\n  local labs={};for i,color in ipairs(picked) do labs[i]=c.lab(color) end\n  for i,candidate in ipairs(base) do\n   local dn=math.huge;for _,lab in ipairs(nativeLabs) do dn=math.min(dn,c.distance(candidate.lab,lab)) end\n   if dn+1e-9>=current.native then\n    local dg=math.huge\n    for j,lab in ipairs(labs) do if j~=weak then dg=math.min(dg,c.distance(candidate.lab,lab)) end end\n    local near=math.min(dn,dg)\n    if dg+1e-9>=current.generated and near>bestScore+1e-7 then best=i;bestScore=near end\n   end\n  end\n  if not best then break end\n  local candidate=table.remove(base,best);local duplicate=false\n  for _,old in ipairs(used) do if colorsMatch(old,candidate.color) then duplicate=true;break end end\n  for i,old in ipairs(picked) do if i~=weak and colorsMatch(old,candidate.color) then duplicate=true;break end end\n  if not duplicate then picked[weak]=candidate.color;accepted+=1 end\n end\n local after=c.distribution(picked,used)\n c.lastQuality={Before=before,After=after,GenerationMs=(os.clock()-began)*1000,RefinementAccepted=accepted,CandidateBudget=math.max(oldSize,c.PoolSize)}\n local plan={planned=true};for _,color in ipairs(picked) do table.insert(plan,{color=color,lab=c.lab(color),near=0}) end\n return plan\n"
+    },
+    {
+      "start": 1058,
+      "end": 1062,
+      "before": "",
+      "after": " local q=palette.perceptual.lastQuality\n if q then\n  table.insert(lines,string.format(\"FixedSeedRefinement: BeforeNative=%.6f BeforeGenerated=%.6f BeforeP10=%.6f BeforeP50=%.6f AfterNative=%.6f AfterGenerated=%.6f AfterP10=%.6f AfterP50=%.6f GenerationMs=%.3f Accepted=%d CandidateBudget=%d\",q.Before.native,q.Before.generated,q.Before.p10,q.Before.p50,q.After.native,q.After.generated,q.After.p10,q.After.p50,q.GenerationMs,q.RefinementAccepted,q.CandidateBudget))\n end\n"
+    },
+    {
+      "start": 1099,
+      "end": 1100,
+      "before": " if #candidatePool>0 then palette.perceptual.lastPoolSize=#candidatePool end\n",
+      "after": " if #candidatePool>0 then palette.perceptual.lastPoolSize=math.max(palette.perceptual.PoolSize,overflow*2) end\n"
+    },
+    {
+      "start": 1888,
+      "end": 1889,
+      "before": "",
+      "after": " if entry.directOutline then entry.directOutline:Destroy();entry.directOutline=nil end\n"
+    },
+    {
+      "start": 1897,
+      "end": 1901,
+      "before": " if v7.visual.count==0 and v7.visual.root then v7.visual.root:Destroy();v7.visual.root=nil;v7.visual.groups={} end\n",
+      "after": " if v7.visual.count==0 and v7.visual.root then\n  local fallback=false;for _,e in ipairs(entries) do if e.directOutline and e.directOutline.Parent then fallback=true;break end end\n  if not fallback then v7.visual.root:Destroy();v7.visual.root=nil;v7.visual.groups={} end\n end\n"
+    },
+    {
+      "start": 1924,
+      "end": 1925,
+      "before": "  h.DepthMode=Enum.HighlightDepthMode.Occluded;h.OutlineColor=color;h.FillColor=color;h.FillTransparency=v82.fill and .90 or 1;h.Parent=model\n",
+      "after": "  h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop;h.OutlineColor=color;h.FillColor=color;h.FillTransparency=v82.fill and .90 or 1;h.Parent=model\n"
+    },
+    {
+      "start": 1933,
+      "end": 1941,
+      "before": "",
+      "after": " -- Real-part Highlight fallback for the first 192 selected provinces. No transparent\n -- proxy dependency, and 192 + at most 40 grouped Highlights + selection hover <255.\n -- The opaque proxy uses the original color and geometry; only its Highlight adds tint.\n if (entry.index or table.find(entries,entry) or math.huge)<=192 then\n  if not entry.directOutline or not entry.directOutline.Parent then entry.directOutline=Instance.new(\"Highlight\");entry.directOutline.Name=\"RealProvinceFallback\";entry.directOutline.Adornee=entry.part;entry.directOutline.Parent=v7.visual.root end\n  local h=entry.directOutline;h.Enabled=true;h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop\n  h.OutlineColor=color;h.FillColor=color;h.OutlineTransparency=0;h.FillTransparency=v82.fill and .90 or 1\n elseif entry.directOutline then entry.directOutline:Destroy();entry.directOutline=nil end\n"
+    },
+    {
+      "start": 1949,
+      "end": 1950,
+      "before": "   proxy.LocalTransparencyModifier=0;proxy.Transparency=.99;proxy.CFrame=entry.part.CFrame;proxy.Size=entry.part.Size\n",
+      "after": "   proxy.LocalTransparencyModifier=0;proxy.Transparency=0;proxy.CFrame=entry.part.CFrame;proxy.Size=entry.part.Size\n"
+    },
+    {
+      "start": 1974,
+      "end": 1975,
+      "before": "",
+      "after": "\n"
+    },
+    {
+      "start": 1985,
+      "end": 1989,
+      "before": " return {SelectedProvinceCount=#entries,VisualizedProvinceCount=v7.visual.count,VisualMissingCount=#entries-v7.visual.count,\n  HighlightInstanceCount=groups,ProxyPartCount=v7.visual.count,VisualRendererGeneration=v7.visual.generation,VisualRebuilds=v7.visual.rebuilds,\n",
+      "after": " local direct=0;for _,e in ipairs(entries) do if e.directOutline then direct+=1 end end\n return {SelectedProvinceCount=#entries,AttachedProxyProvinceCount=v7.visual.count,VisualMissingCount=#entries-v7.visual.count,\n  DirectFallbackCount=direct,RendererResourceCount=groups+direct+v7.visual.count,\n  HighlightInstanceCount=groups+direct,GroupedHighlightCount=groups,ProxyPartCount=v7.visual.count,VisualRendererGeneration=v7.visual.generation,VisualRebuilds=v7.visual.rebuilds,\n"
+    },
+    {
+      "start": 1990,
+      "end": 1991,
+      "before": "  VisualRenderer=\"STATE_SHARDED_PROVINCE_GEOMETRY\",RenderVisibilityProof=\"Requires live GPU observation; counts represent attached geometry\"}\n",
+      "after": "  VisualRenderer=\"OPAQUE_GEOMETRY_WITH_REAL_PART_FALLBACK\",RenderVisibilityProof=\"UNVERIFIED: attached resources are not visible-pixel proof; test 1/10/62 before 256/500/900\"}\n"
+    },
+    {
+      "start": 2489,
+      "end": 2490,
+      "before": " if service.success then service.result=\"SUCCESS\";if service.episode==entry.dirtyEpisode then health.reset(entry,true) end;return end\n",
+      "after": " if service.success then service.result=\"SUCCESS\";if v82.targetHealth then v82.targetHealth.success(service) end;if service.episode==entry.dirtyEpisode then health.reset(entry,true) end;return end\n"
+    },
+    {
+      "start": 2496,
+      "end": 2497,
+      "before": "",
+      "after": " if v82.targetHealth and v82.targetHealth.finish(service) then return end\n"
+    },
+    {
+      "start": 2543,
+      "end": 2544,
+      "before": "",
+      "after": " if v82.randomColor then v82.randomColor.result(service) end\n"
+    },
+    {
+      "start": 2610,
+      "end": 2611,
+      "before": "",
+      "after": " if v82.targetHealth then table.insert(lines,v82.targetHealth.report()) end\n"
+    },
+    {
+      "start": 2697,
+      "end": 2699,
+      "before": "",
+      "after": " if v82.targetHealth then for k,value in pairs(v82.targetHealth.stats()) do r[k]=value end end\n if v82.randomColor then for k,value in pairs(v82.randomColor.stats()) do r[k]=value end end\n"
+    },
+    {
+      "start": 2766,
+      "end": 2767,
+      "before": "",
+      "after": " if service.normal and v82.randomColor and v82.randomColor.active then service.randomActual=entry.part.Color;v82.randomColor.result(service) end\n"
+    },
+    {
+      "start": 2958,
+      "end": 2964,
+      "before": "",
+      "after": "  if not candidate and v82.targetHealth and v82.camera.mode==\"LOCKED\" then\n   local evidence=v82.targetHealth.inspect(entry,\"BEFORE_PALETTE\")\n   if v82.targetHealth.environmental(evidence.Class) then\n    v82.targetHealth.defer(entry,evidence);minimumRetry=math.min(minimumRetry,entry.retryAt);return\n   end\n  end\n"
+    },
+    {
+      "start": 3206,
+      "end": 3207,
+      "before": "",
+      "after": " if v82.targetHealth and v82.targetHealth.active then return false end\n"
+    },
+    {
+      "start": 3248,
+      "end": 3249,
+      "before": "",
+      "after": " if v82.targetHealth and v82.targetHealth.active then v82.targetHealth.active=false;v82.targetHealth.status=\"STOPPED: \"..tostring(reason) end\n"
+    },
+    {
+      "start": 3330,
+      "end": 3331,
+      "before": "   and colorsMatch(paletteColor(),target)\n",
+      "after": "   and (colorsMatch(paletteColor(),target) or (variant==\"B\" and v82.randomColor.pending and colorsMatch(v82.randomColor.color,target)))\n"
+    },
+    {
+      "start": 3347,
+      "end": 3355,
+      "before": "   -- No attribute write: the same user-selected NORMAL color must persist.\n",
+      "after": "   -- Only an explicit Randomize stages a new RGB, while the real tool is UNEQUIPPED.\n   -- Ordinary production-B refreshes keep the existing attribute unchanged.\n   if v82.randomColor.pending then\n    v82.randomColor.writing=true\n    player:SetAttribute(\"PaintBucketColor\",target)\n    v82.randomColor.writing=false\n    if not colorsMatch(paletteColor(),target) then error(\"Random RGB state write was not retained\") end\n   end\n"
+    },
+    {
+      "start": 3358,
+      "end": 3359,
+      "before": "",
+      "after": "   if v82.randomColor.pending and colorsMatch(target,v82.randomColor.color) then v82.randomColor.pending=false;v82.randomColor.prepared=true end\n"
+    },
+    {
+      "start": 3380,
+      "end": 3382,
+      "before": "",
+      "after": " v82.randomColor.writing=false\n if not ok and v82.randomColor.active then v82.randomColor.failures+=1 end\n"
+    },
+    {
+      "start": 3438,
+      "end": 3440,
+      "before": "  \"ProductionPolicy=PER_TARGET; observed native DOWN floor 150ms for A/B/C. No winner auto-applied.\",\n",
+      "after": "  \"ProductionPolicy=PER_TARGET; default B from supplied live A/B evidence; observed native DOWN floor 150ms. Civil timing is independent.\",\n  \"SuppliedLiveAB=A1 22/40; B2 39/40 (5.4097 cps); C3 39/40; C4 40/40; B5 39/40 (5.4224 cps); A6 35/40. New production combat remains unverified.\",\n"
+    },
+    {
+      "start": 3466,
+      "end": 3467,
+      "before": " table.insert(lines,\"Decision=PENDING_LIVE_COMPARISON. Preparation echoes alone are never success; results are local observations, not server acknowledgments.\")\n",
+      "after": " table.insert(lines,\"Decision=DEFAULT_B_FROM_SUPPLIED_LIVE_AB; any new diagnostic phases require comparison. Preparation echoes alone are never success; results are local observations, not server acknowledgments.\")\n"
+    },
+    {
+      "start": 3468,
+      "end": 3682,
+      "before": "",
+      "after": "end\n\n-- Cross-entry health is independent of palette, paint timing and target identity.\n-- All recovery runs inside the ONE worker, with Mouse1 released and camera unchanged.\nv82.targetHealth={active=false,refreshed=false,isolated={},window={},events={},cursor=0,status=\"READY\",generation=0,\n counters={TargetLossStormEntries=0,TargetLossStorms=0,GlobalTargetCacheInvalidations=0,GlobalTargetRecoveryAttempts=0,GlobalTargetRecoverySuccesses=0,\n OffscreenDeferredCount=0,TargetMismatchCount=0,StaleProjectionCount=0,GeometryReparentCount=0,ProjectionBudgetDeferrals=0}}\nfunction v82.targetHealth.context()\n local h=v82.targetHealth;local c=Workspace.CurrentCamera\n if c~=h.camera or (c and (c.CFrame~=h.frame or c.ViewportSize~=h.viewport)) then\n  h.camera=c;h.frame=c and c.CFrame;h.viewport=c and c.ViewportSize;h.generation+=1\n end\n return h.generation\nend\nfunction v82.targetHealth.path(object)\n if not object then return \"nil\" end\n local ok,value=pcall(function() return object:GetFullName() end);return ok and value or \"destroyed\"\nend\nfunction v82.targetHealth.inspect(e,stage)\n local h=v82.targetHealth;local c=Workspace.CurrentCamera;local part=e.part\n local r={EntryId=e.id,Stage=stage or \"UNKNOWN\",At=os.clock(),ExpectedPath=h.path(part),Alive=validProvince(part),\n  ActualMouseTarget=h.path(mouse.Target),ActualMouseAncestor=h.path(mouse.Target and mouse.Target.Parent),\n  CameraGeneration=h.context(),CameraCFrame=c and tostring(c.CFrame) or \"nil\",Viewport=c and tostring(c.ViewportSize) or \"nil\",\n  CachedPoint=e.lastScreen and tostring(e.lastScreen) or \"none\",InitialCandidatePoint=e.lastAttemptPoint or \"none\",ActualCursor=tostring(UserInputService:GetMouseLocation()),PointSource=e.lastAttemptSource or \"FRESH_AUDIT\",\n  ProvinceCFrame=part and tostring(part.CFrame) or \"nil\",ProvinceSize=part and tostring(part.Size) or \"nil\",StormActive=h.active,\n  MapParent=h.path(part and part.Parent),MapTransform=\"per-province CFrame sampled; no map writes\",InViewport=false,PaletteRootVisible=false,TopGUIObject=\"none\"}\n local root=playerGui:FindFirstChild(\"PaletteGui\");if root then\n  for _,o in ipairs(root:GetDescendants()) do if o:IsA(\"GuiObject\") and palette.visible(o) then r.PaletteRootVisible=true;break end end\n end\n if not r.Alive then r.Class=\"DESTROYED_REPARENTED\";return r end\n if not c then r.Class=\"UNACQUIRABLE\";return r end\n local moved=e.pointFrame and e.pointFrame~=part.CFrame or e.pointSize and e.pointSize~=part.Size\n local points=targetPoints(part);local exposed,obscured,rayHit=false,false,false\n for _,world in ipairs(points) do\n  local point,visible=c:WorldToViewportPoint(world)\n  if visible and point.Z>0 then\n   r.InViewport=true;r.ProjectedScreen=tostring(point)\n   local clear=guiClear(point)\n   if not clear then\n    obscured=true\n    local ok,objects=pcall(function() local inset=GuiService:GetGuiInset();return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)\n    if ok and objects[1] then r.TopGUIObject=h.path(objects[1]) end\n   else\n    exposed=true\n    local ray=c:ViewportPointToRay(point.X,point.Y)\n    if rayCharacter~=player.Character then rayCharacter=player.Character;fastRayParams.FilterDescendantsInstances=rayCharacter and {rayCharacter} or {} end\n    local hit=Workspace:Raycast(ray.Origin,ray.Direction*10000,fastRayParams)\n    if hit and hit.Instance==part then rayHit=true;break end\n   end\n  end\n end\n if not r.InViewport then r.Class=\"OFFSCREEN\"\n elseif not exposed and obscured then r.Class=\"GUI_OBSCURED\"\n elseif not rayHit then r.Class=\"OCCLUDED\"\n elseif moved or e.lastFrame and (e.lastFrame~=c.CFrame or e.lastViewport~=c.ViewportSize) then r.Class=\"STALE_PROJECTION\"\n elseif mouse.Target~=part then r.Class=\"MOUSE_TARGET_MISMATCH\"\n else r.Class=\"UNACQUIRABLE\" end\n return r\nend\nfunction v82.targetHealth.environmental(class)\n return class==\"OFFSCREEN\" or class==\"OCCLUDED\" or class==\"GUI_OBSCURED\" or class==\"DESTROYED_REPARENTED\"\nend\nfunction v82.targetHealth.remember(r)\n local h=v82.targetHealth;v82.push(h.events,r,40)\n if r.Class==\"OFFSCREEN\" then h.counters.OffscreenDeferredCount+=1\n elseif r.Class==\"MOUSE_TARGET_MISMATCH\" then h.counters.TargetMismatchCount+=1\n elseif r.Class==\"STALE_PROJECTION\" then h.counters.StaleProjectionCount+=1\n elseif r.Class==\"DESTROYED_REPARENTED\" then h.counters.GeometryReparentCount+=1 end\nend\nfunction v82.targetHealth.defer(e,r)\n local h=v82.targetHealth;h.remember(r)\n if r.Class==\"DESTROYED_REPARENTED\" then removeProvince(e.part);return end\n -- Visibility is not a failed paint or an unhealthy province. Do not reset its\n -- dirty episode, assignment, fairness age, or learned service latency.\n e.visibilityClass=r.Class;e.visibilityGeneration=h.generation\n v82.defer(e,CFG.VisibilityRetry,\"VISIBILITY\");e.LastFailureReason=r.Class\nend\nfunction v82.targetHealth.success(service)\n local h=v82.targetHealth\n v82.push(h.window,{id=service.entry.id,at=os.clock(),loss=false},24)\n service.entry.visibilityClass=nil;h.isolated[service.entry.id]=nil\nend\nfunction v82.targetHealth.finish(service)\n local h=v82.targetHealth;local reason=service.result;local e=service.entry\n if benchmark.active then return false end -- isolated benchmark retains its own cohort policy\n if reason==\"PROJECTION_BUDGET\" or e.AcquisitionState==\"ACQUIRE_PROJECTION_BUDGET_EXHAUSTED\" and (reason==\"TARGET_LOST\" or reason==\"ACQUIRE_FAILED\") then\n  service.result=\"PROJECTION_BUDGET\";service.validNoEffect=false;h.counters.ProjectionBudgetDeferrals+=1\n  v82.defer(e,.02,\"FRAME_BUDGET\");return true\n end\n if reason~=\"TARGET_LOST\" and reason~=\"ACQUIRE_FAILED\" and not h.environmental(reason) and reason~=\"STALE_PROJECTION\" and reason~=\"UNACQUIRABLE\" then return false end\n if not running or not focused or service.episode~=e.dirtyEpisode then return false end\n local r=h.inspect(e,service.stage or (service.acquiredAt and \"PAINT_SERVICE\" or \"AFTER_PALETTE\"));service.targetEvidence=r\n service.validNoEffect=false\n if h.environmental(r.Class) then service.result=r.Class;h.defer(e,r);return true end\n h.remember(r)\n if h.isolated[e.id]==h.generation then return false end\n v82.push(h.window,{id=e.id,at=os.clock(),loss=true},24)\n local ids,n,l={},0,0\n for _,x in ipairs(h.window) do if os.clock()-x.at<=CFG.TargetStormWindow then n+=1;if x.loss then l+=1;ids[x.id]=true end end end\n local count=0;for _ in pairs(ids) do count+=1 end\n if not h.active and (count>=CFG.TargetStormDistinct or count>=3 and n>=6 and l/n>.5) then\n  h.active=true;h.refreshed=false;h.status=\"RELEASE THEN GLOBAL CACHE REFRESH\";h.proofs={};h.cursor=0\n  h.counters.TargetLossStorms+=1;h.counters.TargetLossStormEntries=count\n end\n if h.active then\n  service.result=\"GLOBAL_TARGETING_RECOVERY\";v82.defer(e,.02,\"GLOBAL_RECOVERY\");return true\n end\n return false\nend\nfunction v82.targetHealth.reset()\n local h=v82.targetHealth;h.active=false;h.refreshed=false;h.window={};h.proofs={};h.isolated={};h.status=\"READY\";h.nextAt=0\nend\nfunction v82.targetHealth.recover(token)\n local h=v82.targetHealth\n if not settleRelease() then stop(\"Global targeting recovery: Mouse1 release unresolved\");return end\n currentEntry=nil\n if not liveToken(token) then return end\n if os.clock()<(h.nextAt or 0) then nextWorkerAt=h.nextAt;waitWork();return end\n if not h.refreshed then\n  h.context();h.counters.GlobalTargetRecoveryAttempts+=1;v82.lookahead=nil\n  for _,e in ipairs(entries) do\n   health.invalidate(e,true);e.surfacePoints=nil;e.pointFrame=nil;e.pointSize=nil;e.forceSafeCamera=nil;e.visibilityClass=nil\n   if e.deferKind==\"QUARANTINE\" or e.deferKind==\"RETRY\" or e.deferKind==\"GLOBAL_RECOVERY\" then e.retryAt=0;e.deferKind=nil end\n   e.ConsecutiveTargetLosses=0;e.ConsecutiveAcquireFailures=0;e.ConsecutiveFailures=0;e.quarantineLevel=0\n   h.counters.GlobalTargetCacheInvalidations+=1\n  end\n  h.refreshed=true;h.proofs={}\n end\n h.status=\"PROBING REAL TARGETS \u2014 NO PAINT INPUT\";local camera=Workspace.CurrentCamera;local pose=camera and camera.CFrame\n local generation=h.context();if h.proofGeneration~=generation then h.proofs={};h.proofGeneration=generation end\n local tested=0;local eligible={}\n -- Read-only classify a bounded slice. No camera writes, palette input, or DOWN.\n for _=1,math.min(32,#dirty) do\n  if #dirty==0 or not liveToken(token) then break end\n  h.cursor=h.cursor%#dirty+1;local e=dirty[h.cursor]\n  if e.active and shouldTarget(e) and os.clock()>=e.retryAt then table.insert(eligible,e) end\n end\n local proofs=0\n for _=1,#eligible do\n  h.probeCursor=(h.probeCursor or 0)%#eligible+1;local e=eligible[h.probeCursor]\n  if not liveToken(token) or Workspace.CurrentCamera~=camera or camera.CFrame~=pose then h.proofs={};break end\n  local r=h.inspect(e,\"GLOBAL_PROBE\")\n  if h.environmental(r.Class) then h.defer(e,r)\n  elseif tested<3 then\n   tested+=1\n   if v7.lockTarget(e) then\n    local point,budget=visiblePoint(e)\n    if budget then waitWork();if liveToken(token) then point=visiblePoint(e) end end\n    -- No camera fallback inside recovery, even if user had opted in elsewhere.\n    local acquired=point and moveCursor(point,token) and mouse.Target==e.part\n    v7.unlockTarget(e)\n    if acquired then h.proofs[e.id]=math.min(CFG.TargetStormProbes,(h.proofs[e.id] or 0)+1) else\n     h.remember(h.inspect(e,\"GLOBAL_PROBE\"));h.isolated[e.id]=h.generation;health.invalidate(e,true);v82.defer(e,1,\"GLOBAL_PROBE\")\n    end\n   end\n  end\n  if tested>=3 then break end\n end\n for id in pairs(h.proofs) do local e=v82.ids[id];if e and shouldTarget(e) then proofs+=h.proofs[id] else h.proofs[id]=nil end end\n local needed=math.min(CFG.TargetStormProbes,#dirty)\n if liveToken(token) and camera==Workspace.CurrentCamera and camera.CFrame==pose and needed>0 and proofs>=needed then\n  h.active=false;h.window={};h.status=\"REAL TARGET PROBES CONFIRMED\";h.counters.GlobalTargetRecoverySuccesses+=1\n  wakeWork();return\n end\n if #dirty==0 then h.reset();return end\n h.status=\"WAITING FOR TARGETABLE VIEW / GUI CLEAR; probes \"..proofs..\"/\"..needed\n h.nextAt=os.clock()+CFG.TargetStormRetry;nextWorkerAt=h.nextAt;waitWork()\nend\nfunction v82.targetHealth.stats()\n local h=v82.targetHealth;local r=table.clone(h.counters);r.TargetLossStormActive=h.active;r.GlobalTargetingState=h.status;r.TargetContextGeneration=h.generation\n return r\nend\nfunction v82.targetHealth.report()\n local h=v82.targetHealth;local lines={\"GLOBAL TARGETING HEALTH \u2014 local acquisition evidence; no server validation inference\"}\n for k,v in pairs(h.stats()) do table.insert(lines,k..\"=\"..tostring(v)) end\n table.insert(lines,\"LAST 40 TARGET AUDITS\")\n for _,r in ipairs(h.events) do\n  local fields={};local keys={};for k in pairs(r) do table.insert(keys,k) end;table.sort(keys)\n  for _,k in ipairs(keys) do table.insert(fields,k..\"=\"..tostring(r[k])) end\n  table.insert(lines,table.concat(fields,\" | \"))\n end\n return table.concat(lines,\"\\n\")\nend\n\nv82.randomColor={active=false,pending=false,generation=0,exactResults=0,failures=0}\nfunction v82.randomColor.choose(seed)\n local r=v82.randomColor\n if mode~=\"NORMAL\" or running or workerActive or selecting or benchmark.active or ownedInput then return false,\"Stop NORMAL and finish selection before Randomize Color\" end\n local used={};for _,item in ipairs(palette.controls) do if item.color and item.semanticVerified then table.insert(used,item.color) end end\n if #used<128 then return false,\"Learn/import and verify the 128 native colors first, so off-palette RGB can be guaranteed\" end\n if r.color then table.insert(used,r.color) end\n seed=tonumber(seed) or math.random(1,2147483646)\n local pool=palette.perceptual.make(palette.rng(seed),used,1);local color=palette.perceptual.take(pool)\n if not color then return false,\"No distinct candidate available\" end\n r.nearest=nil;r.closest=nil;r.color=color;r.active=true;r.pending=true;r.prepared=false;r.generation+=1;r.exactResults=0;r.failures=0;r.seed=seed\n normalTarget=color;v82.normalAB.production=\"B\";if palette.probe2 then palette.probe2.Text=\"NORMAL production path: B\" end;rebuildDirty()\n lastMessage=\"Random RGB \"..rgbText(color)..\" selected. START applies it through native unequip/equip, then normal input. No paint sent by Randomize.\"\n return true,lastMessage\nend\nfunction v82.randomColor.result(service)\n local r=v82.randomColor\n if not service.randomCounted and r.active and r.prepared and service.normal and service.success and service.qualified and service.method and colorsMatch(service.target,r.color)\n  and colorKey(service.randomActual or service.entry.part.Color)==colorKey(r.color) and colorKey(service.actualBefore)~=colorKey(r.color) then\n  service.randomCounted=true;r.exactResults+=1;r.lastExactEntry=service.entry.id\n end\nend\nfunction v82.randomColor.stats()\n local r=v82.randomColor;local near=math.huge;local closest=nil\n if r.color and not r.nearest then for _,item in ipairs(palette.controls) do local d=palette.perceptual.distance(palette.perceptual.lab(r.color),palette.perceptual.lab(item.color));if d<near then near=d;closest=item.color end end;r.nearest=near;r.closest=closest end\n near=r.nearest or near;closest=r.closest or closest\n return {RandomColorActive=r.active,RandomColorRGB=rgbText(r.color),RandomColorSource=\"RANDOM_GENERATED\",RandomColorNativePaletteIndex=\"NONE\",\n RandomColorClosestNativeRGB=rgbText(closest),RandomColorDistanceToNative=near<math.huge and near or \"N/A\",RandomColorGeneration=r.generation,\n RandomColorExactProvinceResults=r.exactResults,RandomColorPreparationFailures=r.failures,RandomColorPending=r.pending,\n RandomColorProof=r.exactResults>0 and \"LOCAL_EXACT_PROVINCE_RESULT_OBSERVED\" or \"UNVERIFIED \u2014 attribute/echo alone is not proof\"}\n"
+    },
+    {
+      "start": 3688,
+      "end": 3689,
+      "before": "",
+      "after": "  if v82.targetHealth.active then v82.targetHealth.recover(token);continue end\n"
+    },
+    {
+      "start": 3733,
+      "end": 3742,
+      "before": "    local feasible=visiblePoint(entry)\n    if not feasible and not (entry.forceSafeCamera and acquireFast({entry=entry,tier=3},token)) then\n     v82.data.TargetLostBeforePalette+=1;service.result=\"TARGET_LOST\";policy.finish(service,false);continue\n",
+      "after": "    local feasible,budget=visiblePoint(entry)\n    if budget then waitWork();if not liveToken(token) then break end;feasible,budget=visiblePoint(entry) end\n    if budget then service.result=\"PROJECTION_BUDGET\";policy.finish(service,false);continue end\n    if not feasible then\n     -- This check establishes visibility, not real Mouse.Target ownership. Never\n     -- turn an offscreen/UI-obscured province into a repeated TARGET_LOST storm.\n     service.stage=\"BEFORE_PALETTE\";service.result=v82.targetHealth.inspect(entry,service.stage).Class\n     if service.result==\"MOUSE_TARGET_MISMATCH\" then service.result=\"TARGET_LOST\" end\n     v82.data.TargetLostBeforePalette+=1;policy.finish(service,false);continue\n"
+    },
+    {
+      "start": 3781,
+      "end": 3782,
+      "before": "",
+      "after": "  entry.lastAttemptPoint=candidate.point and tostring(candidate.point) or \"none\";entry.lastAttemptSource=candidate.tier==0 and \"CACHED_CURSOR\" or \"FRESH_PROJECTION\"\n"
+    },
+    {
+      "start": 3809,
+      "end": 3810,
+      "before": "",
+      "after": "  service.stage=\"BEFORE_DOWN\"\n"
+    },
+    {
+      "start": 3820,
+      "end": 3821,
+      "before": "",
+      "after": "  service.stage=\"PAINT_SERVICE\"\n"
+    },
+    {
+      "start": 3902,
+      "end": 3903,
+      "before": "",
+      "after": " if v82.targetHealth then v82.targetHealth.isolated[entry.id]=nil;if v82.targetHealth.proofs then v82.targetHealth.proofs[entry.id]=nil end end\n"
+    },
+    {
+      "start": 3917,
+      "end": 3918,
+      "before": "",
+      "after": " if last~=entry and last.active and v82.outlines~=false then v7.visual.draw(last) end\n"
+    },
+    {
+      "start": 3990,
+      "end": 3991,
+      "before": "title.Text = \"AutoPainter \u00b7 HANDS FREE v8.2 Native Lifecycle\"\n",
+      "after": "title.Text = \"AutoPainter \u00b7 HANDS FREE v8.2 V2 Recovery\"\n"
+    },
+    {
+      "start": 4067,
+      "end": 4068,
+      "before": "local palettePanel=Instance.new(\"Frame\")\n",
+      "after": "local palettePanel=Instance.new(\"ScrollingFrame\")\n"
+    },
+    {
+      "start": 4079,
+      "end": 4080,
+      "before": "palette.probe2=button(\"NORMAL production path: A\",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)\n",
+      "after": "palette.probe2=button(\"NORMAL production path: B\",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)\n"
+    },
+    {
+      "start": 4081,
+      "end": 4082,
+      "before": "palettePanel.Size=UDim2.fromOffset(245,783)\n",
+      "after": "palettePanel.Size=UDim2.fromOffset(245,575);palettePanel.CanvasSize=UDim2.fromOffset(0,850);palettePanel.ScrollBarThickness=6\n"
+    },
+    {
+      "start": 4178,
+      "end": 4181,
+      "before": "",
+      "after": " if mode==\"NORMAL\" and v82.randomColor.active then status.Text..=\"\\nSource: RANDOM GENERATED \u00b7 RGB \"..rgbText(v82.randomColor.color)..\" \u00b7 Native palette index: NONE\" end\n v82.randomColor.preview.BackgroundColor3=c\n v82.randomColor.preview.Text=\"RGB \"..rgbText(c)..(v82.randomColor.active and \" \u00b7 RANDOM GENERATED\" or \" \u00b7 NATIVE COLOR\")\n"
+    },
+    {
+      "start": 4200,
+      "end": 4203,
+      "before": " if currentEntry and currentEntry.civilControl and currentEntry.civilControl.generated and mode==\"CIVIL WAR\" then liveStatus.Text..=\"\\n\"..currentEntry.civilControl.signature.Name end\n",
+      "after": " if currentEntry and currentEntry.civilControl and currentEntry.civilControl.generated and mode==\"CIVIL WAR\" then liveStatus.Text..=\"\\nSource: GENERATED \u00b7 \"..currentEntry.civilControl.signature.Name..\" \u00b7 Native palette index: NONE\" end\n if running and mode==\"NORMAL\" and v82.randomColor.active then liveStatus.Text..=\"\\nSource: RANDOM GENERATED \u00b7 RGB \"..rgbText(v82.randomColor.color)..\" \u00b7 Native palette index: NONE\" end\n if v82.targetHealth.active then liveStatus.Text..=\"\\nGLOBAL_TARGETING_RECOVERY: \"..v82.targetHealth.status end\n"
+    },
+    {
+      "start": 4312,
+      "end": 4314,
+      "before": "\tnormalTarget = paletteColor()\n\tif mode == \"NORMAL\" and not preparePalette(normalTarget) then\n",
+      "after": " normalTarget = mode==\"NORMAL\" and v82.randomColor.active and v82.randomColor.color or paletteColor()\n\tif mode == \"NORMAL\" and not v82.randomColor.pending and not preparePalette(normalTarget) then\n"
+    },
+    {
+      "start": 4320,
+      "end": 4321,
+      "before": "",
+      "after": " v82.targetHealth.reset()\n"
+    },
+    {
+      "start": 4388,
+      "end": 4389,
+      "before": "",
+      "after": " if v82.randomColor.pending then return false,\"START the staged random color before running a same-color A/B experiment\" end\n"
+    },
+    {
+      "start": 4408,
+      "end": 4409,
+      "before": "",
+      "after": " if v82.randomColor.pending and key~=\"B\" then return false,\"Pending Randomize requires the native B equip path\" end\n"
+    },
+    {
+      "start": 5138,
+      "end": 5143,
+      "before": "",
+      "after": "v82.randomColor.button=button(\"Randomize Color\",783);v82.randomColor.button.Parent=palettePanel;v82.randomColor.button.Size=UDim2.new(1,-20,0,28)\nv82.randomColor.button.Activated:Connect(function() local ok,why=v82.randomColor.choose();lastMessage=tostring(why);updateUI() end)\nv82.randomColor.preview=button(\"Random color preview\",815);v82.randomColor.preview.Parent=palettePanel;v82.randomColor.preview.Size=UDim2.new(1,-20,0,28)\nv82.randomColor.preview.Active=false\n\n"
+    },
+    {
+      "start": 5160,
+      "end": 5161,
+      "before": "\tif mode==\"NORMAL\" then normalTarget=paletteColor() end\n",
+      "after": "\tif mode==\"NORMAL\" then normalTarget=v82.randomColor.active and v82.randomColor.color or paletteColor();if v82.randomColor.active then v82.randomColor.pending=true end end\n"
+    },
+    {
+      "start": 5164,
+      "end": 5165,
+      "before": "\t\tor \"Civil War assigns each province a distinct learned native palette color\"\n",
+      "after": "\t\tor \"Civil War: native colors first, then unique generated RGB (GEN # / exact RGB)\"\n"
+    },
+    {
+      "start": 5184,
+      "end": 5185,
+      "before": "",
+      "after": " if input.KeyCode==Enum.KeyCode.R and not running then local ok,why=v82.randomColor.choose();lastMessage=tostring(why);updateUI();return end\n"
+    },
+    {
+      "start": 5189,
+      "end": 5190,
+      "before": "   lastMessage=entryLabel(entry)..\" | Source: \"..(item and item.generated and \"GENERATED\" or item and \"NATIVE\" or \"NORMAL\")\n",
+      "after": "   lastMessage=entryLabel(entry)..\" | Source: \"..(mode==\"NORMAL\" and v82.randomColor.active and \"RANDOM GENERATED\" or item and item.generated and \"GENERATED\" or item and \"NATIVE\" or \"NORMAL\")\n"
+    },
+    {
+      "start": 5268,
+      "end": 5273,
+      "before": "",
+      "after": " if mode==\"NORMAL\" and v82.randomColor.active and not v82.randomColor.writing and not palette.generated.reload and not v82.normalAB.reload\n  and not colorsMatch(paletteColor(),v82.randomColor.color) then\n  v82.randomColor.active=false;v82.randomColor.pending=false\n  if not running then normalTarget=paletteColor() end\n end\n"
+    },
+    {
+      "start": 5383,
+      "end": 5385,
+      "before": "",
+      "after": " RandomizeColor=function(seed) return v82.randomColor.choose(seed) end,\n GetTargetHealthReport=function() return v82.targetHealth.report() end,\n"
+    },
+    {
+      "start": 5402,
+      "end": 5403,
+      "before": "",
+      "after": "  local identity=mode==\"CIVIL WAR\" and e.civilControl or (not v82.randomColor.active and palette.find(targetColor(e)) or nil)\n"
+    },
+    {
+      "start": 5416,
+      "end": 5419,
+      "before": "\t\t\tColorSource=mode==\"NORMAL\" and \"NORMAL\" or e.civilControl and (e.civilControl.generated and \"GENERATED\" or \"NATIVE\") or \"UNASSIGNED\",GeneratedOrdinal=e.civilControl and e.civilControl.ordinal,\n\t\t\tAssignedColorName=e.civilControl and e.civilControl.signature.Name,LearnedPaletteIndex=e.civilControl and e.civilControl.index,PaletteControlPath=e.civilControl and e.civilControl.path,\n",
+      "after": "\t\t\tColorSource=mode==\"NORMAL\" and (v82.randomColor.active and \"RANDOM_GENERATED\" or \"NORMAL\") or e.civilControl and (e.civilControl.generated and \"GENERATED\" or \"NATIVE\") or \"UNASSIGNED\",GeneratedOrdinal=e.civilControl and e.civilControl.ordinal,\n\t\t\tAssignedColorName=mode==\"NORMAL\" and v82.randomColor.active and (\"RANDOM GENERATED \u2014 RGB \"..rgbText(targetColor(e))) or identity and identity.signature.Name,\n   LearnedPaletteIndex=identity and identity.index or 0,PaletteControlPath=identity and identity.path or \"NONE\",\n"
+    },
+    {
+      "start": 5450,
+      "end": 5451,
+      "before": "\t\tif mode==\"NORMAL\" then normalTarget=paletteColor() end\n",
+      "after": "\t\tif mode==\"NORMAL\" then normalTarget=v82.randomColor.active and v82.randomColor.color or paletteColor();if v82.randomColor.active then v82.randomColor.pending=true end end\n"
+    },
+    {
+      "start": 5460,
+      "end": 5461,
+      "before": "\t\t\tVersion = 8.2, Build = \"8.2-master-ab\",\n",
+      "after": "\t\t\tVersion = 8.2, Build = \"8.2-v2-recovery\",\n"
+    }
+  ]
+}

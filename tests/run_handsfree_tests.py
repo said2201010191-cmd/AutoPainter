@@ -24,7 +24,9 @@ for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
 # The only new working-color write is inside the source-traced Civil equip transaction.
-assert source.count('SetAttribute("PaintBucketColor"')==1
+assert source.count('SetAttribute("PaintBucketColor"')==2
+write2=source.rindex('SetAttribute("PaintBucketColor"')
+assert source.index('function v82.normalAB.prepare(')<write2<source.index('function v82.normalAB.newPhase(')
 write=source.index('SetAttribute("PaintBucketColor"')
 assert source.index('function palette.prepareGenerated(')<write<source.index('function palette.generatedResult(')
 
@@ -32,6 +34,14 @@ assert source.index('function palette.prepareGenerated(')<write<source.index('fu
 # Reverse that exact allowlist and compare the ENTIRE controller to main 9900a73.
 # Civil, input, target/dwell/scheduler and benchmark algorithms cannot drift silently.
 prior=source
+v2=json.loads((root/'tests/v2_scope.json').read_text())
+lines=prior.splitlines(True)
+for change in reversed(v2['allowedChanges']):
+    assert ''.join(lines[change['start']:change['end']])==change['after'], 'V2 reviewed scope changed'
+    lines[change['start']:change['end']]=change['before'].splitlines(True)
+prior=''.join(lines)
+assert hashlib.sha256(prior.encode()).hexdigest()==v2['baseSourceSHA256']
+print('V2 changes reverse exactly to b4ef5e7; historical freezes retained',flush=True)
 master=json.loads((root/'tests/master_scope.json').read_text())
 lines=prior.splitlines(True)
 for change in reversed(master['allowedChanges']):
@@ -64,10 +74,10 @@ frozen=re.sub(r'^ PausePaintCooldownBenchmark=.*\n','',frozen,flags=re.M)
 freeze=json.loads((root/'tests/benchmark_production_freeze.json').read_text())
 assert hashlib.sha256(frozen.encode()).hexdigest()==freeze['sha256'], 'Benchmark-only scope: production source changed'
 print('Entire production source matches e67a01b; benchmark-only implementation/bridges excepted',flush=True)
-for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau', 'native_rgb.spec.luau', 'master_revision.spec.luau']:
+for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau', 'native_rgb.spec.luau', 'master_revision.spec.luau', 'v2_revision.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)
-        f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(root/'tests'/suite).read_text())
+        f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(('SOURCE=SOURCE:gsub(\'production="B"\',\'production="A"\',1)\n' if suite!='v2_revision.spec.luau' else '')+(root/'tests'/suite).read_text()))
     try:
         subprocess.run([sys.argv[1] if len(sys.argv)>1 else 'luau',str(path)],check=True)
     finally:

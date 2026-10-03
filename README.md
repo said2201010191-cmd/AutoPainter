@@ -1,3 +1,5 @@
+> **Current revision: Hands Free v8.2 V2 Recovery (`8.2-v2-recovery`).** NORMAL now defaults to the user-tested native re-equip B path at the existing 150 ms requested floor. New cross-entry targeting recovery, opaque proxy + real-part outline fallback, stopped-mode Randomize Color, and non-regressing OKLab refinement are described in [V2_RECOVERY_RELEASE.md](V2_RECOVERY_RELEASE.md). Follow that document where older release notes differ. Live combat, rendering and Randomize application need user testing.
+
 # Current Hands Free build: v8.2 Native Lifecycle
 
 

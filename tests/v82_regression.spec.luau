@@ -233,7 +233,7 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p,t=setup(deferred,2,4);a.SetMode("CIVIL WAR");a.SetCameraMode("OFF")
   w.occluded={[p[1]]=true};w.rayRule=function(_,_,hit) return hit==p[1] and nil or hit end;w.cannotAcquire[p[1]]=true
   w.start(a,5);assert(a.ColorsMatch(p[2].Color,t.entry(p[2]).civilColor))
-  assert(a.GetPerformanceStats().GlobalDwellMs<=250 and t.entry(p[1]).ConsecutiveFailures>=3);clean(w,a)
+  assert(a.GetPerformanceStats().GlobalDwellMs<=250 and t.entry(p[1]).ConsecutiveFailures==0 and t.entry(p[1]).visibilityClass=="OCCLUDED");clean(w,a)
  end)
  test(pre.."focus and native GUI recreation resume stable assignments after focus grace",function()
   local w,a,p,t=setup(deferred,4,8);a.SetMode("CIVIL WAR");w.start(a,1)

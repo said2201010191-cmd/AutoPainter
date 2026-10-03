@@ -1,7 +1,7 @@
--- AutoPainter Hands Free v8.2 Native Lifecycle
+-- AutoPainter Hands Free v8.2 V2 Recovery
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
--- NORMAL paints every protected province to one palette color.
+-- NORMAL paints every protected province to one native or random-generated target color.
 -- CIVIL WAR is optional and assigns a unique color to every protected province.
 
 local Players = game:GetService("Players")
@@ -21,12 +21,13 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
-	assert(existing.GetStats().Build=="8.2-master-ab","Export your palette and close the older Hands Free panel before loading the Native Lifecycle build")
+	assert(existing.GetStats().Build=="8.2-v2-recovery","Export your palette and close the older Hands Free panel before loading the Native Lifecycle build")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
 
 local CFG = {
+ TargetStormWindow=2,TargetStormDistinct=4,TargetStormProbes=2,TargetStormRetry=0.5,VisibilityRetry=0.5,
  OverloadDepth=12,OverloadExitDepth=4,OverloadQueueMs=750,OverloadExitQuiet=1.5,OverloadMinHold=2,
  HardEligibleAge=1.5,HotReattackWindow=0.25,HotWindow=2,HotRotationGap=0.10,CivilMicroBatch=4,
  DwellTrainingDiversity=4,HealthyReconcile=1.5,RepairReconcile=0.12,RepairReconcileHold=3,
@@ -223,7 +224,7 @@ local toolConnections, equippedMouseConnections = {}, {}
 local ownedInput, inputBusy, pendingRelease = nil, false, false
 local workerActive, releaseBlocked, starting = false, false, false
 local benchmark: any = {active=false,state="SETUP",detail="Not started",rows={}}
-v82.normalAB = {active=false,production="A",state="NOT_RUN",phases={},index=1}
+v82.normalAB = {active=false,production="B",state="NOT_RUN",phases={},index=1}
 local pacing: any = {interval=CFG.NormalDownSpacingDefault,source=CFG.NormalCadenceSource,normal={},civil={}}
 local finishClose, restorePending, restoringPalette = nil, false, false
 local focused = true
@@ -940,7 +941,7 @@ function palette.rng(seed)
 end
 -- Bounded farthest-point sampling in OKLab (Euclidean delta * 100).
 -- Conversion: Bjorn Ottosson, https://bottosson.github.io/posts/oklab/ .
-palette.perceptual = {PoolSize=1536,Metric="OKLab Euclidean x100",serial=0}
+palette.perceptual = {PoolSize=3072,RefinementSteps=32,Metric="OKLab Euclidean x100",serial=0}
 function palette.perceptual.lab(c)
  local function linear(x) return x<=0.04045 and x/12.92 or ((x+0.055)/1.055)^2.4 end
  local r,g,b=linear(c.R),linear(c.G),linear(c.B)
@@ -950,9 +951,9 @@ function palette.perceptual.lab(c)
  return {.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s}
 end
 function palette.perceptual.distance(a,b) return 100*math.sqrt((a[1]-b[1])^2+(a[2]-b[2])^2+(a[3]-b[3])^2) end
-function palette.perceptual.make(random,used,required)
+function palette.perceptual.rawPool(random,used,required,sizeOverride)
  local pool={};local labs={};for _,c in ipairs(used) do table.insert(labs,palette.perceptual.lab(c)) end
- local size=math.max(palette.perceptual.PoolSize,required*2);size=math.min(size,16384)
+ local size=sizeOverride or math.max(palette.perceptual.PoolSize,required*2);size=math.min(size,16384)
  local keys={}
  for _=1,size*4 do
   if #pool>=size then break end
@@ -971,6 +972,7 @@ function palette.perceptual.make(random,used,required)
  return pool
 end
 function palette.perceptual.take(pool)
+ if pool.planned then local nextColor=table.remove(pool,1);return nextColor and nextColor.color end
  local at,best=nil,-1
  for i,c in ipairs(pool) do if c.near>best then at,best=i,c.near end end
  if not at then return nil end
@@ -981,6 +983,62 @@ function palette.perceptual.take(pool)
   else other.near=math.min(other.near,palette.perceptual.distance(c.lab,other.lab)) end
  end
  return c.color
+end
+-- Seed-preserving refinement: start with the exact old greedy sequence, then
+-- exchange its weakest point only when BOTH worst-case native and generated
+-- distances cannot decrease. A larger fresh greedy pool alone has no such guarantee.
+function palette.perceptual.distribution(colors,used)
+ local native={};for _,c in ipairs(used) do table.insert(native,palette.perceptual.lab(c)) end
+ local labs={};for _,c in ipairs(colors) do table.insert(labs,palette.perceptual.lab(c)) end
+ local r={native=math.huge,generated=math.huge,nearest={},weak=1}
+ for i,lab in ipairs(labs) do
+  local dn,dg=math.huge,math.huge
+  for _,old in ipairs(native) do dn=math.min(dn,palette.perceptual.distance(lab,old)) end
+  for j,other in ipairs(labs) do if i~=j then dg=math.min(dg,palette.perceptual.distance(lab,other)) end end
+  r.native=math.min(r.native,dn);r.generated=math.min(r.generated,dg);r.nearest[i]=math.min(dn,dg)
+  if r.nearest[i]<r.nearest[r.weak] then r.weak=i end
+ end
+ local sorted=table.clone(r.nearest);table.sort(sorted)
+ r.p10=sorted[math.max(1,math.ceil(#sorted*.1))] or 0;r.p50=sorted[math.max(1,math.ceil(#sorted*.5))] or 0
+ return r
+end
+function palette.perceptual.make(random,used,required)
+ local began=os.clock();local c=palette.perceptual
+ local oldSize=math.min(16384,math.max(1536,required*2))
+ local base=c.rawPool(random,used,required,oldSize)
+ if required<=1 then
+  local extra=c.rawPool(random,used,required,math.max(0,c.PoolSize-oldSize))
+  for _,v in ipairs(extra) do table.insert(base,v) end
+  return base
+ end
+ local picked={}
+ for _=1,required do local color=c.take(base);if not color then break end;table.insert(picked,color) end
+ local before=c.distribution(picked,used)
+ local extra=c.rawPool(random,used,required,math.max(0,c.PoolSize-oldSize))
+ for _,v in ipairs(extra) do table.insert(base,v) end
+ local accepted=0;local nativeLabs={};for _,old in ipairs(used) do table.insert(nativeLabs,c.lab(old)) end
+ for _=1,c.RefinementSteps do
+  local current=c.distribution(picked,used);local weak=current.weak;local best=nil;local bestScore=current.nearest[weak]
+  local labs={};for i,color in ipairs(picked) do labs[i]=c.lab(color) end
+  for i,candidate in ipairs(base) do
+   local dn=math.huge;for _,lab in ipairs(nativeLabs) do dn=math.min(dn,c.distance(candidate.lab,lab)) end
+   if dn+1e-9>=current.native then
+    local dg=math.huge
+    for j,lab in ipairs(labs) do if j~=weak then dg=math.min(dg,c.distance(candidate.lab,lab)) end end
+    local near=math.min(dn,dg)
+    if dg+1e-9>=current.generated and near>bestScore+1e-7 then best=i;bestScore=near end
+   end
+  end
+  if not best then break end
+  local candidate=table.remove(base,best);local duplicate=false
+  for _,old in ipairs(used) do if colorsMatch(old,candidate.color) then duplicate=true;break end end
+  for i,old in ipairs(picked) do if i~=weak and colorsMatch(old,candidate.color) then duplicate=true;break end end
+  if not duplicate then picked[weak]=candidate.color;accepted+=1 end
+ end
+ local after=c.distribution(picked,used)
+ c.lastQuality={Before=before,After=after,GenerationMs=(os.clock()-began)*1000,RefinementAccepted=accepted,CandidateBudget=math.max(oldSize,c.PoolSize)}
+ local plan={planned=true};for _,color in ipairs(picked) do table.insert(plan,{color=color,lab=c.lab(color),near=0}) end
+ return plan
 end
 function palette.perceptual.report()
  local generated,native={},{}
@@ -998,6 +1056,10 @@ function palette.perceptual.report()
  end
  table.insert(lines,"GeneratedMinPerceptualDistanceToNative="..(minNative<math.huge and string.format("%.6f",minNative) or "N/A"))
  table.insert(lines,"GeneratedMinPerceptualDistanceToGenerated="..(minGenerated<math.huge and string.format("%.6f",minGenerated) or "N/A"))
+ local q=palette.perceptual.lastQuality
+ if q then
+  table.insert(lines,string.format("FixedSeedRefinement: BeforeNative=%.6f BeforeGenerated=%.6f BeforeP10=%.6f BeforeP50=%.6f AfterNative=%.6f AfterGenerated=%.6f AfterP10=%.6f AfterP50=%.6f GenerationMs=%.3f Accepted=%d CandidateBudget=%d",q.Before.native,q.Before.generated,q.Before.p10,q.Before.p50,q.After.native,q.After.generated,q.After.p10,q.After.p50,q.GenerationMs,q.RefinementAccepted,q.CandidateBudget))
+ end
  return table.concat(lines,"\n")
 end
 
@@ -1035,7 +1097,7 @@ function palette.assign(reroll)
  local generatedUsed={};for _,item in ipairs(palette.controls) do if item.color then table.insert(generatedUsed,item.color) end end
  for _,item in ipairs(chosen) do table.insert(generatedUsed,item.color) end
  local candidatePool=overflow>0 and palette.perceptual.make(random,generatedUsed,overflow) or {}
- if #candidatePool>0 then palette.perceptual.lastPoolSize=#candidatePool end
+ if #candidatePool>0 then palette.perceptual.lastPoolSize=math.max(palette.perceptual.PoolSize,overflow*2) end
  local ordinal=0;for _,item in ipairs(chosen) do if item.generated then ordinal=math.max(ordinal,item.ordinal or 0) end end
  for _,entry in ipairs(missing) do
   if #filtered==0 then
@@ -1824,6 +1886,7 @@ function v7.visual.state(entry)
  return light and "CLEAN_LIGHT" or "CLEAN_DARK",light and Color3.fromRGB(15,55,145) or Color3.fromRGB(135,255,220)
 end
 function v7.visual.releaseEntry(entry)
+ if entry.directOutline then entry.directOutline:Destroy();entry.directOutline=nil end
  if entry.visualConnections then for _,c in ipairs(entry.visualConnections) do c:Disconnect() end;entry.visualConnections=nil end
  if entry.proxy then entry.proxy:Destroy();entry.proxy=nil;v7.visual.count-=1 end
  local group=entry.visualGroup
@@ -1832,7 +1895,10 @@ function v7.visual.releaseEntry(entry)
   -- Empty groups stay within the fixed budget until OFF/clear; no hot Highlight allocation churn.
  end
  entry.visualGroup=nil;entry.box=nil
- if v7.visual.count==0 and v7.visual.root then v7.visual.root:Destroy();v7.visual.root=nil;v7.visual.groups={} end
+ if v7.visual.count==0 and v7.visual.root then
+  local fallback=false;for _,e in ipairs(entries) do if e.directOutline and e.directOutline.Parent then fallback=true;break end end
+  if not fallback then v7.visual.root:Destroy();v7.visual.root=nil;v7.visual.groups={} end
+ end
 end
 function v7.visual.shard(entry)
  -- Greedy spatial coloring separates adjoining provinces into different models;
@@ -1856,7 +1922,7 @@ function v7.visual.group(entry,state,color)
  if not group then
   local model=Instance.new("Model");model.Name=key
   local h=Instance.new("Highlight");h.Name="ProtectedState";h.Enabled=true;h.Adornee=model;h.OutlineTransparency=0
-  h.DepthMode=Enum.HighlightDepthMode.Occluded;h.OutlineColor=color;h.FillColor=color;h.FillTransparency=v82.fill and .90 or 1;h.Parent=model
+  h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop;h.OutlineColor=color;h.FillColor=color;h.FillTransparency=v82.fill and .90 or 1;h.Parent=model
   model.Parent=v7.visual.root;group={key=key,model=model,highlight=h,count=0};v7.visual.groups[key]=group
  end
  group.highlight.FillTransparency=v82.fill and .90 or 1
@@ -1865,6 +1931,14 @@ end
 function v7.visual.draw(entry)
  if not entry.active or v82.outlines==false then v7.visual.releaseEntry(entry);return end
  local state,color=v7.visual.state(entry);local group=v7.visual.group(entry,state,color)
+ -- Real-part Highlight fallback for the first 192 selected provinces. No transparent
+ -- proxy dependency, and 192 + at most 40 grouped Highlights + selection hover <255.
+ -- The opaque proxy uses the original color and geometry; only its Highlight adds tint.
+ if (entry.index or table.find(entries,entry) or math.huge)<=192 then
+  if not entry.directOutline or not entry.directOutline.Parent then entry.directOutline=Instance.new("Highlight");entry.directOutline.Name="RealProvinceFallback";entry.directOutline.Adornee=entry.part;entry.directOutline.Parent=v7.visual.root end
+  local h=entry.directOutline;h.Enabled=true;h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+  h.OutlineColor=color;h.FillColor=color;h.OutlineTransparency=0;h.FillTransparency=v82.fill and .90 or 1
+ elseif entry.directOutline then entry.directOutline:Destroy();entry.directOutline=nil end
  if not entry.proxy then
   local proxy
   local ok,why=pcall(function()
@@ -1873,7 +1947,7 @@ function v7.visual.draw(entry)
    for _,child in ipairs(proxy:GetChildren()) do if not child:IsA("DataModelMesh") then child:Destroy() else for _,nested in ipairs(child:GetChildren()) do nested:Destroy() end end end
    proxy.Name="ProtectedProxy_"..entry.id;proxy.Anchored=true
    proxy.CanCollide=false;proxy.CanTouch=false;proxy.CanQuery=false;proxy.CastShadow=false
-   proxy.LocalTransparencyModifier=0;proxy.Transparency=.99;proxy.CFrame=entry.part.CFrame;proxy.Size=entry.part.Size
+   proxy.LocalTransparencyModifier=0;proxy.Transparency=0;proxy.CFrame=entry.part.CFrame;proxy.Size=entry.part.Size
    proxy.Color=entry.part.Color
    proxy.Parent=group.model
   end)
@@ -1898,6 +1972,7 @@ function v7.visual.draw(entry)
   group.count+=1;entry.visualGroup=group
  end
  entry.proxy.Color=entry.part.Color;entry.box=group.highlight
+
 end
 function v7.visual.toggle(enabled)
  v82.outlines=enabled~=false
@@ -1908,10 +1983,12 @@ function v7.visual.toggle(enabled)
 end
 function v7.visual.stats()
  local groups=0;for _ in pairs(v7.visual.groups) do groups+=1 end
- return {SelectedProvinceCount=#entries,VisualizedProvinceCount=v7.visual.count,VisualMissingCount=#entries-v7.visual.count,
-  HighlightInstanceCount=groups,ProxyPartCount=v7.visual.count,VisualRendererGeneration=v7.visual.generation,VisualRebuilds=v7.visual.rebuilds,
+ local direct=0;for _,e in ipairs(entries) do if e.directOutline then direct+=1 end end
+ return {SelectedProvinceCount=#entries,AttachedProxyProvinceCount=v7.visual.count,VisualMissingCount=#entries-v7.visual.count,
+  DirectFallbackCount=direct,RendererResourceCount=groups+direct+v7.visual.count,
+  HighlightInstanceCount=groups+direct,GroupedHighlightCount=groups,ProxyPartCount=v7.visual.count,VisualRendererGeneration=v7.visual.generation,VisualRebuilds=v7.visual.rebuilds,
   VisualRebuildFailures=v7.visual.failures,VisualStateMigrations=v7.visual.migrations,VisualResourcesReleasedOnOff=v7.visual.released,
-  VisualRenderer="STATE_SHARDED_PROVINCE_GEOMETRY",RenderVisibilityProof="Requires live GPU observation; counts represent attached geometry"}
+  VisualRenderer="OPAQUE_GEOMETRY_WITH_REAL_PART_FALLBACK",RenderVisibilityProof="UNVERIFIED: attached resources are not visible-pixel proof; test 1/10/62 before 256/500/900"}
 end
 function v7.draw(entry) v7.visual.draw(entry) end
 
@@ -2410,13 +2487,14 @@ function policy.qualify(service)
 end
 function health.finish(service)
  local entry=service.entry
- if service.success then service.result="SUCCESS";if service.episode==entry.dirtyEpisode then health.reset(entry,true) end;return end
+ if service.success then service.result="SUCCESS";if v82.targetHealth then v82.targetHealth.success(service) end;if service.episode==entry.dirtyEpisode then health.reset(entry,true) end;return end
  if service.interruption then service.result=service.interruption
  elseif not focused then service.result="FOCUS_LOST"
  elseif not activationTool or activationTool.Parent~=player.Character then service.result="TOOL_UNAVAILABLE"
  elseif releaseBlocked then service.result="RELEASE_RECOVERY"
  elseif not service.result then service.result="INTERRUPTED" end
  local reason=service.result
+ if v82.targetHealth and v82.targetHealth.finish(service) then return end
  if service.episode~=entry.dirtyEpisode then service.validNoEffect=false;return end
  if reason~="VALID_NO_EFFECT" then service.validNoEffect=false end
  if reason=="INTERRUPTED" then health.InterruptedAttempts+=1 end
@@ -2463,6 +2541,7 @@ function policy.finish(service,stalled)
  end
 	health.finish(service)
  palette.generatedResult(service)
+ if v82.randomColor then v82.randomColor.result(service) end
  if not service.success then
   local reason=service.validNoEffect and "entry-only qualified no-effect" or "excluded "..tostring(service.result or "unqualified")
   v82.rejectedDwell[reason]=(v82.rejectedDwell[reason] or 0)+1
@@ -2529,6 +2608,7 @@ function v7.report()
 		for _,key in ipairs(fields) do table.insert(lines,"  "..key.."="..tostring(record[key])) end
 	end
 	table.insert(lines,palette.generatedReport())
+ if v82.targetHealth then table.insert(lines,v82.targetHealth.report()) end
 	table.insert(lines,"PER-ENTRY HEALTH (all protected entries)")
 	for _,e in ipairs(entries) do
 		table.insert(lines,string.format("%s | ConsecutiveAcquireFailures=%d | ConsecutiveTargetLosses=%d | ConsecutiveValidNoEffects=%d | LastFailureReason=%s | RetryAfter=%.3f | CacheInvalidations=%d | RecoverySuccesses=%d | EntryExtraDwellMs=%.1f",entryLabel(e),e.ConsecutiveAcquireFailures or 0,e.ConsecutiveTargetLosses or 0,e.ConsecutiveValidNoEffects or 0,tostring(e.LastFailureReason),e.retryAt,e.CacheInvalidations or 0,e.RecoverySuccesses or 0,(e.ExtraDwell or 0)*1000))
@@ -2615,6 +2695,8 @@ function v82.stats()
  r.GeneratedColorSupport="Source-traced native Equip color reload; generated application requires a genuine native DOWN and province result, never attribute/echo evidence alone."
  r.ExpandedCustomUICandidates=palette.custom and #palette.custom.inventory or 0
  local custom=0;for _ in pairs(palette.customCandidates or {}) do custom+=1 end;r.CustomColorUICandidates=custom
+ if v82.targetHealth then for k,value in pairs(v82.targetHealth.stats()) do r[k]=value end end
+ if v82.randomColor then for k,value in pairs(v82.randomColor.stats()) do r[k]=value end end
  r.SelectionStrokeActive=v82.selection and v82.selection.held or false
  r.SelectionAdds=v82.selection and v82.selection.adds or 0;r.SelectionRemoves=v82.selection and v82.selection.removes or 0
  return r
@@ -2682,6 +2764,7 @@ noteCorrection = function(entry)
 	entry.corrected=true;v82.account(entry,observedAt);health.reset(entry,true);entry.lastCorrectedTime=observedAt
 	corrections+=1;metrics.Corrections+=1;metrics.ColorTotal+=latency;bumpRate("Corrections")
 	service.success,service.latency,service.paletteValid=true,latency,true;service.correctedAt=observedAt
+ if service.normal and v82.randomColor and v82.randomColor.active then service.randomActual=entry.part.Color;v82.randomColor.result(service) end
  if service.generatedTrace then service.generatedActual=entry.part.Color;palette.generatedResult(service) end
  service.correctionHoldValid=ownedInput~=nil and not ownedInput.ReleaseSent and not ownedInput.ExternalUp and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
  if entry.activeCameraPose and service.qualified then v82.cameraResult(entry,true,true) end
@@ -2873,6 +2956,12 @@ local function chooseFast(now)
 		if colorsMatch(entry.part.Color,targetColor(entry)) then v7.CleanSkippedBeforeCursor+=1;syncDirty(entry,"check");return end
 		local candidate,budget=visiblePoint(entry)
 		if budget then exhausted=true;return end
+  if not candidate and v82.targetHealth and v82.camera.mode=="LOCKED" then
+   local evidence=v82.targetHealth.inspect(entry,"BEFORE_PALETTE")
+   if v82.targetHealth.environmental(evidence.Class) then
+    v82.targetHealth.defer(entry,evidence);minimumRetry=math.min(minimumRetry,entry.retryAt);return
+   end
+  end
 		candidate=candidate or {entry=entry,tier=entry.lastCamera and 2 or 3}
 		local tier=candidate.tier
 		if entry.freshLinked then tier=-1 end
@@ -3115,6 +3204,7 @@ local function rememberAcquired(entry,started)
 	activation.ColorChanged,activation.TargetColorObserved=false,false
 end
 local function startOrRetainHold(entry,token)
+ if v82.targetHealth and v82.targetHealth.active then return false end
 	if not shouldTarget(entry) then v7.CleanSkippedBeforeDown+=1;syncDirty(entry,"check");return false end
 	local tool=activationTool
 	if not guiClear(UserInputService:GetMouseLocation()) then settleRelease();activation.Status="Interactive GUI blocks native input";return false end
@@ -3156,6 +3246,7 @@ local function restorePalette()
 end
 
 local function stop(reason)
+ if v82.targetHealth and v82.targetHealth.active then v82.targetHealth.active=false;v82.targetHealth.status="STOPPED: "..tostring(reason) end
  if v82.normalAB.active then
   if v82.normalAB.phase then v82.normalAB.phase.ended=os.clock();v82.normalAB.phase.state="INTERRUPTED: "..tostring(reason) end
   v82.normalAB.active=false;v82.normalAB.state="STOPPED: "..tostring(reason);v82.normalAB.reload=nil
@@ -3237,7 +3328,7 @@ function v82.normalAB.prepare(entry,token,service)
  local function valid()
   return alive and running and focused and mode=="NORMAL" and workerToken==token and v7.lock==entry and entry.active
    and player.Character==character and tool and (tool.Parent==character or tool.Parent==backpack) and hum and hum.Health>0
-   and colorsMatch(paletteColor(),target)
+   and (colorsMatch(paletteColor(),target) or (variant=="B" and v82.randomColor.pending and colorsMatch(v82.randomColor.color,target)))
  end
  local function waitFor(predicate)
   local deadline=os.clock()+.6
@@ -3254,10 +3345,18 @@ function v82.normalAB.prepare(entry,token,service)
    if not waitFor(function() return tool.Parent==backpack end) then error("NORMAL refresh: tool did not unequip") end
    RunService.Heartbeat:Wait()
    if not valid() or tool.Parent~=backpack then error("NORMAL refresh interrupted") end
-   -- No attribute write: the same user-selected NORMAL color must persist.
+   -- Only an explicit Randomize stages a new RGB, while the real tool is UNEQUIPPED.
+   -- Ordinary production-B refreshes keep the existing attribute unchanged.
+   if v82.randomColor.pending then
+    v82.randomColor.writing=true
+    player:SetAttribute("PaintBucketColor",target)
+    v82.randomColor.writing=false
+    if not colorsMatch(paletteColor(),target) then error("Random RGB state write was not retained") end
+   end
    hum:EquipTool(tool)
    if not waitFor(function() return tool.Parent==character and equippedGeneration>generation and v82.normalAB.echo(target,oldGui) end) then error("NORMAL refresh: new native session/color echoes not confirmed") end
    service.generation=equippedGeneration;palette.rebindAll("NORMAL A/B native equip")
+   if v82.randomColor.pending and colorsMatch(target,v82.randomColor.color) then v82.randomColor.pending=false;v82.randomColor.prepared=true end
    service.paletteProof="B: genuine native equip + unchanged RGB + fresh native echoes; result required"
   elseif variant=="C" then
    local item=palette.find(target)
@@ -3279,6 +3378,8 @@ function v82.normalAB.prepare(entry,token,service)
  end)
  if clickConnection then clickConnection:Disconnect() end
  v82.normalAB.reload=nil;palette.currentEntry=nil;palette.activeSnapshot=nil
+ v82.randomColor.writing=false
+ if not ok and v82.randomColor.active then v82.randomColor.failures+=1 end
  service.paletteMs=(os.clock()-began)*1000;service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()
  service.paletteValid=ok and colorsMatch(paletteColor(),target)
  return ok,why
@@ -3335,7 +3436,8 @@ function v82.normalAB.finish(service)
 end
 function v82.normalAB.report()
  local lines={"NORMAL NATIVE LIFECYCLE A/B", "State="..v82.normalAB.state,"ProductionVariant="..v82.normalAB.production,
-  "ProductionPolicy=PER_TARGET; observed native DOWN floor 150ms for A/B/C. No winner auto-applied.",
+  "ProductionPolicy=PER_TARGET; default B from supplied live A/B evidence; observed native DOWN floor 150ms. Civil timing is independent.",
+  "SuppliedLiveAB=A1 22/40; B2 39/40 (5.4097 cps); C3 39/40; C4 40/40; B5 39/40 (5.4224 cps); A6 35/40. New production combat remains unverified.",
   "TargetRGB="..rgbText(v82.normalAB.color).." | Camera=LOCKED | AutoPainterRPCs=0",
   "Same selected cohort; combat/external recolor provides work. No automatic reset paints; cooldown benchmark is separate.",
   "A/B/C order: A B C C B A; actual matched timing and attack pressure must be compared, not only aggregate CPS.",
@@ -3362,14 +3464,229 @@ function v82.normalAB.report()
   table.insert(lines,string.format("TargetLoss=%d Retries=%d PathologicalGroupAttempts=%d",targetLoss,retries,groups))
   for _,r in ipairs(p.samples) do table.insert(lines,string.format("Entry=%s Result=%s Qualified=%s IntendedRGB=%s ActualRGB=%s NativeDownAt=%s ActualSpacingMs=%s DownToColorMs=%s PreparationMs=%s QueueMs=%s",tostring(r.EntryId),tostring(r.Result),tostring(r.Qualified),tostring(r.IntendedRGB),tostring(r.ActualRGBAfter),tostring(r.NativeDownObservedAt),tostring(r.NativeDownSpacingMs),tostring(r.DownToColorMs),tostring(r.PalettePreparationMs),tostring(r.QueueWaitMs))) end
  end
- table.insert(lines,"Decision=PENDING_LIVE_COMPARISON. Preparation echoes alone are never success; results are local observations, not server acknowledgments.")
+ table.insert(lines,"Decision=DEFAULT_B_FROM_SUPPLIED_LIVE_AB; any new diagnostic phases require comparison. Preparation echoes alone are never success; results are local observations, not server acknowledgments.")
  return table.concat(lines,"\n")
+end
+
+-- Cross-entry health is independent of palette, paint timing and target identity.
+-- All recovery runs inside the ONE worker, with Mouse1 released and camera unchanged.
+v82.targetHealth={active=false,refreshed=false,isolated={},window={},events={},cursor=0,status="READY",generation=0,
+ counters={TargetLossStormEntries=0,TargetLossStorms=0,GlobalTargetCacheInvalidations=0,GlobalTargetRecoveryAttempts=0,GlobalTargetRecoverySuccesses=0,
+ OffscreenDeferredCount=0,TargetMismatchCount=0,StaleProjectionCount=0,GeometryReparentCount=0,ProjectionBudgetDeferrals=0}}
+function v82.targetHealth.context()
+ local h=v82.targetHealth;local c=Workspace.CurrentCamera
+ if c~=h.camera or (c and (c.CFrame~=h.frame or c.ViewportSize~=h.viewport)) then
+  h.camera=c;h.frame=c and c.CFrame;h.viewport=c and c.ViewportSize;h.generation+=1
+ end
+ return h.generation
+end
+function v82.targetHealth.path(object)
+ if not object then return "nil" end
+ local ok,value=pcall(function() return object:GetFullName() end);return ok and value or "destroyed"
+end
+function v82.targetHealth.inspect(e,stage)
+ local h=v82.targetHealth;local c=Workspace.CurrentCamera;local part=e.part
+ local r={EntryId=e.id,Stage=stage or "UNKNOWN",At=os.clock(),ExpectedPath=h.path(part),Alive=validProvince(part),
+  ActualMouseTarget=h.path(mouse.Target),ActualMouseAncestor=h.path(mouse.Target and mouse.Target.Parent),
+  CameraGeneration=h.context(),CameraCFrame=c and tostring(c.CFrame) or "nil",Viewport=c and tostring(c.ViewportSize) or "nil",
+  CachedPoint=e.lastScreen and tostring(e.lastScreen) or "none",InitialCandidatePoint=e.lastAttemptPoint or "none",ActualCursor=tostring(UserInputService:GetMouseLocation()),PointSource=e.lastAttemptSource or "FRESH_AUDIT",
+  ProvinceCFrame=part and tostring(part.CFrame) or "nil",ProvinceSize=part and tostring(part.Size) or "nil",StormActive=h.active,
+  MapParent=h.path(part and part.Parent),MapTransform="per-province CFrame sampled; no map writes",InViewport=false,PaletteRootVisible=false,TopGUIObject="none"}
+ local root=playerGui:FindFirstChild("PaletteGui");if root then
+  for _,o in ipairs(root:GetDescendants()) do if o:IsA("GuiObject") and palette.visible(o) then r.PaletteRootVisible=true;break end end
+ end
+ if not r.Alive then r.Class="DESTROYED_REPARENTED";return r end
+ if not c then r.Class="UNACQUIRABLE";return r end
+ local moved=e.pointFrame and e.pointFrame~=part.CFrame or e.pointSize and e.pointSize~=part.Size
+ local points=targetPoints(part);local exposed,obscured,rayHit=false,false,false
+ for _,world in ipairs(points) do
+  local point,visible=c:WorldToViewportPoint(world)
+  if visible and point.Z>0 then
+   r.InViewport=true;r.ProjectedScreen=tostring(point)
+   local clear=guiClear(point)
+   if not clear then
+    obscured=true
+    local ok,objects=pcall(function() local inset=GuiService:GetGuiInset();return playerGui:GetGuiObjectsAtPosition(point.X-inset.X,point.Y-inset.Y) end)
+    if ok and objects[1] then r.TopGUIObject=h.path(objects[1]) end
+   else
+    exposed=true
+    local ray=c:ViewportPointToRay(point.X,point.Y)
+    if rayCharacter~=player.Character then rayCharacter=player.Character;fastRayParams.FilterDescendantsInstances=rayCharacter and {rayCharacter} or {} end
+    local hit=Workspace:Raycast(ray.Origin,ray.Direction*10000,fastRayParams)
+    if hit and hit.Instance==part then rayHit=true;break end
+   end
+  end
+ end
+ if not r.InViewport then r.Class="OFFSCREEN"
+ elseif not exposed and obscured then r.Class="GUI_OBSCURED"
+ elseif not rayHit then r.Class="OCCLUDED"
+ elseif moved or e.lastFrame and (e.lastFrame~=c.CFrame or e.lastViewport~=c.ViewportSize) then r.Class="STALE_PROJECTION"
+ elseif mouse.Target~=part then r.Class="MOUSE_TARGET_MISMATCH"
+ else r.Class="UNACQUIRABLE" end
+ return r
+end
+function v82.targetHealth.environmental(class)
+ return class=="OFFSCREEN" or class=="OCCLUDED" or class=="GUI_OBSCURED" or class=="DESTROYED_REPARENTED"
+end
+function v82.targetHealth.remember(r)
+ local h=v82.targetHealth;v82.push(h.events,r,40)
+ if r.Class=="OFFSCREEN" then h.counters.OffscreenDeferredCount+=1
+ elseif r.Class=="MOUSE_TARGET_MISMATCH" then h.counters.TargetMismatchCount+=1
+ elseif r.Class=="STALE_PROJECTION" then h.counters.StaleProjectionCount+=1
+ elseif r.Class=="DESTROYED_REPARENTED" then h.counters.GeometryReparentCount+=1 end
+end
+function v82.targetHealth.defer(e,r)
+ local h=v82.targetHealth;h.remember(r)
+ if r.Class=="DESTROYED_REPARENTED" then removeProvince(e.part);return end
+ -- Visibility is not a failed paint or an unhealthy province. Do not reset its
+ -- dirty episode, assignment, fairness age, or learned service latency.
+ e.visibilityClass=r.Class;e.visibilityGeneration=h.generation
+ v82.defer(e,CFG.VisibilityRetry,"VISIBILITY");e.LastFailureReason=r.Class
+end
+function v82.targetHealth.success(service)
+ local h=v82.targetHealth
+ v82.push(h.window,{id=service.entry.id,at=os.clock(),loss=false},24)
+ service.entry.visibilityClass=nil;h.isolated[service.entry.id]=nil
+end
+function v82.targetHealth.finish(service)
+ local h=v82.targetHealth;local reason=service.result;local e=service.entry
+ if benchmark.active then return false end -- isolated benchmark retains its own cohort policy
+ if reason=="PROJECTION_BUDGET" or e.AcquisitionState=="ACQUIRE_PROJECTION_BUDGET_EXHAUSTED" and (reason=="TARGET_LOST" or reason=="ACQUIRE_FAILED") then
+  service.result="PROJECTION_BUDGET";service.validNoEffect=false;h.counters.ProjectionBudgetDeferrals+=1
+  v82.defer(e,.02,"FRAME_BUDGET");return true
+ end
+ if reason~="TARGET_LOST" and reason~="ACQUIRE_FAILED" and not h.environmental(reason) and reason~="STALE_PROJECTION" and reason~="UNACQUIRABLE" then return false end
+ if not running or not focused or service.episode~=e.dirtyEpisode then return false end
+ local r=h.inspect(e,service.stage or (service.acquiredAt and "PAINT_SERVICE" or "AFTER_PALETTE"));service.targetEvidence=r
+ service.validNoEffect=false
+ if h.environmental(r.Class) then service.result=r.Class;h.defer(e,r);return true end
+ h.remember(r)
+ if h.isolated[e.id]==h.generation then return false end
+ v82.push(h.window,{id=e.id,at=os.clock(),loss=true},24)
+ local ids,n,l={},0,0
+ for _,x in ipairs(h.window) do if os.clock()-x.at<=CFG.TargetStormWindow then n+=1;if x.loss then l+=1;ids[x.id]=true end end end
+ local count=0;for _ in pairs(ids) do count+=1 end
+ if not h.active and (count>=CFG.TargetStormDistinct or count>=3 and n>=6 and l/n>.5) then
+  h.active=true;h.refreshed=false;h.status="RELEASE THEN GLOBAL CACHE REFRESH";h.proofs={};h.cursor=0
+  h.counters.TargetLossStorms+=1;h.counters.TargetLossStormEntries=count
+ end
+ if h.active then
+  service.result="GLOBAL_TARGETING_RECOVERY";v82.defer(e,.02,"GLOBAL_RECOVERY");return true
+ end
+ return false
+end
+function v82.targetHealth.reset()
+ local h=v82.targetHealth;h.active=false;h.refreshed=false;h.window={};h.proofs={};h.isolated={};h.status="READY";h.nextAt=0
+end
+function v82.targetHealth.recover(token)
+ local h=v82.targetHealth
+ if not settleRelease() then stop("Global targeting recovery: Mouse1 release unresolved");return end
+ currentEntry=nil
+ if not liveToken(token) then return end
+ if os.clock()<(h.nextAt or 0) then nextWorkerAt=h.nextAt;waitWork();return end
+ if not h.refreshed then
+  h.context();h.counters.GlobalTargetRecoveryAttempts+=1;v82.lookahead=nil
+  for _,e in ipairs(entries) do
+   health.invalidate(e,true);e.surfacePoints=nil;e.pointFrame=nil;e.pointSize=nil;e.forceSafeCamera=nil;e.visibilityClass=nil
+   if e.deferKind=="QUARANTINE" or e.deferKind=="RETRY" or e.deferKind=="GLOBAL_RECOVERY" then e.retryAt=0;e.deferKind=nil end
+   e.ConsecutiveTargetLosses=0;e.ConsecutiveAcquireFailures=0;e.ConsecutiveFailures=0;e.quarantineLevel=0
+   h.counters.GlobalTargetCacheInvalidations+=1
+  end
+  h.refreshed=true;h.proofs={}
+ end
+ h.status="PROBING REAL TARGETS — NO PAINT INPUT";local camera=Workspace.CurrentCamera;local pose=camera and camera.CFrame
+ local generation=h.context();if h.proofGeneration~=generation then h.proofs={};h.proofGeneration=generation end
+ local tested=0;local eligible={}
+ -- Read-only classify a bounded slice. No camera writes, palette input, or DOWN.
+ for _=1,math.min(32,#dirty) do
+  if #dirty==0 or not liveToken(token) then break end
+  h.cursor=h.cursor%#dirty+1;local e=dirty[h.cursor]
+  if e.active and shouldTarget(e) and os.clock()>=e.retryAt then table.insert(eligible,e) end
+ end
+ local proofs=0
+ for _=1,#eligible do
+  h.probeCursor=(h.probeCursor or 0)%#eligible+1;local e=eligible[h.probeCursor]
+  if not liveToken(token) or Workspace.CurrentCamera~=camera or camera.CFrame~=pose then h.proofs={};break end
+  local r=h.inspect(e,"GLOBAL_PROBE")
+  if h.environmental(r.Class) then h.defer(e,r)
+  elseif tested<3 then
+   tested+=1
+   if v7.lockTarget(e) then
+    local point,budget=visiblePoint(e)
+    if budget then waitWork();if liveToken(token) then point=visiblePoint(e) end end
+    -- No camera fallback inside recovery, even if user had opted in elsewhere.
+    local acquired=point and moveCursor(point,token) and mouse.Target==e.part
+    v7.unlockTarget(e)
+    if acquired then h.proofs[e.id]=math.min(CFG.TargetStormProbes,(h.proofs[e.id] or 0)+1) else
+     h.remember(h.inspect(e,"GLOBAL_PROBE"));h.isolated[e.id]=h.generation;health.invalidate(e,true);v82.defer(e,1,"GLOBAL_PROBE")
+    end
+   end
+  end
+  if tested>=3 then break end
+ end
+ for id in pairs(h.proofs) do local e=v82.ids[id];if e and shouldTarget(e) then proofs+=h.proofs[id] else h.proofs[id]=nil end end
+ local needed=math.min(CFG.TargetStormProbes,#dirty)
+ if liveToken(token) and camera==Workspace.CurrentCamera and camera.CFrame==pose and needed>0 and proofs>=needed then
+  h.active=false;h.window={};h.status="REAL TARGET PROBES CONFIRMED";h.counters.GlobalTargetRecoverySuccesses+=1
+  wakeWork();return
+ end
+ if #dirty==0 then h.reset();return end
+ h.status="WAITING FOR TARGETABLE VIEW / GUI CLEAR; probes "..proofs.."/"..needed
+ h.nextAt=os.clock()+CFG.TargetStormRetry;nextWorkerAt=h.nextAt;waitWork()
+end
+function v82.targetHealth.stats()
+ local h=v82.targetHealth;local r=table.clone(h.counters);r.TargetLossStormActive=h.active;r.GlobalTargetingState=h.status;r.TargetContextGeneration=h.generation
+ return r
+end
+function v82.targetHealth.report()
+ local h=v82.targetHealth;local lines={"GLOBAL TARGETING HEALTH — local acquisition evidence; no server validation inference"}
+ for k,v in pairs(h.stats()) do table.insert(lines,k.."="..tostring(v)) end
+ table.insert(lines,"LAST 40 TARGET AUDITS")
+ for _,r in ipairs(h.events) do
+  local fields={};local keys={};for k in pairs(r) do table.insert(keys,k) end;table.sort(keys)
+  for _,k in ipairs(keys) do table.insert(fields,k.."="..tostring(r[k])) end
+  table.insert(lines,table.concat(fields," | "))
+ end
+ return table.concat(lines,"\n")
+end
+
+v82.randomColor={active=false,pending=false,generation=0,exactResults=0,failures=0}
+function v82.randomColor.choose(seed)
+ local r=v82.randomColor
+ if mode~="NORMAL" or running or workerActive or selecting or benchmark.active or ownedInput then return false,"Stop NORMAL and finish selection before Randomize Color" end
+ local used={};for _,item in ipairs(palette.controls) do if item.color and item.semanticVerified then table.insert(used,item.color) end end
+ if #used<128 then return false,"Learn/import and verify the 128 native colors first, so off-palette RGB can be guaranteed" end
+ if r.color then table.insert(used,r.color) end
+ seed=tonumber(seed) or math.random(1,2147483646)
+ local pool=palette.perceptual.make(palette.rng(seed),used,1);local color=palette.perceptual.take(pool)
+ if not color then return false,"No distinct candidate available" end
+ r.nearest=nil;r.closest=nil;r.color=color;r.active=true;r.pending=true;r.prepared=false;r.generation+=1;r.exactResults=0;r.failures=0;r.seed=seed
+ normalTarget=color;v82.normalAB.production="B";if palette.probe2 then palette.probe2.Text="NORMAL production path: B" end;rebuildDirty()
+ lastMessage="Random RGB "..rgbText(color).." selected. START applies it through native unequip/equip, then normal input. No paint sent by Randomize."
+ return true,lastMessage
+end
+function v82.randomColor.result(service)
+ local r=v82.randomColor
+ if not service.randomCounted and r.active and r.prepared and service.normal and service.success and service.qualified and service.method and colorsMatch(service.target,r.color)
+  and colorKey(service.randomActual or service.entry.part.Color)==colorKey(r.color) and colorKey(service.actualBefore)~=colorKey(r.color) then
+  service.randomCounted=true;r.exactResults+=1;r.lastExactEntry=service.entry.id
+ end
+end
+function v82.randomColor.stats()
+ local r=v82.randomColor;local near=math.huge;local closest=nil
+ if r.color and not r.nearest then for _,item in ipairs(palette.controls) do local d=palette.perceptual.distance(palette.perceptual.lab(r.color),palette.perceptual.lab(item.color));if d<near then near=d;closest=item.color end end;r.nearest=near;r.closest=closest end
+ near=r.nearest or near;closest=r.closest or closest
+ return {RandomColorActive=r.active,RandomColorRGB=rgbText(r.color),RandomColorSource="RANDOM_GENERATED",RandomColorNativePaletteIndex="NONE",
+ RandomColorClosestNativeRGB=rgbText(closest),RandomColorDistanceToNative=near<math.huge and near or "N/A",RandomColorGeneration=r.generation,
+ RandomColorExactProvinceResults=r.exactResults,RandomColorPreparationFailures=r.failures,RandomColorPending=r.pending,
+ RandomColorProof=r.exactResults>0 and "LOCAL_EXACT_PROVINCE_RESULT_OBSERVED" or "UNVERIFIED — attribute/echo alone is not proof"}
 end
 
 local function worker(token)
 	while liveToken(token) do
   if v82.normalAB.active and not v82.normalAB.boundary() then break end
 		if policy.current then policy.finish(policy.current,false) end
+  if v82.targetHealth.active then v82.targetHealth.recover(token);continue end
 		if releaseBlocked then running=false;break end
 		if transitionCount>=CFG.MaxTransitionsPerFrame then waitWork();continue end
 		if #dirty==0 then
@@ -3414,9 +3731,15 @@ local function worker(token)
 		if mode=="CIVIL WAR" then
    if not shouldTarget(entry) then service.result="CLEAN_BEFORE_DOWN";syncDirty(entry,"check");policy.finish(service,false);continue end
    if (entry.ConsecutiveTargetLosses or 0)>=2 and not colorsMatch(paletteColor(),target) then
-    local feasible=visiblePoint(entry)
-    if not feasible and not (entry.forceSafeCamera and acquireFast({entry=entry,tier=3},token)) then
-     v82.data.TargetLostBeforePalette+=1;service.result="TARGET_LOST";policy.finish(service,false);continue
+    local feasible,budget=visiblePoint(entry)
+    if budget then waitWork();if not liveToken(token) then break end;feasible,budget=visiblePoint(entry) end
+    if budget then service.result="PROJECTION_BUDGET";policy.finish(service,false);continue end
+    if not feasible then
+     -- This check establishes visibility, not real Mouse.Target ownership. Never
+     -- turn an offscreen/UI-obscured province into a repeated TARGET_LOST storm.
+     service.stage="BEFORE_PALETTE";service.result=v82.targetHealth.inspect(entry,service.stage).Class
+     if service.result=="MOUSE_TARGET_MISMATCH" then service.result="TARGET_LOST" end
+     v82.data.TargetLostBeforePalette+=1;policy.finish(service,false);continue
     end
    end
 			local prepared,why=palette.prepare(entry,token,service)
@@ -3456,6 +3779,7 @@ local function worker(token)
    if not settleRelease() then running=false;break end
   end
 		service.retained=ownedInput~=nil and not ownedInput.ReleaseSent
+  entry.lastAttemptPoint=candidate.point and tostring(candidate.point) or "none";entry.lastAttemptSource=candidate.tier==0 and "CACHED_CURSOR" or "FRESH_PROJECTION"
 		metrics.AcquisitionAttempts+=1
 		if not acquireFast(candidate,token) then
 			service.result=colorsMatch(entry.part.Color,target) and "CLEAN_BEFORE_DOWN" or service.civil and "TARGET_LOST" or "ACQUIRE_FAILED"
@@ -3483,6 +3807,7 @@ local function worker(token)
 			if outcome=="correct" then syncDirty(entry,"check") else service.result="INPUT_STATE_CONFLICT" end
 			policy.finish(service,false);continue
 		end
+  service.stage="BEFORE_DOWN"
 		if not pacing.wait(entry,token,service) then
    service.result=colorsMatch(entry.part.Color,target) and "CLEAN_BEFORE_DOWN" or "TARGET_LOST";policy.finish(service,false);continue
   end
@@ -3493,6 +3818,7 @@ local function worker(token)
 			policy.finish(service,false);continue
 		end
 		ownedInput.Strategy=strategy
+  service.stage="PAINT_SERVICE"
 		local stalled=false
 		while liveToken(token) and entry.active and ownedInput and not ownedInput.ReleaseSent do
 			if ownedInput.ExternalUp then activation.Status="Unexpected native mouse-up; hold stopped";lastMessage=activation.Status;running=false;break end
@@ -3574,6 +3900,7 @@ removeProvince = function(part)
  if v82.normalAB.active and lookup[part] then stop("NORMAL A/B cohort changed; evidence retained") end
 	local entry = lookup[part]
 	if not entry then return end
+ if v82.targetHealth then v82.targetHealth.isolated[entry.id]=nil;if v82.targetHealth.proofs then v82.targetHealth.proofs[entry.id]=nil end end
 	entry.active = false;v82.groupSuccess(entry);v82.ids[entry.id]=nil;v82.camera.ceilingAt=nil
 	removeDirty(entry)
 	if currentEntry==entry then forceRelease() end
@@ -3588,6 +3915,7 @@ removeProvince = function(part)
 	if entry.destroyConn then entry.destroyConn:Disconnect() end
 	entry.service=nil;entry.lastValidService=nil
 	v7.visual.releaseEntry(entry)
+ if last~=entry and last.active and v82.outlines~=false then v7.visual.draw(last) end
 end
 
 local function clearAll()
@@ -3660,7 +3988,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v8.2 Native Lifecycle"
+title.Text = "AutoPainter · HANDS FREE v8.2 V2 Recovery"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -3737,7 +4065,7 @@ v7.learnButton=button("Learn native palette colors",500);v7.learnButton.Size=UDi
 v7.openerButton=button("Learn palette opener",500);v7.openerButton.Position=UDim2.fromOffset(210,500);v7.openerButton.Size=UDim2.fromOffset(190,30)
 v7.closerButton=button("Learn palette closer",535);v7.closerButton.Size=UDim2.fromOffset(190,30)
 v7.dirtyButton=button("Dirty markers: ON",535);v7.dirtyButton.Position=UDim2.fromOffset(210,535);v7.dirtyButton.Size=UDim2.fromOffset(190,30)
-local palettePanel=Instance.new("Frame")
+local palettePanel=Instance.new("ScrollingFrame")
 palettePanel.Name="PaletteDatabasePanel";palettePanel.Size=UDim2.fromOffset(245,575);palettePanel.Position=UDim2.fromOffset(416,0)
 palettePanel.BackgroundColor3=frame.BackgroundColor3;palettePanel.Parent=frame
 palette.buttons={}
@@ -3749,9 +4077,9 @@ for i,label in ipairs({"Validate Native Palette","Camera movement: LOCKED","Prot
 end
 palette.inspectButton=button("NORMAL A/B: Start A B C",579);palette.inspectButton.Parent=palettePanel;palette.inspectButton.Size=UDim2.new(1,-20,0,28)
 palette.probe1=button("NORMAL D: actual spacing",611);palette.probe1.Parent=palettePanel;palette.probe1.Size=UDim2.new(1,-20,0,28)
-palette.probe2=button("NORMAL production path: A",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)
+palette.probe2=button("NORMAL production path: B",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)
 palette.copyCustom=button("Copy NORMAL A/B Report",675);palette.copyCustom.Parent=palettePanel;palette.copyCustom.Size=UDim2.new(1,-20,0,28)
-palettePanel.Size=UDim2.fromOffset(245,783)
+palettePanel.Size=UDim2.fromOffset(245,575);palettePanel.CanvasSize=UDim2.fromOffset(0,850);palettePanel.ScrollBarThickness=6
 benchmark.button=button("Paint Cooldown Benchmark",711);benchmark.button.Parent=palettePanel;benchmark.button.Size=UDim2.new(1,-20,0,28)
 benchmark.copyButton=button("Copy Cooldown Benchmark",743);benchmark.copyButton.Parent=palettePanel;benchmark.copyButton.Size=UDim2.new(1,-20,0,28)
 benchmark.cancelButton=Instance.new("TextButton");benchmark.cancelButton.Text="CANCEL BENCHMARK";benchmark.cancelButton.Size=UDim2.fromOffset(210,30)
@@ -3848,6 +4176,9 @@ local function updateUI()
 		.. "\nColor changed: " .. tostring(activation.ColorChanged) .. " · Target color: " .. tostring(activation.TargetColorObserved)
 		.. (mode == "NORMAL" and ("\nNormal target: " .. tostring(c))
 			or "\nCivil War: unique target color per province · I inspects hovered selection")
+ if mode=="NORMAL" and v82.randomColor.active then status.Text..="\nSource: RANDOM GENERATED · RGB "..rgbText(v82.randomColor.color).." · Native palette index: NONE" end
+ v82.randomColor.preview.BackgroundColor3=c
+ v82.randomColor.preview.Text="RGB "..rgbText(c)..(v82.randomColor.active and " · RANDOM GENERATED" or " · NATIVE COLOR")
 
 	local perf=reportPerformance()
 	liveStatus.Text=string.format("AUTO v8.2 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
@@ -3867,7 +4198,9 @@ local function updateUI()
   liveStatus.Size=UDim2.fromOffset(365,150)
   liveStatus.Text=string.format("%s · Q/Escape STOP · OVERLOAD %s\nDirty %d · CPS %.2f · Success %.0f%%\nEligible queue P50/P90 %.0f/%.0f ms\nOldest %.0f ms · Cooling %d · Camera %d\nNative %d/%d · Gen %d\n%s",mode,tostring(perf.Overload),perf.DirtyCount,perf.CorrectionsPerSecond,recent.SuccessRate*100,perf.EligibleQueueP50Ms or 0,perf.EligibleQueueP90Ms or 0,perf.MaxDirtyAgeMs,perf.Quarantined or 0,perf.CameraFallbackAttempts,perf.BoundNativeColors,perf.SemanticKnownCapacity,perf.CurrentPaletteGeneration,perf.ActiveTarget)
  else liveStatus.Size=UDim2.fromOffset(470,250) end
- if currentEntry and currentEntry.civilControl and currentEntry.civilControl.generated and mode=="CIVIL WAR" then liveStatus.Text..="\n"..currentEntry.civilControl.signature.Name end
+ if currentEntry and currentEntry.civilControl and currentEntry.civilControl.generated and mode=="CIVIL WAR" then liveStatus.Text..="\nSource: GENERATED · "..currentEntry.civilControl.signature.Name.." · Native palette index: NONE" end
+ if running and mode=="NORMAL" and v82.randomColor.active then liveStatus.Text..="\nSource: RANDOM GENERATED · RGB "..rgbText(v82.randomColor.color).." · Native palette index: NONE" end
+ if v82.targetHealth.active then liveStatus.Text..="\nGLOBAL_TARGETING_RECOVERY: "..v82.targetHealth.status end
  if v82.normalAB.active then liveStatus.Text..="\nNORMAL A/B: "..v82.normalAB.state.." | "..tostring(v82.normalAB.phase and v82.normalAB.phase.qualified or 0).."/"..tostring(v82.normalAB.samples).." qualified" end
  if benchmark.active then liveStatus.Size=UDim2.fromOffset(470,250);liveStatus.Text="PAINT COOLDOWN BENCHMARK\n"..benchmark.state.."\n"..benchmark.detail.."\nNormal worker paused · one unchanged color · AutoPainterRPCs=0\nColor results observed asynchronously. Escape PAUSES · RESUME continues · Cancel ends this run." end
  if selecting=="PALETTE" then
@@ -3977,14 +4310,15 @@ local function startAutoImpl()
 		local assigned,why=palette.assign()
 		if not assigned then lastMessage=why;palette.status=why;updateUI();return false end
 	end
-	normalTarget = paletteColor()
-	if mode == "NORMAL" and not preparePalette(normalTarget) then
+ normalTarget = mode=="NORMAL" and v82.randomColor.active and v82.randomColor.color or paletteColor()
+	if mode == "NORMAL" and not v82.randomColor.pending and not preparePalette(normalTarget) then
 		lastMessage = "Could not prepare the normal PaintBucket color"
 		updateUI()
 		return false
 	end
 
 	if not v82.resuming then v82.groups={};v82.groupCount=0;v82.misses={} end;v82.lookahead=nil
+ v82.targetHealth.reset()
 	policy.current=nil;v7.lock=nil;dirtyCursor=0;nextWorkerAt=nil;health.sameEntry=nil;health.sameFailures=0
 	v7.sequence={};v7.lastTargetId=nil;v7.lastPair=nil
 	for _,arm in pairs(not v82.resuming and (mode=="NORMAL" and policy.normal or {policy.civil}) or {}) do
@@ -4052,6 +4386,7 @@ function v82.normalAB.start(options)
  if running or workerActive or starting or ownedInput or selecting or benchmark.active then return false,"STOP and finish selection/release before NORMAL A/B" end
  if mode~="NORMAL" or #entries<2 then return false,"Use NORMAL with at least two protected provinces and ongoing external recolors" end
  if not focused or v82.camera.mode~="LOCKED" then return false,"Focus Roblox and keep camera LOCKED" end
+ if v82.randomColor.pending then return false,"START the staged random color before running a same-color A/B experiment" end
  if options.SpacingControls and not v82.normalAB.completed then return false,"Run A/B/C first; spacing controls are a separate follow-up if needed" end
  local tool=ensureBucket();if not tool then return false,"Equip the normal PaintBucket first" end
  local color=paletteColor();local key=palette.find(color)
@@ -4071,6 +4406,7 @@ end
 function v82.normalAB.setProduction(key)
  if running or workerActive or starting or ownedInput or v82.normalAB.active or benchmark.active then return false,"Stop before changing NORMAL path" end
  if key~="A" and key~="B" and key~="C" then return false,"Production choices are A, B or C; timing floors are diagnostic only" end
+ if v82.randomColor.pending and key~="B" then return false,"Pending Randomize requires the native B equip path" end
  if key=="C" and not palette.find(paletteColor()) then return false,"C requires a learned matching native swatch" end
  v82.normalAB.production=key
  palette.probe2.Text="NORMAL production path: "..key
@@ -4800,6 +5136,11 @@ end
 
 palette.inspectButton.Activated:Connect(function() local ok,why=v82.normalAB.start();lastMessage=tostring(why);updateUI() end)
 palette.probe1.Activated:Connect(function() local ok,why=v82.normalAB.start({SpacingControls=true});lastMessage=tostring(why);updateUI() end)
+v82.randomColor.button=button("Randomize Color",783);v82.randomColor.button.Parent=palettePanel;v82.randomColor.button.Size=UDim2.new(1,-20,0,28)
+v82.randomColor.button.Activated:Connect(function() local ok,why=v82.randomColor.choose();lastMessage=tostring(why);updateUI() end)
+v82.randomColor.preview=button("Random color preview",815);v82.randomColor.preview.Parent=palettePanel;v82.randomColor.preview.Size=UDim2.new(1,-20,0,28)
+v82.randomColor.preview.Active=false
+
 palette.probe2.Activated:Connect(function() local order={A="B",B="C",C="A"};local ok,why=v82.normalAB.setProduction(order[v82.normalAB.production]);lastMessage=tostring(why);updateUI() end)
 palette.copyCustom.Activated:Connect(function() palette.copy(v82.normalAB.report(),"AutoPainterNormalABReport.txt") end)
 palette.buttons[8].Activated:Connect(function() palette.validateNative() end)
@@ -4817,11 +5158,11 @@ modeButton.Activated:Connect(function()
 	if benchmark.active then lastMessage="Benchmark owns mode; Cancel Benchmark before changing mode";updateUI();return end
 	if running or v82.resumeIntent then stop("Stopped before changing mode") end
 	mode = mode == "NORMAL" and "CIVIL WAR" or "NORMAL"
-	if mode=="NORMAL" then normalTarget=paletteColor() end
+	if mode=="NORMAL" then normalTarget=v82.randomColor.active and v82.randomColor.color or paletteColor();if v82.randomColor.active then v82.randomColor.pending=true end end
 	rebuildDirty()
 	lastMessage = mode == "NORMAL"
 		and "Normal mode uses the current PaintBucket palette color"
-		or "Civil War assigns each province a distinct learned native palette color"
+		or "Civil War: native colors first, then unique generated RGB (GEN # / exact RGB)"
 	updateUI()
 end)
 
@@ -4841,11 +5182,12 @@ connectLifetime(UserInputService.InputBegan, function(input, processed)
 	end
 	if processed or UserInputService:GetFocusedTextBox() then return end
  if table.find({Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right},input.KeyCode) then v82.camera.manualUntil=os.clock()+CFG.CameraManualQuiet;if cameraSnapshot then forceRelease();restoreView() end end
+ if input.KeyCode==Enum.KeyCode.R and not running then local ok,why=v82.randomColor.choose();lastMessage=tostring(why);updateUI();return end
  if input.KeyCode==Enum.KeyCode.I and not running then
   local entry=lookup[mouse.Target]
   if entry then
    local item=mode=="CIVIL WAR" and entry.civilControl or nil
-   lastMessage=entryLabel(entry).." | Source: "..(item and item.generated and "GENERATED" or item and "NATIVE" or "NORMAL")
+   lastMessage=entryLabel(entry).." | Source: "..(mode=="NORMAL" and v82.randomColor.active and "RANDOM GENERATED" or item and item.generated and "GENERATED" or item and "NATIVE" or "NORMAL")
     .." | Exact RGB: "..rgbText(targetColor(entry)).." | Generated ordinal: "..tostring(item and item.ordinal or "NONE")
     .." | Native palette index: "..tostring(item and not item.generated and item.index or "NONE")
    updateUI()
@@ -4924,6 +5266,11 @@ gui.Destroying:Connect(closeController)
 
 connectLifetime(player:GetAttributeChangedSignal("PaintBucketColor"), function()
 	palette.onColor()
+ if mode=="NORMAL" and v82.randomColor.active and not v82.randomColor.writing and not palette.generated.reload and not v82.normalAB.reload
+  and not colorsMatch(paletteColor(),v82.randomColor.color) then
+  v82.randomColor.active=false;v82.randomColor.pending=false
+  if not running then normalTarget=paletteColor() end
+ end
 	if running and not benchmark.active and not palette.validating and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("NORMAL target color changed — restart required") end
 end)
 
@@ -5034,6 +5381,8 @@ local api = {
  SetProtectedOutlines=v7.visual.toggle,
  SetProtectedFill=function(value) v82.fill=value==true;for _,e in ipairs(entries) do v7.draw(e) end end,
  GetVisualRendererStats=v7.visual.stats,
+ RandomizeColor=function(seed) return v82.randomColor.choose(seed) end,
+ GetTargetHealthReport=function() return v82.targetHealth.report() end,
  GetGeneratedDistanceReport=palette.perceptual.report,
 
  GetLearnedPaletteReport=function() return palette.database(false) end,
@@ -5051,6 +5400,7 @@ local api = {
 	GetPerformanceStats = reportPerformance,
 	GetTargetStats = function(part)
 		local e=lookup[part];if not e then return nil end
+  local identity=mode=="CIVIL WAR" and e.civilControl or (not v82.randomColor.active and palette.find(targetColor(e)) or nil)
 		return {QueueOrigin=e.queueOrigin,EpisodeOrigin=e.episodeOrigin,EligibleQueueWaitMs=e.eligibleMs or 0,DeferredCooldownAgeMs=e.deferredMs or 0,QuarantineAgeMs=e.quarantineMs or 0,AttackFrequency=e.AttackFrequency or 0,RecentCorrections=e.RecentCorrections or 0,ImmediateReattacks=e.ImmediateReattacks or 0,LatestExternalChangeTime=e.latestExternalChangeTime,
    ConsecutiveAcquireFailures=e.ConsecutiveAcquireFailures or 0,ConsecutiveTargetLosses=e.ConsecutiveTargetLosses or 0,
             ConsecutiveValidNoEffects=e.ConsecutiveValidNoEffects or 0,ConsecutiveFailures=e.ConsecutiveFailures or 0,
@@ -5064,8 +5414,9 @@ local api = {
 			ActualRGB=rgbText(e.part.Color),TargetRGB=rgbText(targetColor(e)),DeltaRGB=colorDelta(e.part.Color,targetColor(e)),
 			LocalColorEventReceivedAt=e.lastColorEventTime,LocalDirtyQueuedAt=e.dirtyQueueInsertTime,LocalColorEventToQueueMs=e.localQueueLatencyMs,
 			LastWrongColorChange=e.lastWrongColorChange,FreshAttackAt=e.freshAttackAt,
-			ColorSource=mode=="NORMAL" and "NORMAL" or e.civilControl and (e.civilControl.generated and "GENERATED" or "NATIVE") or "UNASSIGNED",GeneratedOrdinal=e.civilControl and e.civilControl.ordinal,
-			AssignedColorName=e.civilControl and e.civilControl.signature.Name,LearnedPaletteIndex=e.civilControl and e.civilControl.index,PaletteControlPath=e.civilControl and e.civilControl.path,
+			ColorSource=mode=="NORMAL" and (v82.randomColor.active and "RANDOM_GENERATED" or "NORMAL") or e.civilControl and (e.civilControl.generated and "GENERATED" or "NATIVE") or "UNASSIGNED",GeneratedOrdinal=e.civilControl and e.civilControl.ordinal,
+			AssignedColorName=mode=="NORMAL" and v82.randomColor.active and ("RANDOM GENERATED — RGB "..rgbText(targetColor(e))) or identity and identity.signature.Name,
+   LearnedPaletteIndex=identity and identity.index or 0,PaletteControlPath=identity and identity.path or "NONE",
 			MarkerType="PROVINCE_SILHOUETTE",MarkerColor=e.box and e.box.OutlineColor,
    AcquisitionState=e.AcquisitionState,CursorOnlyFailuresSinceSuccess=e.CursorOnlyFailuresSinceSuccess or 0,CameraFallbackAttemptsThisDirtyEpisode=e.CameraFallbackAttemptsThisDirtyEpisode or 0,
 			TargetColor=targetColor(e),DirtySince=e.dirtySince,DirtyQueueInsertTime=e.dirtyQueueInsertTime,
@@ -5097,7 +5448,7 @@ local api = {
 		if value ~= "NORMAL" and value ~= "CIVIL WAR" then return false end
 		if running or v82.resumeIntent then stop("Stopped before changing mode") end
 		mode = value
-		if mode=="NORMAL" then normalTarget=paletteColor() end
+		if mode=="NORMAL" then normalTarget=v82.randomColor.active and v82.randomColor.color or paletteColor();if v82.randomColor.active then v82.randomColor.pending=true end end
 		rebuildDirty()
 		updateUI()
 		return true
@@ -5107,7 +5458,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
-			Version = 8.2, Build = "8.2-master-ab",
+			Version = 8.2, Build = "8.2-v2-recovery",
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

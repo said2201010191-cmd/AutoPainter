@@ -137,7 +137,7 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."NORMAL misses overload and acquisition failures never poison shared successful dwell",function()
   local w,a,p,t=setup(deferred,20);a.SetActivationStrategy("PER_TARGET");for i=1,4 do w.cannotAcquire[p[i]]=true end
   for i=5,7 do w.stalled=w.stalled or {};w.stalled[p[i]]=true end
-  w.start(a,6);assert(a.GetPerformanceStats().GlobalDwellMs==120)
+  w.start(a,9);assert(a.GetPerformanceStats().GlobalDwellMs==120)
   for i=8,20 do assert(a.ColorsMatch(p[i].Color,w.color)) end
   for _,r in ipairs(a.GetServiceRecords()) do assert(r.GlobalDwellAfter==120 and r.EffectivePaintWindowMs==120) end;clean(w,a)
  end)

@@ -65,11 +65,11 @@ for _,deferred in ipairs({false,true}) do
   assert(m.AveragePaintServiceMs<80 and m.CursorMovesToAlreadyCleanProvince==0 and m.ReleaseTimeouts==0)
   assert(w.networkAttempts==0);clean(w,a)
  end)
- test(pre.."LOCKED default survives over100 failed transactions with exactly zero camera writes",function()
+ test(pre.."LOCKED default contains a 48 second cross-entry failure storm with exactly zero camera writes",function()
   local w,a,p,t=setup(deferred,20);local first=#w.writeLog+1
   for _,part in ipairs(p) do w.cannotAcquire[part]=true end
   w.start(a,48)
-  assert(t.metrics.AcquisitionAttempts>=100,"Attempts="..t.metrics.AcquisitionAttempts)
+  assert(t.metrics.AcquisitionAttempts<20 and a.GetPerformanceStats().TargetLossStormActive and a.GetPerformanceStats().GlobalTargetRecoveryAttempts>=1)
   assert(a.GetPerformanceStats().CameraControlMode=="LOCKED" and a.GetPerformanceStats().CameraMovesApplied==0)
   assert(a.GetStats().Running and a.GetPerformanceStats().GlobalDwellMs==120)
   a.Stop();w.step(.1);zeroCamera(w,first);clean(w,a)

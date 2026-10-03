@@ -28,7 +28,7 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."requested config report build and actual observations are distinct",function()
   local w,a,p,t=setup(deferred,8);assert(t.cfg.NormalDownSpacingDefault==.150)
   w.start(a,2);local m=a.GetPerformanceStats()
-  assert(a.GetStats().Build=="8.2-master-ab" and m.NormalRequestedDownSpacingMs==150 and m.NormalProductionFloorMs==150)
+  assert(a.GetStats().Build=="8.2-v2-recovery" and m.NormalRequestedDownSpacingMs==150 and m.NormalProductionFloorMs==150)
   assert(m.NormalCadenceSource=="PUBLIC_LIVE_2RUN_150MS_BASELINE" and m.NormalCadencePolicySource==m.NormalCadenceSource)
   assert(m.NormalActualDownSpacingMinMs>=149.999 and m.NormalActualDownSpacingMeanMs<226)
   assert(m.SuccessfulPaints==8 and m.GlobalDwellMs==120 and a.GetStats().Dirty==0);assertFloor(w,.150);clean(w,a)
