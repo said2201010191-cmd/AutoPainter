@@ -1,20 +1,20 @@
-# Current Hands Free build: v8.2 Combat
+# Current Hands Free build: v8.2 Cadence Follow-up
 
-Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Export your palette and close the older panel first. The controller uses the normal PaintBucket's genuine input path and sends **zero game RPCs**.
+Use **[AutoPainterHandsFree.luau](AutoPainterHandsFree.luau)**. Export your palette and close the older controller before loading. The normal PaintBucket remains the sole game paint sender: **AutoPainterRPCs=0**.
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/said2201010191-cmd/AutoPainter/main/AutoPainterHandsFree.luau", true))()
 ```
 
-Use the commit-pinned URL supplied with the release for repeatable tests/friend distribution. Anonymous raw loading requires a public file. No credentials, Studio, place edits or server installation.
+Use the commit-pinned URL supplied with the release for reproducible tests/friend distribution. Anonymous raw loading requires a public file. No credentials, Studio, place edits or server installation.
 
-- NORMAL keeps a **120 ms healthy baseline**; no-effect misses no longer accumulate extra NORMAL dwell. Fresh clean→dirty episodes clear stale penalties; active fighting is separated from stale failing work.
-- **ADAPTIVE begins PER_TARGET**, then conducts a bounded genuine hold-and-move experiment when evidence permits. CONTINUOUS must demonstrate real retained-target corrections and a throughput advantage or fall back. Camera remains **LOCKED**.
-- **Paint Cooldown Benchmark** pauses the normal scheduler and tests all 13 requested DOWN intervals (200 through 50 ms), with 40 distinct dirty provinces per interval by default, asynchronous color observations and measured native DOWN spacing. Copy/report and Cancel are separate actions. It never invents dirty work or trains normal timing.
-- Civil's guarded native palette click sequence and full semantic rebinding are preserved. Province-shaped outlines, drag selection and deduplication remain.
-- Broader native UI/client-source inspection and a dormant OG-style generator are included. **Generated verified capacity remains 0** without a proven native custom-color path; 128 learned native colors still means 128 unique Civil assignments.
+- **PER_TARGET default**, camera **LOCKED**. No automatic CONTINUOUS experiment. Existing dirty detection, fresh-attack priority, retry/fairness, native targeting and release protection remain.
+- Healthy NORMAL dwell remains **120 ms**. A separate **226 ms provisional native DOWN-spacing control** comes from the user's completed 40/40 row's measured P90. Waiting before DOWN does not train dwell. A complete qualifying live sweep can update the cadence from actual spacing. The minimum reliable rate is still unknown.
+- **Paint Cooldown Benchmark** runs all 13 intervals asynchronously, using one unchanged measured color and **solo native resets of the same 30–40 provinces** between rows. Escape pauses, RESUME continues, focus/tool recovery retains evidence, and only explicit Cancel ends the run. Copy only exports collected data. Manual reset waits indefinitely when verified native reset colors are unavailable.
+- Civil's native palette sequence, 128/128 semantic rebinding, unique assignments, shaped outlines, drag selection and deduplication are preserved.
+- **RGB creation is proven; extra RGB application through the current native tool is unverified.** The OG source trace and separate capability fields make this distinction explicit. 186 provinces require 58 additional applicable colors beyond 128 verified native swatches; no silent reuse or fake application capacity.
 
-See **[COMBAT_REVISION.md](COMBAT_REVISION.md)** for all specification sections, exact live tests, benchmark setup, new report fields and the generated-color investigation. **[V82_VALIDATION.md](V82_VALIDATION.md)** lists deterministic results. New runtime behavior and live speed remain unverified until the user tests this build.
+See **[LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md)** for the full changes, exact benchmark/combat procedure, OG Randomize trace, report fields and conditional limitations. **[V82_VALIDATION.md](V82_VALIDATION.md)** records deterministic checks. This revision's NORMAL cadence/reliability and generated-color application remain live-unverified.
 
 The material below describes historical entry points, not the current Hands Free build.
 

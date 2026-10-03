@@ -1,4 +1,4 @@
--- AutoPainter Hands Free v8.2 Combat
+-- AutoPainter Hands Free v8.2 Cadence Follow-up
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
 -- NORMAL paints every protected province to one palette color.
@@ -21,7 +21,7 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
-	assert(existing.GetStats().Build=="8.2-combat","Close the older Hands Free panel; v8.2 must load its recovery and palette binding state")
+	assert(existing.GetStats().Build=="8.2-followup","Close the older Hands Free panel; v8.2 must load its recovery and palette binding state")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
@@ -35,7 +35,8 @@ local CFG = {
 	MaxConsecutiveEntryFailures = 3,
 	EntryCooldowns = {0.25,0.40,0.65,1.0},
 	EntryExtraDwellMax = 0.10,
-	ActivationStrategy = "ADAPTIVE", -- PER_TARGET first; ADAPTIVE/CONTINUOUS require a guarded hold trial.
+	ActivationStrategy = "PER_TARGET", -- Native hold failed live; experimental ADAPTIVE/CONTINUOUS are explicit opt-in.
+ NormalDownSpacingDefault = 0.226, -- User 40/40 native row P90 225.02 ms, rounded up; independent of dwell.
 	TargetDwellDefault = 0.12,
 	TargetDwellMin = 0.12,
 	TargetDwellMax = 0.35,
@@ -220,7 +221,8 @@ local activationTool, activationMethods, rejectedMethods = nil, {}, {}
 local toolConnections, equippedMouseConnections = {}, {}
 local ownedInput, inputBusy, pendingRelease = nil, false, false
 local workerActive, releaseBlocked, starting = false, false, false
-local benchmark: any = {active=false,state="NOT_RUN",detail="Not started",rows={}}
+local benchmark: any = {active=false,state="SETUP",detail="Not started",rows={}}
+local pacing: any = {interval=CFG.NormalDownSpacingDefault,source="USER_200MS_ROW_P90 (not minimum proven)",normal={},civil={}}
 local finishClose, restorePending, restoringPalette = nil, false, false
 local focused = true
 local lifetimeConnections = {}
@@ -303,6 +305,7 @@ local function inputEvidence(owner)
 		local general=downSeen>owner.Down and downObservedAt or math.huge
 		local equipped=equippedDownSeen>owner.EquippedDown and equippedDownObservedAt or math.huge
 		owner.MouseObservedAt=math.min(general,equipped)
+		if owner.PaintMode and not benchmark.active and pacing.record then pacing.record(owner) end
 	end
 	if owner.MouseObserved and not owner.ReleaseSent then health.InputState="DOWN_CONFIRMED" end
 	owner.ToolObserved = toolDownSeen > owner.ToolDown
@@ -356,6 +359,7 @@ end
 local function settleRelease()
 	local owner = ownedInput
 	if not owner then return not releaseBlocked end
+	inputEvidence(owner)
 	forceRelease()
 	local deadline = os.clock() + CFG.ActivationReleaseTimeout
 	while ownedInput == owner and os.clock() < deadline do
@@ -788,9 +792,9 @@ function palette.preflight()
  local known=#palette.controls;local verified=#palette.semanticAvailable();local selected=#entries
  local bound=0;for _,item in ipairs(palette.controls) do if item.button and item.button:IsDescendantOf(playerGui) and not item.pendingVerification then bound+=1 end end
  local shortage=math.max(0,selected-verified)
- return {PaletteGenerationState=state,NativeVerifiedThisSession=nativeVerified,CustomColorUIAvailable=palette.custom and palette.custom.state or "UNVERIFIED",GeneratedUniqueAssigned=0,TotalUniqueAssignmentCapacity=verified,CurrentlyBoundLiveControls=bound,SemanticKnownCapacity=known,VerifiedNativeCapacity=verified,GeneratedVerifiedCapacity=0,SelectedCount=selected,Shortage=shortage,
+ return {PaletteGenerationState=state,NativeVerifiedThisSession=nativeVerified,CustomColorUIAvailable=palette.custom and palette.custom.state or "UNVERIFIED",GeneratedUniqueAssigned=0,TotalUniqueAssignmentCapacity=verified,CurrentlyBoundLiveControls=bound,SemanticKnownCapacity=known,VerifiedNativeCapacity=verified,GeneratedVerifiedCapacity=0,GeneratedColorCreation="PROVEN",GeneratedColorApplicationViaCurrentNativePath="UNVERIFIED",NativeApplicationCapacity=verified,GeneratedAdditionalRequired=shortage,SelectedCount=selected,Shortage=shortage,
   Message=string.format("Selected provinces: %d | Verified native unique learned colors: %d | Additional colors required: %d%s",selected,verified,shortage,
-   shortage>0 and " | Reduce selection; custom UI unverified; no generated capacity assumed" or " | Unique assignments available")}
+   shortage>0 and " | RGB generation is proven; applying the additional RGB colors through the native tool is unverified. Use fewer provinces until that application path is established." or " | Unique assignments available")}
 end
 
 function palette.topButton(point)
@@ -965,7 +969,7 @@ function palette.summary()
  local semantic=#palette.semanticAvailable()
  return {LearnedSemanticColors=#palette.controls,BoundNativeColors=capacity,AmbiguousColors=ambiguous,CurrentPaletteGeneration=palette.bindingGeneration,
   CivilNativeCapacity=semantic,ExpectedNativeCapacity=semantic,SemanticKnownCapacity=#palette.controls,VerifiedNativeCapacity=semantic,
-  CurrentlyBoundLiveControls=capacity,GeneratedVerifiedCapacity=0,Shortage=math.max(0,#entries-semantic),SelectedCount=#entries,
+  CurrentlyBoundLiveControls=capacity,GeneratedVerifiedCapacity=0,GeneratedColorCreation="PROVEN",GeneratedColorApplicationViaCurrentNativePath="UNVERIFIED",NativeApplicationCapacity=semantic,GeneratedAdditionalRequired=math.max(0,#entries-semantic),Shortage=math.max(0,#entries-semantic),SelectedCount=#entries,
   LivePaletteRoot=palette.anyVisible() and "OPEN" or "CLOSED",CustomColorUIAvailable=palette.custom and palette.custom.state or "UNVERIFIED",GeneratedColorsAssigned=0,
   BoundPaletteControls=capacity,DetachedPaletteControls=detached,RebindPending=pending,SignatureMismatches=mismatch,
  CivilCapacityStatus=capacity==0 and #palette.controls>0 and (detached+pending)>0 and "temporarily unavailable" or "available",CivilSelectedCount=#entries,UniqueAssignedCivilColors=unique,DuplicateAssignedCivilColors=duplicate,
@@ -1976,6 +1980,11 @@ function policy.strategy()
  return policy.choice,policy.normal[policy.choice]
 end
 function policy.learn(arm,success,latency,service)
+ -- Waiting for the next permitted DOWN is not PaintBucket response latency.
+ -- Keep acquisition-to-color telemetry intact; train NORMAL dwell on native service only.
+ if service and service.normal and service.nativeDownObservedAt and service.correctedAt then
+  latency=math.max(0,service.correctedAt-service.nativeDownObservedAt)
+ end
  if success then arm.streak=0;v82.learnSuccess(arm,latency,service)
  elseif service and service.validNoEffect then
   local e=service.entry;arm.streak+=1
@@ -2049,6 +2058,7 @@ function v7.record(service,stalled)
  record.TargetAcquiredAt=service.acquiredAt;record.NativeDownSentAt=service.nativeDownAt;record.NativeDownObservedAt=service.nativeDownObservedAt
  record.CorrectionObservedAt=service.correctedAt;record.RetainedNativeHold=service.retained;record.NativeHoldId=service.holdId
  record.EffectivePaintWindowMs=service.dwell*1000
+ record.NativeDownSpacingMs=service.downSpacingMs;record.CadenceWaitMs=service.cadenceWaitMs or 0
  record.AcquiredToNativeDownMs=service.nativeDownAt and service.acquiredAt and math.max(0,service.nativeDownAt-service.acquiredAt)*1000 or 0
  record.NativeDownToCorrectionMs=service.correctedAt and service.nativeDownObservedAt and (service.correctedAt-service.nativeDownObservedAt)*1000 or nil
  record.ActiveCombatAtFinish=v82.activeCombat(e,os.clock())
@@ -2091,6 +2101,7 @@ function policy.qualify(service)
 	service.nativeDownAt=ownedInput and ownedInput.Started
  service.nativeDownObservedAt=ownedInput and ownedInput.MouseObservedAt
  service.holdId=ownedInput and ownedInput.HoldId
+ pacing.record(ownedInput,service)
  service.entry.lastPaintAttempt=service.validAt
 	service.entry.lastValidService=service
 	service.method=ownedInput and ownedInput.Method or nil
@@ -2210,7 +2221,7 @@ function v7.report()
 	table.insert(lines,"CIVIL ASSIGNMENTS (native palette controls, not arbitrary RGB)")
 	for _,e in ipairs(entries) do table.insert(lines,entryLabel(e).." | AssignedCivilRGB="..rgbText(e.civilColor).." | AssignedCivilColorKey="..colorKey(e.civilColor)) end
 	table.insert(lines,"LAST 20 TARGET TRANSACTIONS (normalized local observations; not server acknowledgments)")
-	local fields={"EntryId","Position","IntendedRGB","PaletteAttributeBefore","AttributeAfterSet","PaletteAttributeAfter","AttributeAfterEquip","PaletteUISelection","PaletteProof","PreviousIntendedRGB","ActualRGBBefore","ActualRGBAfter","DeltaRGB","NormalizedMatch","MouseTargetCorrect","TargetAcquired","ServiceQualified","FullWindowCompleted","ActualChanged","QueueWaitMs","AcquisitionMs","PalettePreparationMs","ServiceMs","AcquiredToCorrectMs","PaintMs","ReleaseMs","DefenseResponseMs","Result","QueueOrigin","EligibleQueueWaitMs","DeferredCooldownAgeMs","QuarantineAgeMs","TotalDirtyAgeMs","DirtyEventToEligibleMs","EligibleToSchedulerPickMs","SchedulerPickToAcquireMs","GlobalDwellBefore","GlobalDwellAfter","DwellSampleRejected","TotalDefenseResponseMs","TransactionId","Stage","DirtyEpisode","ExternalColorEventAt","EligibleAt","SchedulerPickedAt","TargetAcquiredAt","NativeDownSentAt","NativeDownObservedAt","CorrectionObservedAt","RetainedNativeHold","NativeHoldId","EffectivePaintWindowMs","AcquiredToNativeDownMs","NativeDownToCorrectionMs","ActiveCombatAtFinish"}
+	local fields={"EntryId","Position","IntendedRGB","PaletteAttributeBefore","AttributeAfterSet","PaletteAttributeAfter","AttributeAfterEquip","PaletteUISelection","PaletteProof","PreviousIntendedRGB","ActualRGBBefore","ActualRGBAfter","DeltaRGB","NormalizedMatch","MouseTargetCorrect","TargetAcquired","ServiceQualified","FullWindowCompleted","ActualChanged","QueueWaitMs","AcquisitionMs","PalettePreparationMs","ServiceMs","AcquiredToCorrectMs","PaintMs","ReleaseMs","DefenseResponseMs","Result","QueueOrigin","EligibleQueueWaitMs","DeferredCooldownAgeMs","QuarantineAgeMs","TotalDirtyAgeMs","DirtyEventToEligibleMs","EligibleToSchedulerPickMs","SchedulerPickToAcquireMs","GlobalDwellBefore","GlobalDwellAfter","DwellSampleRejected","TotalDefenseResponseMs","TransactionId","Stage","DirtyEpisode","ExternalColorEventAt","EligibleAt","SchedulerPickedAt","TargetAcquiredAt","NativeDownSentAt","NativeDownObservedAt","CorrectionObservedAt","RetainedNativeHold","NativeHoldId","EffectivePaintWindowMs","AcquiredToNativeDownMs","NativeDownToCorrectionMs","ActiveCombatAtFinish","NativeDownSpacingMs","CadenceWaitMs"}
 	for _,record in ipairs(v7.records) do
 		table.insert(lines,record.Label)
 		for _,key in ipairs(fields) do table.insert(lines,"  "..key.."="..tostring(record[key])) end
@@ -2262,6 +2273,7 @@ function v82.stats()
  local now=os.clock();v82.updateLoad(now)
  local r=table.clone(v82.data)
  for k,v in pairs(v82.combat) do r[k]=v end
+ for k,v in pairs(pacing.stats()) do r[k]=v end
  local trial=policy.trial;r.NativeHoldExperimentState=trial.State;r.NativeHoldTransferredSuccesses=trial.RetainedSuccesses
  r.NativeHoldRetainedMisses=trial.RetainedMisses;r.NativeHoldMultiTargetProof=trial.RetainedProof;r.NativeHoldFallbackReason=trial.FallbackReason
  r.CooldownBenchmarkActive=benchmark.active;r.CooldownBenchmarkState=benchmark.state
@@ -2296,7 +2308,8 @@ function v82.stats()
   end
  end
  for k,value in pairs(v82.percentiles or {}) do r[k]=value end
- r.GeneratedColorSupport="UNVERIFIED: two picker controls rejected by live evidence; broader native UI/source inspection available; generated capacity remains 0"
+ r.GeneratedColorCreation="PROVEN";r.GeneratedColorApplicationViaCurrentNativePath="UNVERIFIED"
+ r.GeneratedColorSupport="RGB creation proven by OG code; native application beyond verified swatches unverified. Two Picker candidates rejected, not a generation limit."
  r.ExpandedCustomUICandidates=palette.custom and #palette.custom.inventory or 0
  local custom=0;for _ in pairs(palette.customCandidates or {}) do custom+=1 end;r.CustomColorUICandidates=custom
  r.SelectionStrokeActive=v82.selection and v82.selection.held or false
@@ -2321,7 +2334,7 @@ local function reportPerformance()
 	result.ActivationStrategy=mode=="CIVIL WAR" and "PER_TARGET (CIVIL WAR)" or (CFG.ActivationStrategy=="PER_TARGET" and "PER_TARGET" or policy.choice)
 	result.StrategyConfigured=CFG.ActivationStrategy
 	result.StrategyDecisionCached=policy.locked
-	result.StrategyDecisionReason=mode=="CIVIL WAR" and "Separate palette colors require fresh per-target activation" or policy.reason
+	result.StrategyDecisionReason=mode=="CIVIL WAR" and "Separate palette colors require fresh per-target activation" or (CFG.ActivationStrategy=="PER_TARGET" and "PER_TARGET pinned; failed live hold transfers do not trigger automatic experiments" or policy.reason)
 	local arm=mode=="CIVIL WAR" and policy.civil or policy.normal[result.ActivationStrategy]
 	result.AdaptiveDwellMs=(arm and arm.dwell or CFG.TargetDwellDefault)*1000
 	result.DownEvents,result.UpEvents=downSeen,upSeen
@@ -2597,6 +2610,55 @@ end
 local function liveToken(token)
 	return alive and running and workerToken==token and focused
 end
+-- Cadence is independent of dwell. The initial floor uses the user's 40/40 row
+-- (native spacing P90 225.02 ms), rounded upward; it is not a discovered minimum.
+function pacing.context()
+ local upgrades=player:FindFirstChild("Upgrades");local level=upgrades and upgrades:FindFirstChild("EquippedPaintCooldown")
+ local ok,value=pcall(function() return level and level.Value end)
+ return ok and value~=nil and tostring(value) or "unavailable"
+end
+function pacing.record(owner,service)
+ if not owner or not owner.MouseObservedAt then return end
+ local list=owner.PaintMode=="NORMAL" and pacing.normal or pacing.civil
+ if not owner.CadenceRecorded then
+  owner.CadenceRecorded=true
+  if pacing.lastDown and pacing.lastTool==owner.Tool then
+   local ms=(owner.MouseObservedAt-pacing.lastDown)*1000
+   owner.CadenceSpacingMs=ms
+   v82.push(list,ms,64)
+  end
+  pacing.lastDown=owner.MouseObservedAt;pacing.lastTool=owner.Tool
+ end
+ if service then service.downSpacingMs=owner.CadenceSpacingMs end
+end
+function pacing.wait(entry,token,service)
+ if benchmark.active or mode~="NORMAL" or service.strategy~="PER_TARGET" then return true end
+ local context=pacing.context()
+ if pacing.calibratedContext and context~=pacing.calibratedContext then
+  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source="UPGRADE_CHANGED: benchmark again"
+ elseif pacing.calibratedGeneration and pacing.calibratedGeneration~=equippedGeneration then
+  pacing.interval=CFG.NormalDownSpacingDefault;pacing.calibratedContext=nil;pacing.calibratedGeneration=nil;pacing.source="TOOL_SESSION_CHANGED: benchmark again"
+ end
+ local started=os.clock();local deadline=pacing.lastTool==activationTool and (pacing.lastDown or -math.huge)+pacing.interval or -math.huge
+ while os.clock()<deadline do
+  if not liveToken(token) or not shouldTarget(entry) or mouse.Target~=entry.part or not activationTool or activationTool.Parent~=player.Character then return false end
+  RunService.Heartbeat:Wait()
+ end
+ service.cadenceWaitMs=(os.clock()-started)*1000
+ return liveToken(token) and shouldTarget(entry) and mouse.Target==entry.part
+end
+function pacing.stats()
+ local r={NormalMinimumDownSpacingMs=pacing.interval*1000,NormalCadenceSource=pacing.source,NormalCadenceCalibratedContext=pacing.calibratedContext or "none",NormalCadenceToolGeneration=pacing.calibratedGeneration or "none"}
+ for name,values in pairs({Normal=pacing.normal,Civil=pacing.civil}) do
+  local sum=0;for _,v in ipairs(values) do sum+=v end
+  r[name.."ActualDownSpacingMeanMs"]=#values>0 and sum/#values or 0
+  r[name.."ActualDownSpacingMinMs"]=v82.percentile(table.clone(values),0)
+  r[name.."ActualDownSpacingP90Ms"]=v82.percentile(table.clone(values),.9)
+  r[name.."ActualDownSpacingMaxMs"]=v82.percentile(table.clone(values),1)
+ end
+ return r
+end
+
 local function ownedTargetSafe(entry,previous)
 	if not ownedInput or ownedInput.ReleaseSent then return true end
 	local actual=mouse.Target
@@ -2753,7 +2815,7 @@ local function startOrRetainHold(entry,token)
 		health.resync(tool);activation.Status="Mouse1 state conflict; target will be reacquired after release";return false
 	end
 	if not shouldTarget(entry) then v7.CleanSkippedBeforeDown+=1;syncDirty(entry,"check");return false end
-	local owner={Method=primaryMethod,Tool=tool,Before=entry.part.Color,Down=downSeen,
+	local owner={Method=primaryMethod,Tool=tool,PaintMode=mode,Before=entry.part.Color,Down=downSeen,
 		EquippedDown=equippedDownSeen,ToolDown=toolDownSeen,Started=os.clock()}
 	owner.HoldId=pressAttempts+1
 	ownedInput,held=owner,true;health.InputState="DOWN_SENT"
@@ -2781,7 +2843,10 @@ local function restorePalette()
 end
 
 local function stop(reason)
- if benchmark.active and not benchmark.finishing then benchmark.cancelReason=reason or "Stopped";benchmark.restoreRunning=false end
+ if benchmark.active and not benchmark.finishing then
+  local state=not focused and "PAUSED - FOCUS" or (activationTool and activationTool.Parent~=player.Character) and "PAUSED - TOOL" or "PAUSED - TARGET"
+  benchmark.pause(state,reason or "Paused",state=="PAUSED - TARGET");return
+ end
  palette.activeSnapshot=nil
 	v82.resumeIntent=nil
 	local wasCivil = running and mode == "CIVIL WAR"
@@ -2937,7 +3002,10 @@ local function worker(token)
 			if outcome=="correct" then syncDirty(entry,"check") else service.result="INPUT_STATE_CONFLICT" end
 			policy.finish(service,false);continue
 		end
-		entry.lastPaintAttempt=os.clock()
+		if not pacing.wait(entry,token,service) then
+   service.result=colorsMatch(entry.part.Color,target) and "CLEAN_BEFORE_DOWN" or "TARGET_LOST";policy.finish(service,false);continue
+  end
+  entry.lastPaintAttempt=os.clock()
 		if not startOrRetainHold(entry,token) then
    if mouse.Target~=entry.part then v82.data.TargetLostBeforeDown+=1 end
 			service.result=service.result or (colorsMatch(entry.part.Color,target) and "CLEAN_BEFORE_DOWN" or mouse.Target~=entry.part and "TARGET_LOST" or "INPUT_STATE_CONFLICT")
@@ -3118,7 +3186,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v8.2 Combat"
+title.Text = "AutoPainter · HANDS FREE v8.2 Cadence Follow-up"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -3218,6 +3286,10 @@ benchmark.liveCopy=Instance.new("TextButton");benchmark.liveCopy.Text="Copy Curr
 benchmark.liveCopy.Position=UDim2.fromOffset(230,305);benchmark.liveCopy.Parent=gui;benchmark.liveCopy.Visible=false
 benchmark.liveStart=Instance.new("TextButton");benchmark.liveStart.Text="Paint Cooldown Benchmark";benchmark.liveStart.Size=UDim2.fromOffset(245,30)
 benchmark.liveStart.Position=UDim2.fromOffset(12,305);benchmark.liveStart.Parent=gui;benchmark.liveStart.Visible=false
+benchmark.resumeButton=Instance.new("TextButton");benchmark.resumeButton.Text="RESUME BENCHMARK";benchmark.resumeButton.Size=UDim2.fromOffset(430,42)
+benchmark.resumeButton.Position=UDim2.fromOffset(12,345);benchmark.resumeButton.Parent=gui;benchmark.resumeButton.Visible=false
+benchmark.addButton=Instance.new("TextButton");benchmark.addButton.Text="ADD BENCHMARK PROVINCES";benchmark.addButton.Size=UDim2.fromOffset(430,32)
+benchmark.addButton.Position=UDim2.fromOffset(12,395);benchmark.addButton.Parent=gui;benchmark.addButton.Visible=false
 palette.fillButton=button("Protected fill: OFF",461);palette.fillButton.Parent=palettePanel;palette.fillButton.Size=UDim2.new(1,-20,0,28)
 palette.fillButton.Activated:Connect(function() v82.fill=not v82.fill;for _,entry in ipairs(entries) do v7.draw(entry) end;palette.fillButton.Text="Protected fill: "..(v82.fill and "ON" or "OFF") end)
 palette.seedBox=Instance.new("TextBox");palette.seedBox.Name="CivilRandomSeed";palette.seedBox.PlaceholderText="Reroll seed (blank = random)"
@@ -3278,6 +3350,7 @@ local function dirtyCount() return #dirty end
 
 local function updateUI()
 	if not alive then return end
+ benchmark.resumeButton.Visible=benchmark.active and benchmark.paused and not selecting;benchmark.addButton.Visible=benchmark.active and benchmark.paused and not selecting
  benchmark.cancelButton.Visible=benchmark.active;benchmark.liveCopy.Visible=benchmark.active;benchmark.liveStart.Visible=running and not benchmark.active
 	v82.cameraLockButton.Visible=running;v82.cameraLockButton.Text="Camera movement: "..v82.camera.mode
  frame.Visible = not running and not selecting and not benchmark.active
@@ -3289,7 +3362,7 @@ local function updateUI()
 		"Selected: %d · Dirty: %d · Mode: %s\nCorrections: %d · Aim fails: %d · No effect: %d · Input errors: %d",
 		activeCount(), dirtyCount(), mode, corrections, aimFailures, noEffect, inputErrors
 	)
-	status.Text = lastMessage.."\n"..palette.status
+	status.Text = lastMessage..(palette.status~=lastMessage and ("\n"..palette.status) or "")
 		.. "\nAcquire: " .. lastAcquireDetail
 		.. "\nTarget acquired: " .. tostring(activation.TargetAcquired) .. " · Method: " .. activation.Method
 		.. "\nActivation attempted: " .. tostring(activation.Attempted)
@@ -3309,14 +3382,14 @@ local function updateUI()
 		perf.RecentlyChangedQueueDepth,perf.FreshAttackCorrections,perf.AverageAttackColorChangeToCorrectedMs,perf.ActiveTarget)
 
  palette.buttons[7].Text="Close palette: "..(palette.verifiedOpener() and (palette.closeRequired and "REQUIRED" or "AUTO") or "KEEP OPEN (no opener)")
- palette.info.Text=string.format("Learned %d · verified %d · live %d/%d (%s)\nCustom UI: %s · generated %d\nCapacity %d · selected %d · shortage %d",perf.SemanticKnownCapacity,perf.NativeVerifiedThisSession,perf.BoundNativeColors,perf.SemanticKnownCapacity,perf.PaletteGenerationState,perf.CustomColorUIAvailable,perf.GeneratedColorsAssigned,perf.VerifiedNativeCapacity,#entries,perf.Shortage)
+ palette.info.Text=string.format("Learned %d · verified %d · live %d/%d (%s)\nRGB creation PROVEN · application %s\nGenerated applied %d · native capacity %d · selected %d · additional %d",perf.SemanticKnownCapacity,perf.NativeVerifiedThisSession,perf.BoundNativeColors,perf.SemanticKnownCapacity,perf.PaletteGenerationState,perf.GeneratedColorApplicationViaCurrentNativePath,perf.GeneratedColorsAssigned,perf.VerifiedNativeCapacity,#entries,perf.Shortage)
  if running and mode=="CIVIL WAR" then liveStatus.Text..="\nPalette: "..palette.current.PaletteStep.." | "..tostring(palette.current.IntendedRGB).." | "..tostring(palette.current.Click and palette.current.Click.TargetControlName or "already selected") end
  if running and palette.compactHUD then
   local recent=mode=="CIVIL WAR" and perf.Strategies.CIVIL_WAR or perf.Strategies[perf.ActivationStrategy]
   liveStatus.Size=UDim2.fromOffset(365,150)
   liveStatus.Text=string.format("%s · Q/Escape STOP · OVERLOAD %s\nDirty %d · CPS %.2f · Success %.0f%%\nEligible queue P50/P90 %.0f/%.0f ms\nOldest %.0f ms · Cooling %d · Camera %d\nNative %d/%d · Gen %d\n%s",mode,tostring(perf.Overload),perf.DirtyCount,perf.CorrectionsPerSecond,recent.SuccessRate*100,perf.EligibleQueueP50Ms or 0,perf.EligibleQueueP90Ms or 0,perf.MaxDirtyAgeMs,perf.Quarantined or 0,perf.CameraFallbackAttempts,perf.BoundNativeColors,perf.SemanticKnownCapacity,perf.CurrentPaletteGeneration,perf.ActiveTarget)
  else liveStatus.Size=UDim2.fromOffset(470,250) end
- if benchmark.active then liveStatus.Size=UDim2.fromOffset(470,250);liveStatus.Text="PAINT COOLDOWN BENCHMARK\n"..benchmark.state.."\n"..benchmark.detail.."\nNormal worker paused · one unchanged color · AutoPainterRPCs=0\nColor results observed asynchronously. Cancel restores previous mode; Escape stops input." end
+ if benchmark.active then liveStatus.Size=UDim2.fromOffset(470,250);liveStatus.Text="PAINT COOLDOWN BENCHMARK\n"..benchmark.state.."\n"..benchmark.detail.."\nNormal worker paused · one unchanged color · AutoPainterRPCs=0\nColor results observed asynchronously. Escape PAUSES · RESUME continues · Cancel ends this run." end
  if selecting=="PALETTE" then
 		liveStatus.Text="NATIVE PALETTE SETUP · "..tostring(palette.learning or "Captured").."\n"..palette.status.."\nClick only the normal game's palette controls, then DONE / FINISH SETUP."
 	end
@@ -3494,188 +3567,393 @@ local function startAuto()
 	return value
 end
 
--- Temporary isolated cadence experiment. The normal worker is joined before this
--- worker starts. Native input owns paint; color observations never gate the next DOWN.
+-- Isolated resumable diagnostic. Completed rows are immutable evidence; reset
+-- paints are separate native transactions and never train production timing.
+function benchmark.open() return benchmark.active and alive and not benchmark.cancelled end
+function benchmark.log(action,reason)
+ v82.push(benchmark.events,{At=os.clock(),State=benchmark.state,Action=action,Reason=reason,Interval=benchmark.index},64)
+end
+function benchmark.pause(state,reason,manual,delay)
+ if not benchmark.open() then return end
+ local changed=not benchmark.paused or benchmark.state~=state or benchmark.pauseReason~=reason
+ benchmark.paused=true;benchmark.manual=benchmark.manual or manual==true
+ benchmark.state=state;benchmark.pauseReason=reason;benchmark.detail=reason
+ benchmark.retryReadyAt=os.clock()+(delay or 0);benchmark.stableAt=nil
+ if running then running=false;workerToken+=1 end
+ v82.resumeIntent=nil;forceRelease();palette.activeSnapshot=nil
+ if changed then benchmark.log("PAUSE",reason) end
+end
 function benchmark.valid()
- if benchmark.active and benchmark.token and (activationTool~=benchmark.tool or not benchmark.tool or benchmark.tool.Parent~=player.Character or equippedGeneration~=benchmark.generation) then
-  benchmark.cancelReason="Equipped-tool session changed";benchmark.restoreRunning=false;return false
+ if not benchmark.open() or benchmark.paused then return false end
+ if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Return focus to Roblox / close chat; evidence retained",false);return false end
+ if not benchmark.tool or not benchmark.tool.Enabled or benchmark.tool.Parent~=player.Character or activationTool~=benchmark.tool or benchmark.generation~=equippedGeneration then
+  benchmark.pause("PAUSED - TOOL","Equip the native PaintBucket; evidence retained",false);return false
  end
- return benchmark.active and not benchmark.cancelReason and alive and focused and running
-  and workerToken==benchmark.token and activationTool==benchmark.tool and benchmark.tool.Parent==player.Character
-  and colorsMatch(paletteColor(),benchmark.color)
+ if benchmark.state=="RUNNING TEST" and not colorsMatch(paletteColor(),benchmark.color) then
+  benchmark.pause("PAUSED - TARGET","Benchmark color changed. Restore "..rgbText(benchmark.color).." through the native palette, then Resume.",true);return false
+ end
+ return running and workerToken==benchmark.token
+end
+function benchmark.ready(phase)
+ while benchmark.open() do
+  local tool=findBucket()
+  if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Return focus to Roblox / close chat; evidence retained",false)
+  elseif selecting then benchmark.pause("PAUSED - TARGET","Finish selection, then RESUME BENCHMARK",true)
+  elseif not tool or not tool.Enabled or tool.Parent~=player.Character then benchmark.pause("PAUSED - TOOL","Equip the native PaintBucket; evidence retained",false)
+  elseif not benchmark.paused and benchmark.tool and (tool~=benchmark.tool or equippedGeneration~=benchmark.generation) then benchmark.pause("PAUSED - TOOL","Tool session changed; rebinding at a released boundary",false)
+  else
+   if benchmark.paused then
+    if ownedInput or releaseBlocked then
+     if not settleRelease() then benchmark.manual=true;benchmark.pauseReason="Release still unresolved — release Mouse1, then Resume" end
+    end
+    if not benchmark.manual and not ownedInput and not releaseBlocked and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+     benchmark.stableAt=benchmark.stableAt or os.clock()
+     if os.clock()>=benchmark.retryReadyAt and os.clock()-benchmark.stableAt>=CFG.FocusStable then
+      discoverActivation(tool)
+      if primaryMethod and primaryMethod.Name=="VirtualInput.SendMouseButton" then
+       primaryFailures=0 -- Bounded unqualified-sample count still stops repeated failures until explicit Resume.
+       benchmark.paused=false;benchmark.segment+=1;benchmark.tool=tool;benchmark.generation=equippedGeneration
+       workerToken+=1;benchmark.token=workerToken;running=true;benchmark.state=phase
+       benchmark.log("RESUME",benchmark.pauseReason);benchmark.pauseReason=nil
+      else benchmark.manual=true;benchmark.pauseReason="VirtualInput unavailable; restore support and Resume" end
+     end
+    end
+   else
+    if not benchmark.tool then discoverActivation(tool);benchmark.tool=tool;benchmark.generation=equippedGeneration end
+    if not primaryMethod then benchmark.pause("PAUSED - TOOL","VirtualInput unavailable; restore support then Resume",true)
+    else benchmark.state=phase;return true end
+   end
+  end
+  RunService.Heartbeat:Wait()
+ end
+ return false
+end
+function benchmark.resume()
+ if not benchmark.open() or not benchmark.paused then return false end
+ benchmark.manual=false;benchmark.stableAt=nil;benchmark.retryReadyAt=os.clock()
+ benchmark.log("RESUME_REQUEST",benchmark.pauseReason);return true
 end
 function benchmark.observe(entry)
  local record=benchmark.pending and benchmark.pending[entry]
  if not record or not record.DownAt or record.ColorAt or os.clock()>(record.ObserveUntil or math.huge) then return end
- if colorsMatch(entry.part.Color,benchmark.color) then record.ColorAt=os.clock() end
+ if colorsMatch(entry.part.Color,record.Target) then record.ColorAt=os.clock() end
 end
 function benchmark.waitUntil(deadline)
  while benchmark.valid() and os.clock()<deadline do RunService.Heartbeat:Wait() end
  return benchmark.valid()
 end
-function benchmark.candidates(seen)
- local available={}
- for _,entry in ipairs(entries) do
-  if not seen[entry] and entry.active and validProvince(entry.part) and not colorsMatch(entry.part.Color,benchmark.color) then table.insert(available,entry) end
- end
- return available
+function benchmark.mean(values)
+ local sum=0;for _,value in ipairs(values) do sum+=value end;return #values>0 and sum/#values or 0
 end
-function benchmark.summarize(row,settled)
- row.Successes,row.ValidNoEffect,row.Unqualified,row.Latencies,row.Spacings=0,0,0,{},{}
+function benchmark.summarize(row,final)
+ row.Attempts,row.Successes,row.ValidNoEffect,row.Unqualified,row.Pending=0,0,0,0,0
+ row.Latencies,row.Spacings={},{}
  for _,record in ipairs(row.Records) do
-  if record.DownSent then
-   if record.SpacingMs then table.insert(row.Spacings,record.SpacingMs) end
-   if record.DownObserved and record.ColorAt then
-    record.Result="OBSERVED_SUCCESS";row.Successes+=1;table.insert(row.Latencies,math.max(0,record.ColorAt-(record.DownObservedAt or record.DownAt))*1000)
-   elseif settled and record.Qualified then record.Result="VALID_NO_EFFECT";row.ValidNoEffect+=1
-   else record.Result=record.Result or (settled and "UNQUALIFIED" or "CANCELLED_UNSETTLED");row.Unqualified+=1 end
-  end
+  if record.DownSent then row.Attempts+=1 end
+  if record.SpacingMs then table.insert(row.Spacings,record.SpacingMs) end
+  if record.Qualified and record.ColorAt then
+   record.Result="OBSERVED_SUCCESS";row.Successes+=1;table.insert(row.Latencies,math.max(0,record.ColorAt-record.DownObservedAt)*1000)
+  elseif record.ObservationInterrupted then record.Result="UNQUALIFIED_OBSERVATION_INTERRUPTED";row.Unqualified+=1
+  elseif not record.Qualified then record.Result=record.Result or "UNQUALIFIED";row.Unqualified+=1
+  elseif final or os.clock()>=(record.ObserveUntil or math.huge) then record.Result="VALID_NO_EFFECT";row.ValidNoEffect+=1
+  else record.Result="PENDING_COLOR";row.Pending+=1 end
  end
  row.SuccessPercent=row.Attempts>0 and row.Successes/row.Attempts*100 or 0
 end
-function benchmark.report()
- local lines={"PAINT COOLDOWN BENCHMARK — isolated native input, AutoPainterRPCs=0",
-  "Status="..tostring(benchmark.state).." | Detail="..tostring(benchmark.detail),
-  "UnchangedRGB="..rgbText(benchmark.color).." | SamplesPerInterval="..tostring(benchmark.samples).." | EquippedPaintCooldown="..tostring(benchmark.upgrade),
-  "Configure +100% Paint Speed in the game before running. The raw upgrade value is reported, not interpreted as proof of +100%.",
-  "DOWN spacing is a minimum deadline; acquisition/release/frame delays are measured. No catch-up bursts. Color confirmation never gates the next attempt.",
-  "Success = genuine native DOWN observed plus local normalized target-color observation within the settle window; not server causality/acknowledgment.",
-  "SettleSeconds="..tostring(benchmark.settle).." | Restore="..tostring(benchmark.restoreStatus),
-  "RequestedMs | Status | Attempts | Successes | VALID_NO_EFFECT | Unqualified | Success% | DOWN-color mean/P90 ms | Actual DOWN-DOWN min/mean/P90/max ms | LateSpacings | AcquireFailures | CleanSkipped"}
- local function mean(values) local sum=0;for _,v in ipairs(values) do sum+=v end;return #values>0 and sum/#values or 0 end
- for _,row in ipairs(benchmark.rows or {}) do
-  local l,s=row.Latencies or {},row.Spacings or {};local sorted=table.clone(s);table.sort(sorted)
-  local late=0;for _,n in ipairs(s) do if n>row.IntervalMs+10 then late+=1 end end
-  table.insert(lines,string.format("%d | %s | %d | %d | %d | %d | %.2f | %.2f/%.2f | %.2f/%.2f/%.2f/%.2f | %d | %d | %d",row.IntervalMs,row.Status,row.Attempts,row.Successes or 0,row.ValidNoEffect or 0,row.Unqualified or 0,row.SuccessPercent or 0,mean(l),v82.percentile(table.clone(l),.9),sorted[1] or 0,mean(s),v82.percentile(table.clone(s),.9),sorted[#sorted] or 0,late,row.AcquireFailures,row.CleanSkipped))
+function benchmark.progress(row)
+ benchmark.summarize(row,false)
+ if benchmark.paused then benchmark.detail=benchmark.pauseReason;return end
+ benchmark.detail=string.format("Interval %d/13 — %d ms\nSamples %d/%d · Successes %d · No-effect %d · Unqualified %d\nDo not touch mouse/color/tool",benchmark.index,row.IntervalMs,row.Attempts,benchmark.samples,row.Successes,row.ValidNoEffect,row.Unqualified)
+end
+function benchmark.shot(entry,interval,phase)
+ if not benchmark.ready(phase) then return nil end
+ if not entry.active or not validProvince(entry.part) then return {EntryId=entry.id,Position="removed",Result="UNQUALIFIED_REMOVED"} end
+ if colorsMatch(entry.part.Color,normalTarget) then return {EntryId=entry.id,Position=tostring(entry.part.Position),Result="CLEAN_SKIPPED"} end
+ currentEntry=entry;v7.lock=entry;v7.draw(entry)
+ local record={EntryId=entry.id,Position=tostring(entry.part.Position),Target=normalTarget,Segment=benchmark.segment,Qualified=false}
+ benchmark.inProgress=record
+ local candidate,budget=visiblePoint(entry)
+ if budget then RunService.Heartbeat:Wait();if benchmark.valid() then candidate=visiblePoint(entry) end end
+ local acquired=benchmark.valid() and acquireFast(candidate or {entry=entry,tier=3},benchmark.token)
+ if not benchmark.valid() then settleRelease();v7.unlockTarget(entry);currentEntry=nil;return nil end
+ if not acquired or mouse.Target~=entry.part then
+  record.Result="UNQUALIFIED_ACQUIRE";record.AcquireFailed=true
+ elseif colorsMatch(entry.part.Color,normalTarget) then record.Result="CLEAN_SKIPPED"
+ else
+  if benchmark.lastNativeDown then benchmark.waitUntil(benchmark.lastNativeDown+interval) end
+  if not benchmark.valid() then settleRelease();v7.unlockTarget(entry);currentEntry=nil;return nil end
+  if mouse.Target~=entry.part or not colorsMatch(paletteColor(),normalTarget) then record.Result="UNQUALIFIED_TARGET_OR_PALETTE"
+  elseif colorsMatch(entry.part.Color,normalTarget) then record.Result="CLEAN_SKIPPED"
+  else
+   record.DownAt=os.clock();record.ObserveUntil=record.DownAt+benchmark.settle;benchmark.pending[entry]=record
+   local before=pressAttempts;local pressed=startOrRetainHold(entry,benchmark.token);local owner=ownedInput
+   record.DownSent=pressAttempts>before
+   if record.DownSent and owner then record.DownAt=owner.Started;record.ObserveUntil=record.DownAt+benchmark.settle end
+   if pressed and owner then
+    while benchmark.valid() and not owner.ReleaseSent and mouse.Target==entry.part do
+     inputEvidence(owner)
+     if owner.MouseObserved and os.clock()>=record.DownAt+benchmark.clickHold then break end
+     if os.clock()>=record.DownAt+CFG.InputVerify then break end
+     RunService.Heartbeat:Wait()
+    end
+    inputEvidence(owner);record.DownObserved=owner.MouseObserved;record.DownObservedAt=owner.MouseObservedAt
+    record.Qualified=owner.MouseObserved and benchmark.valid() and mouse.Target==entry.part and not owner.ReleaseSent
+    if record.ColorAt and record.DownObservedAt and record.ColorAt<record.DownObservedAt then
+     record.Qualified=false;record.Result="UNQUALIFIED_COLOR_BEFORE_DOWN"
+    end
+    if record.DownObservedAt then benchmark.lastNativeDown=record.DownObservedAt end
+   end
+   if not record.Qualified then record.Result=record.Result or "UNQUALIFIED_INPUT_OR_TARGET" end
+  end
  end
- table.insert(lines,"PER-ATTEMPT LOCAL EVIDENCE")
- for _,row in ipairs(benchmark.rows or {}) do for _,r in ipairs(row.Records) do
-  table.insert(lines,string.format("%d ms | Entry %d @ %s | DispatchAt=%s | NativeDownObservedAt=%s | DownObserved=%s | ColorAt=%s | ActualSpacingMs=%s | DispatchSpacingMs=%s | Qualified=%s | %s",row.IntervalMs,r.EntryId,r.Position,tostring(r.DownAt),tostring(r.DownObservedAt),tostring(r.DownObserved),tostring(r.ColorAt),tostring(r.SpacingMs),tostring(r.DispatchSpacingMs),tostring(r.Qualified),tostring(r.Result or "PENDING")))
- end end
- return table.concat(lines,"\n")
+ local released=settleRelease();v7.unlockTarget(entry);currentEntry=nil
+ if not released then benchmark.pause("PAUSED - TARGET","Release unresolved; release Mouse1, then Resume",true)
+ elseif record.Result and record.Result~="CLEAN_SKIPPED" and not record.Qualified then
+  benchmark.badSamples+=1
+  benchmark.pause("PAUSED - TARGET","Unqualified sample saved; safely moving to another target",benchmark.badSamples>=3,.15)
+ else benchmark.badSamples=0 end
+ return record
+end
+function benchmark.safeShot(entry,interval,phase)
+ benchmark.inProgress=nil
+ local before=pressAttempts;local ok,value=pcall(benchmark.shot,entry,interval,phase)
+ local partial=benchmark.inProgress;benchmark.inProgress=nil
+ if ok then return value end
+ -- A diagnostic exception is another recoverable, unqualified sample, not a new worker.
+ if partial then
+  partial.DownSent=pressAttempts>before;partial.Qualified=false;partial.Result="UNQUALIFIED_EXCEPTION"
+  if ownedInput then inputEvidence(ownedInput);partial.DownObservedAt=ownedInput.MouseObservedAt;partial.DownAt=ownedInput.Started end
+ end
+ settleRelease();if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
+ benchmark.pause("PAUSED - TARGET","Inspection/input error retained: "..tostring(value)..". Restore target/tool and Resume.",true)
+ return partial
+end
+function benchmark.chooseResetColor()
+ local target=palette.find(benchmark.color)
+ if not target or not target.semanticVerified then return nil,"Benchmark target has no verified native swatch for returning to its color" end
+ for _,item in ipairs(palette.available()) do
+  if item.semanticVerified and not colorsMatch(item.color,benchmark.color) then return item.color end
+ end
+ return nil,"No second verified native palette color is available"
+end
+function benchmark.prepareColor(color,entry,phase)
+ normalTarget=color;rebuildDirty()
+ while benchmark.open() do
+  if not benchmark.ready(phase) then return false end
+  if colorsMatch(paletteColor(),color) then return true end
+  local item=palette.find(color)
+  if not item or not item.semanticVerified then
+   benchmark.pause("WAITING FOR DIRTY","Select native target color "..rgbText(color)..", then Resume; no verified swatch writer",true)
+  else
+   -- Proxy keeps the real entry's Civil assignment/control entirely unchanged.
+   local aimEntry=entry
+   for _,candidate in ipairs(benchmark.cohort) do if candidate.active and not colorsMatch(candidate.part.Color,color) then aimEntry=candidate;break end end
+   local proxy={id=aimEntry.id,part=aimEntry.part,active=aimEntry.active,civilColor=color,civilControl=item,lastWorld=aimEntry.lastWorld}
+   local started=os.clock();local service={};local ok,why=palette.prepare(proxy,benchmark.token,service)
+   benchmark.reset.PaletteMs+=(os.clock()-started)*1000
+   if ok then return true end
+   if not benchmark.paused then benchmark.pause("PAUSED - TARGET","Open/restore the native palette, then Resume: "..tostring(why),true) end
+  end
+ end
+ return false
+end
+function benchmark.ensureCohort()
+ while benchmark.open() do
+  local valid,seen={},{}
+  for _,entry in ipairs(benchmark.cohort) do if entry.active and validProvince(entry.part) then table.insert(valid,entry);seen[entry]=true end end
+  for _,entry in ipairs(entries) do if #valid>=benchmark.samples then break end;if not seen[entry] and validProvince(entry.part) then table.insert(valid,entry);seen[entry]=true end end
+  benchmark.cohort=valid
+  if #valid>=benchmark.samples then return true end
+  benchmark.pause("WAITING FOR DIRTY",string.format("Need %d more protected provinces. Nothing is broken. Add them, then Resume.",benchmark.samples-#valid),true)
+  if not benchmark.ready("SETUP") then return false end
+ end
+ return false
+end
+function benchmark.resetCohort()
+ local color,why=benchmark.chooseResetColor();benchmark.resetColor=color
+ if not benchmark.autoReset or not color then benchmark.manualResetReason=why or "Solo reset disabled";return false end
+ benchmark.reset.Phases+=1;local started=os.clock()
+ local needsReset=false
+ for _,entry in ipairs(benchmark.cohort) do if not colorsMatch(entry.part.Color,color) then needsReset=true;break end end
+ if needsReset and not benchmark.prepareColor(color,benchmark.cohort[1],"RESETTING") then return false end
+ for i,entry in ipairs(benchmark.cohort) do
+  local failures=0
+  while benchmark.open() and entry.active and not colorsMatch(entry.part.Color,color) do
+   benchmark.detail=string.format("Resetting provinces... %d/%d\nDo not touch mouse/color/tool\nNext %d ms test starts automatically",i-1,benchmark.samples,benchmark.current.IntervalMs)
+   local record=benchmark.safeShot(entry,math.max(CFG.NormalDownSpacingDefault,pacing.interval),"RESETTING")
+   if record then
+    benchmark.reset.Attempts+=record.DownSent and 1 or 0
+    if record.Qualified then
+     while benchmark.valid() and not record.ColorAt and os.clock()<record.ObserveUntil do RunService.Heartbeat:Wait() end
+    end
+    if colorsMatch(entry.part.Color,color) then benchmark.reset.Successes+=1;failures=0
+    else benchmark.reset.Failures+=1;failures+=1 end
+    benchmark.pending[entry]=nil
+    v82.push(benchmark.reset.Records,record,60)
+    if failures>=3 then benchmark.pause("PAUSED - TARGET","Reset target not confirmed: Entry "..entry.id..". Reposition/open palette and Resume",true);failures=0 end
+   end
+   if not benchmark.ready("RESETTING") then return false end
+  end
+  if not entry.active then benchmark.pause("PAUSED - TARGET","Reset province removed; add a replacement and Resume",true);return false end
+ end
+ benchmark.reset.TotalMs+=(os.clock()-started)*1000
+ return benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP")
+end
+function benchmark.prepareInterval()
+ if not benchmark.ensureCohort() then return false end
+ local dirtyCount=0;for _,e in ipairs(benchmark.cohort) do if not colorsMatch(e.part.Color,benchmark.color) then dirtyCount+=1 end end
+ if benchmark.autoReset and (benchmark.index>1 or dirtyCount<benchmark.samples) then benchmark.resetCohort() end
+ while benchmark.open() do
+  if not benchmark.ready("SETUP") or not benchmark.ensureCohort() then return false end
+  dirtyCount=0;for _,e in ipairs(benchmark.cohort) do if not colorsMatch(e.part.Color,benchmark.color) then dirtyCount+=1 end end
+  if dirtyCount>=benchmark.samples then return benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP") end
+  benchmark.pause("WAITING FOR DIRTY",string.format("PAUSED — need %d more wrong-color protected provinces. Nothing is broken.\n%s\nRecolor/add them, select target %s, then Resume.",benchmark.samples-dirtyCount,benchmark.manualResetReason or "Native reset is not ready",rgbText(benchmark.color)),true)
+ end
+ return false
+end
+function benchmark.safePrepareInterval()
+ while benchmark.open() do
+  local ok,value=pcall(benchmark.prepareInterval)
+  if ok then return value end
+  settleRelease();if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
+  palette.currentEntry=nil;palette.activeSnapshot=nil
+  benchmark.pause("PAUSED - TARGET","Reset/setup error retained: "..tostring(value)..". Restore the palette/tool and Resume.",true)
+  if not benchmark.ready("SETUP") then return false end
+ end
+ return false
+end
+function benchmark.recommend()
+ local best=nil
+ for _,row in ipairs(benchmark.rows) do
+  if row.Status=="COMPLETE" and not row.ContextChanged and row.ToolGeneration==equippedGeneration and row.Attempts>=30 and row.Unqualified==0 and row.SuccessPercent>=98 and row.CleanSkipped==0 and #row.Spacings>=row.Attempts-2 and row.Upgrade==pacing.context() then
+   local actual=math.ceil(v82.percentile(table.clone(row.Spacings),.9))/1000
+   if not best or actual<best.Seconds then best={Seconds=actual,RequestedMs=row.IntervalMs,SuccessPercent=row.SuccessPercent,Attempts=row.Attempts} end
+  end
+ end
+ return best
 end
 function benchmark.run()
  for index,row in ipairs(benchmark.rows) do
-  if not benchmark.valid() then break end
-  benchmark.index=index;benchmark.current=row;benchmark.pending={};local seen={};local waitStart=os.clock()
-  benchmark.state="WAITING_FOR_DIRTY";row.Status="WAITING_FOR_DIRTY"
-  repeat
-   local available=benchmark.candidates(seen)
-   benchmark.detail=string.format("%d ms (%d/13): %d/%d distinct dirty provinces; recolor externally or cancel",row.IntervalMs,index,#available,benchmark.samples)
-   updateUI()
-   if #available>=benchmark.samples then break end
-   if os.clock()-waitStart>=benchmark.dirtyWait then row.Status="INSUFFICIENT_DIRTY";benchmark.cancelReason="Insufficient dirty provinces for a full interval";break end
-   if not benchmark.waitUntil(os.clock()+.10) then break end
-  until not benchmark.valid()
-  if not benchmark.valid() then break end
-  row.Status="RUNNING";benchmark.state="RUNNING";local lastDown,lastDispatch,lastObserved=nil,nil,nil
-  while benchmark.valid() and row.Attempts<benchmark.samples do
-   local available=benchmark.candidates(seen)
-   if #available==0 then row.Status="INSUFFICIENT_TARGETS";benchmark.cancelReason="Targets disappeared/became clean; incomplete interval";break end
-   local entry=available[1];seen[entry]=true;currentEntry=entry;v7.lock=entry;v7.draw(entry)
-   benchmark.detail=string.format("%d ms (%d/13): %d/%d DOWNs; observing colors asynchronously",row.IntervalMs,index,row.Attempts,benchmark.samples)
-   local candidate,budget=visiblePoint(entry)
-   if budget then RunService.Heartbeat:Wait();if benchmark.valid() then candidate=visiblePoint(entry) end end
-   local acquired=benchmark.valid() and acquireFast(candidate or {entry=entry,tier=3},benchmark.token)
-   if acquired and lastDown then benchmark.waitUntil(lastDown+row.IntervalMs/1000) end
-   if not benchmark.valid() then v7.unlockTarget(entry);break end
-   if colorsMatch(entry.part.Color,benchmark.color) then row.CleanSkipped+=1
-   elseif not acquired or mouse.Target~=entry.part then row.AcquireFailures+=1
-   else
-    local record={EntryId=entry.id,Position=tostring(entry.part.Position),DownAt=os.clock(),DownObserved=false,Qualified=false}
-    table.insert(row.Records,record);benchmark.pending[entry]=record
-    local before=pressAttempts
-    local pressed=startOrRetainHold(entry,benchmark.token);local owner=ownedInput
-    record.DownSent=pressAttempts>before
-    if record.DownSent then
-     record.DownAt=owner and owner.Started or record.DownAt
-     record.DispatchSpacingMs=lastDispatch and (record.DownAt-lastDispatch)*1000 or nil;lastDispatch=record.DownAt;lastDown=record.DownAt;row.Attempts+=1
-    end
-    if pressed and owner then
-     -- Observe the real native DOWN, not the API return. Never await Color here.
-     while benchmark.valid() and not owner.ReleaseSent and mouse.Target==entry.part do
-      inputEvidence(owner)
-      if owner.MouseObserved and os.clock()>=record.DownAt+benchmark.clickHold then break end
-      if os.clock()>=record.DownAt+CFG.InputVerify then break end
-      RunService.Heartbeat:Wait()
-     end
-     inputEvidence(owner);record.DownObserved=owner.MouseObserved
-     record.Qualified=owner.MouseObserved and benchmark.valid() and mouse.Target==entry.part and not owner.ReleaseSent
-     record.DownObservedAt=owner.MouseObservedAt
-     if record.DownObservedAt then record.SpacingMs=lastObserved and (record.DownObservedAt-lastObserved)*1000 or nil;lastObserved=record.DownObservedAt;lastDown=record.DownObservedAt end
-    end
-    if not pressed or not record.Qualified then record.Result="INPUT_OR_TARGET_UNCONFIRMED";benchmark.cancelReason="Input/target uncertainty; benchmark stopped" end
-    if not settleRelease() then benchmark.cancelReason="Release unresolved; benchmark stopped" end
-   end
-   v7.unlockTarget(entry);currentEntry=nil
+  if not benchmark.open() then break end
+  benchmark.index=index;benchmark.current=row;benchmark.pending={};row.Status="SETUP"
+  if not benchmark.safePrepareInterval() then break end
+  row.Status="RUNNING TEST";row.Upgrade=pacing.context();row.ToolGeneration=equippedGeneration;local lastObserved,lastDispatch,lastSegment=nil,nil,nil
+  for _,entry in ipairs(benchmark.cohort) do
+   local record=nil
+   repeat
+    if not benchmark.ready("RUNNING TEST") then break end
+    benchmark.progress(row);record=benchmark.safeShot(entry,row.IntervalMs/1000,"RUNNING TEST")
+   until record or not benchmark.open()
+   if not record then break end
+   if row.Upgrade~=pacing.context() or row.ToolGeneration~=equippedGeneration then row.ContextChanged=true end
+   if record.Result=="CLEAN_SKIPPED" then row.CleanSkipped+=1 end
+   if record.AcquireFailed then row.AcquireFailures+=1 end
+   if record.DownObservedAt and lastSegment==record.Segment then record.SpacingMs=lastObserved and (record.DownObservedAt-lastObserved)*1000 or nil end
+   if record.DownSent and lastSegment==record.Segment then record.DispatchSpacingMs=lastDispatch and (record.DownAt-lastDispatch)*1000 or nil end
+   if record.DownObservedAt then lastObserved=record.DownObservedAt;lastSegment=record.Segment end
+   if record.DownSent then lastDispatch=record.DownAt end
+   table.insert(row.Records,record);benchmark.progress(row)
   end
-  if benchmark.valid() and row.Attempts==benchmark.samples then
-   benchmark.state="SETTLING";row.Status="SETTLING";benchmark.detail="Observing delayed colors; no additional input"
-   local deadline=os.clock()+benchmark.settle
-   for _,record in pairs(benchmark.pending) do record.ObserveUntil=deadline end
-   local settled=benchmark.waitUntil(deadline)
-   benchmark.summarize(row,settled);row.Status=settled and "COMPLETE" or "CANCELLED"
-  else
-   benchmark.summarize(row,false);if row.Status=="RUNNING" then row.Status="CANCELLED" end
+  if not benchmark.open() then benchmark.summarize(row,false);break end
+  local deadline=os.clock()+benchmark.settle
+  while benchmark.open() and os.clock()<deadline do
+   if not benchmark.ready("RUNNING TEST") then break end
+   benchmark.detail=string.format("%d ms: observing delayed colors; no new input",row.IntervalMs);RunService.Heartbeat:Wait()
   end
-  benchmark.pending={}
-  if row.Status~="COMPLETE" then break end
+  if not benchmark.open() then benchmark.summarize(row,false);break end
+  benchmark.summarize(row,true);row.Status="COMPLETE";benchmark.pending={}
+  benchmark.detail=string.format("%d ms TEST COMPLETE — %d/%d\nPreparing next test automatically",row.IntervalMs,row.Successes,row.Attempts)
+  benchmark.log("INTERVAL_COMPLETE",benchmark.detail)
  end
+end
+function benchmark.report()
+ local lines={"PAINT COOLDOWN BENCHMARK — resumable native input, AutoPainterRPCs=0",
+  "State="..tostring(benchmark.state).." | "..tostring(benchmark.detail),"PauseReason="..tostring(benchmark.pauseReason).." | ResumeRequiresClick="..tostring(benchmark.manual),
+  "TargetRGB="..rgbText(benchmark.color).." | SamplesPerInterval="..tostring(benchmark.samples).." | EquippedPaintCooldown="..tostring(benchmark.upgrade),
+  "Set +100% Paint Speed in-game before testing. Raw upgrade is recorded, not interpreted. Native local color evidence is not server acceptance/causality proof.",
+  "Colors observed asynchronously; measured attempts do not wait for color. Spacing is observed native DOWN-to-DOWN within uninterrupted segments; pauses and reset clicks excluded.",
+  "ObserveSeconds="..tostring(benchmark.settle).." | SoloReset="..tostring(benchmark.autoReset).." | ManualResetReason="..tostring(benchmark.manualResetReason),
+  "RequestedMs | Status | Attempts | Successes | VALID_NO_EFFECT | Unqualified | Pending | Success% | DOWN-color mean/P90 ms | Actual DOWN-DOWN min/mean/P90/max ms | LateSpacings | AcquireFailures | CleanSkipped"}
+ for _,row in ipairs(benchmark.rows or {}) do
+  if row.Status~="COMPLETE" then benchmark.summarize(row,false) end
+  local l,s=row.Latencies or {},row.Spacings or {};local sorted=table.clone(s);table.sort(sorted);local late=0
+  for _,value in ipairs(s) do if value>row.IntervalMs+10 then late+=1 end end
+  table.insert(lines,string.format("%d | %s | %d | %d | %d | %d | %d | %.2f | %.2f/%.2f | %.2f/%.2f/%.2f/%.2f | %d | %d | %d",row.IntervalMs,row.Status,row.Attempts or 0,row.Successes or 0,row.ValidNoEffect or 0,row.Unqualified or 0,row.Pending or 0,row.SuccessPercent or 0,benchmark.mean(l),v82.percentile(table.clone(l),.9),sorted[1] or 0,benchmark.mean(s),v82.percentile(table.clone(s),.9),sorted[#sorted] or 0,late,row.AcquireFailures,row.CleanSkipped))
+  if row.ContextChanged then table.insert(lines,"  ContextChanged=true — tool/upgrade changed; excluded from cadence recommendation") end
+ end
+ local recommendation=benchmark.recommend();table.insert(lines,"MeasuredCadenceCandidateMs="..tostring(recommendation and recommendation.Seconds*1000 or "none").." (P90 actual spacing of a completed >=98% row; not an absolute minimum)")
+ table.insert(lines,"RESET PHASE ONLY — excluded from measured rows, production dwell and strategy")
+ table.insert(lines,"ResetRGB="..rgbText(benchmark.resetColor).." | CurrentNativePaletteRGB="..rgbText(paletteColor()))
+ for k,v in pairs(benchmark.reset or {}) do if k~="Records" then table.insert(lines,k.."="..tostring(v)) end end
+ table.insert(lines,"PAUSE / RECOVERY HISTORY")
+ for _,e in ipairs(benchmark.events or {}) do table.insert(lines,string.format("%.3f | %s | %s | %s",e.At,e.State,e.Action,e.Reason or "")) end
+ table.insert(lines,"PER-ATTEMPT LOCAL EVIDENCE")
+ for _,row in ipairs(benchmark.rows or {}) do for _,r in ipairs(row.Records) do table.insert(lines,string.format("%d ms | Entry %d @ %s | Segment=%s | DispatchAt=%s | NativeDownObservedAt=%s | ColorAt=%s | ActualSpacingMs=%s | Qualified=%s | %s",row.IntervalMs,r.EntryId,r.Position,tostring(r.Segment),tostring(r.DownAt),tostring(r.DownObservedAt),tostring(r.ColorAt),tostring(r.SpacingMs),tostring(r.Qualified),tostring(r.Result))) end end
+ return table.concat(lines,"\n")
 end
 function benchmark.start(options)
  options=options or {};if type(options)~="table" then return false,"Expected options table" end
  local count=options.SamplesPerInterval or 40
  if type(count)~="number" or count%1~=0 or count<30 or count>50 then return false,"SamplesPerInterval must be 30–50" end
  if benchmark.active or not alive or not focused or selecting or starting or palette.validating or releaseBlocked or inputBusy then return false,"Finish selection/recovery and focus Roblox first" end
- if not running and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return false,"Release Mouse1 before starting benchmark" end
- benchmark.saved={mode=mode,target=normalTarget,running=running,camera=v82.camera.mode}
- benchmark.restoreRunning=running;benchmark.cancelReason=nil;benchmark.restoreStatus="pending";benchmark.state="PAUSING";benchmark.detail="Waiting for the normal worker to release ownership"
+ if not running and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return false,"Release Mouse1 first" end
+ benchmark.saved={mode=mode,target=normalTarget,running=running,camera=v82.camera.mode,paletteMetrics=table.clone(palette.metrics),transactions=palette.transactions,current=palette.current,previousIntended=v7.previousIntended}
  stop("Paint cooldown benchmark requested")
- benchmark.active=true;benchmark.ownsWorker=false;benchmark.tool=nil;benchmark.token=nil;benchmark.generation=nil;benchmark.color=nil;benchmark.pending={};benchmark.current=nil;benchmark.index=nil;benchmark.upgrade=nil;benchmark.samples=count;benchmark.settle=.60;benchmark.clickHold=.02;benchmark.dirtyWait=60
+ benchmark.active=true;benchmark.ownsWorker=false;benchmark.cancelled=false;benchmark.paused=false;benchmark.manual=false;benchmark.pauseReason=nil
+ benchmark.tool=nil;benchmark.token=nil;benchmark.generation=nil;benchmark.color=nil;benchmark.upgrade=nil;benchmark.resetColor=nil;benchmark.segment=1;benchmark.badSamples=0;benchmark.pending={};benchmark.cohort={};benchmark.events={}
+ benchmark.current=nil;benchmark.index=nil;benchmark.samples=count;benchmark.settle=.60;benchmark.clickHold=.02;benchmark.autoReset=options.AutoReset~=false
+ benchmark.reset={Phases=0,Attempts=0,Successes=0,Failures=0,PaletteMs=0,TotalMs=0,Records={}};benchmark.manualResetReason=nil;benchmark.lastNativeDown=nil
+ benchmark.restoreStatus="pending";benchmark.state="SETUP";benchmark.detail="Pausing normal worker; evidence is preserved through recoverable interruptions"
  benchmark.rows={};for _,ms in ipairs({200,175,150,140,130,120,110,100,90,80,70,60,50}) do table.insert(benchmark.rows,{IntervalMs=ms,Status="NOT_RUN",Attempts=0,AcquireFailures=0,CleanSkipped=0,Records={}}) end
  updateUI()
  task.spawn(function()
   local ok,problem=pcall(function()
-   local joinDeadline=os.clock()+CFG.ActivationReleaseTimeout+1
-   while workerActive and alive and os.clock()<joinDeadline do RunService.Heartbeat:Wait() end
-   if workerActive or not alive or not focused or benchmark.cancelReason then error("Normal worker could not be joined, or diagnostic canceled") end
-   if not settleRelease() then error("Normal input release unresolved") end
-   local tool=ensureBucket();if not tool then error("Native PaintBucket unavailable") end
-   discoverActivation(tool)
-   if not primaryMethod or primaryMethod.Name~="VirtualInput.SendMouseButton" then error("Confirmed VirtualInput.SendMouseButton API unavailable") end
-   benchmark.tool=tool;benchmark.generation=equippedGeneration;benchmark.color=paletteColor()
-   local upgrades=player:FindFirstChild("Upgrades");local cooldown=upgrades and upgrades:FindFirstChild("EquippedPaintCooldown")
-   benchmark.upgrade=cooldown and cooldown:IsA("ValueBase") and tostring(cooldown.Value) or "unavailable; set +100% in game"
+   while workerActive and benchmark.open() do RunService.Heartbeat:Wait() end
+   if not benchmark.open() then return end
+   benchmark.saved.paletteMetrics=table.clone(palette.metrics)
+   if not settleRelease() then benchmark.pause("PAUSED - TARGET","Release unresolved; release Mouse1 then Resume",true) end
+   local tool=ensureBucket();if tool then discoverActivation(tool) end
+   benchmark.color=paletteColor();benchmark.upgrade=pacing.context();benchmark.tool=tool;benchmark.generation=equippedGeneration
    mode="NORMAL";normalTarget=benchmark.color;v82.camera.mode="LOCKED";policy.setCharge(nil)
+   palette.validating=true;palette.transactions={};palette.current={};v7.previousIntended=nil
    for _,entry in ipairs(entries) do entry.lastValidService=nil end
-   rebuildDirty();workerToken+=1;benchmark.token=workerToken;workerActive=true;benchmark.ownsWorker=true;running=true
+   rebuildDirty();workerToken+=1;benchmark.token=workerToken;workerActive=true;benchmark.ownsWorker=true;running=not benchmark.paused
    benchmark.run()
   end)
-  benchmark.finishing=true
-  local released=settleRelease();running=false;workerToken+=1;v82.resumeIntent=nil
+  -- Unexpected script exceptions are retained as a stopped report; no input loop retries errors.
+  benchmark.finishing=true;local released=settleRelease();running=false;workerToken+=1;v82.resumeIntent=nil
   if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
-  if benchmark.current and table.find({"RUNNING","WAITING_FOR_DIRTY","SETTLING"},benchmark.current.Status) then benchmark.summarize(benchmark.current,false);benchmark.current.Status="CANCELLED" end
-  benchmark.pending={}
+  for _,row in ipairs(benchmark.rows) do if row.Status~="COMPLETE" then
+   for _,record in ipairs(row.Records) do
+    if record.Qualified and not record.ColorAt and os.clock()<(record.ObserveUntil or 0) then record.ObservationInterrupted=true end
+   end
+   benchmark.summarize(row,false)
+  end end
+  benchmark.pending={};benchmark.cohort={}
   local complete=benchmark.rows[#benchmark.rows].Status=="COMPLETE"
-  benchmark.state=complete and "COMPLETE" or benchmark.cancelReason and "CANCELLED" or "FAILED"
-  benchmark.detail=complete and "All intervals complete; copy the benchmark report" or benchmark.cancelReason or (not focused and "Focus lost" or benchmark.tool and benchmark.tool.Parent~=player.Character and "Tool lost" or "Native session/color changed")
-  if not ok and not benchmark.cancelReason then benchmark.detail=tostring(problem) end
+  benchmark.state=complete and "COMPLETE" or benchmark.cancelled and "CANCELLED BY USER" or "PAUSED - TARGET"
+  benchmark.detail=complete and "Full sweep complete — copy report; production cadence uses the fastest qualifying observed row" or benchmark.cancelled and "Cancelled by user; all evidence retained" or "Controller closed / diagnostic exception: "..tostring(problem)
+  if complete then local best=benchmark.recommend();if best then pacing.interval=best.Seconds;pacing.calibratedContext=pacing.context();pacing.calibratedGeneration=equippedGeneration;pacing.source="COMPLETED_NATIVE_SWEEP_P90: requested "..best.RequestedMs.." ms" end end
   mode=benchmark.saved.mode;normalTarget=benchmark.saved.target;v82.camera.mode=benchmark.saved.camera
+  palette.metrics=benchmark.saved.paletteMetrics;palette.transactions=benchmark.saved.transactions;palette.current=benchmark.saved.current;palette.validating=false;v7.previousIntended=benchmark.saved.previousIntended
   if benchmark.ownsWorker then workerActive=false end;benchmark.active=false;benchmark.finishing=false;rebuildDirty()
-  if alive and released and focused and not workerActive and benchmark.restoreRunning and benchmark.tool and benchmark.tool.Parent==player.Character and (mode~="NORMAL" or colorsMatch(paletteColor(),normalTarget)) then
+  pacing.lastDown=benchmark.lastNativeDown;pacing.lastTool=benchmark.tool
+  if alive and released and focused and not workerActive and benchmark.saved.running and complete and benchmark.tool and benchmark.tool.Parent==player.Character and (mode~="NORMAL" or colorsMatch(paletteColor(),normalTarget)) then
    benchmark.restoring=true;v82.resuming=true;local resumed=startAuto();v82.resuming=false;benchmark.restoring=false
    benchmark.restoreStatus=resumed and "Previous running mode resumed" or "Previous mode restored; START required"
-  else benchmark.restoreStatus="Previous mode restored; paused (originally stopped or safety interruption)" end
+  else benchmark.restoreStatus="Previous mode restored; paused" end
+  if not complete and benchmark.color and not colorsMatch(paletteColor(),benchmark.color) then
+   benchmark.restoreStatus..="; native palette differs — choose "..rgbText(benchmark.color).." before NORMAL START"
+  end
+  benchmark.saved=nil;benchmark.tool=nil
   if alive then updateUI() elseif finishClose then finishClose() end
  end)
  return true
 end
 function benchmark.cancel()
  if not benchmark.active then return false end
- local resume=benchmark.saved.running
- stop("Cooldown benchmark canceled by user")
- benchmark.restoreRunning=resume -- Only this explicit cancel restores a previous run; STOP/Escape never restarts input.
- return true
+ benchmark.cancelled=true;benchmark.paused=false;benchmark.manual=false;running=false;workerToken+=1;forceRelease()
+ benchmark.state="CANCELLED BY USER";benchmark.log("CANCEL","Explicit Cancel Benchmark");return true
 end
 
 -- Explicit, bounded native-UI investigation. No guessed RGB writers, no game
@@ -3709,9 +3987,10 @@ function palette.inspectCustomUI()
 end
 -- OG golden-ratio/random color construction preserved as a PURE dormant helper.
 -- No output is ever assigned to a Civil entry or counted as verified capacity.
-function palette.generatedPreview(count,seed)
+function palette.generatedPreview(count,seed,currentColors)
  if running or workerActive or ownedInput then return nil,"Stop before generating a diagnostic preview" end
  if type(count)~="number" or count%1~=0 or count<1 or count>512 or type(seed)~="number" or seed%1~=0 or seed<1 or seed>2147483646 then return nil,"Count 1..512 and integer seed 1..2147483646 required" end
+ if currentColors~=nil and type(currentColors)~="table" then return nil,"Optional currentColors must be a table" end
  local rand=palette.rng(seed);local hue=rand(1000000)/1000000;local result={};local used={}
  for _,item in ipairs(palette.controls) do if item.color then table.insert(used,item.color) end end
  for index=1,count do
@@ -3721,17 +4000,18 @@ function palette.generatedPreview(count,seed)
    local c=attempt<=3072 and Color3.fromHSV(hue,(76+rand(24))/100,(84+rand(16))/100)
     or Color3.fromRGB(rand(256)-1,rand(256)-1,rand(256)-1)
    local r,g,b=normalizedRGB(c);c=Color3.fromRGB(r,g,b)
-   local unique=true;for _,old in ipairs(used) do if colorsMatch(c,old) then unique=false;break end end
+   local current=currentColors and currentColors[index];local unique=typeof(current)~="Color3" or palette.distance(c,current)>=(0.18*255)^2
+   for _,old in ipairs(used) do if colorsMatch(c,old) then unique=false;break end end
    if unique then chosen=c;break end
   end
   if not chosen then return nil,"Bounded unique-color search exhausted; no assignments changed" end
   table.insert(result,chosen);table.insert(used,chosen)
  end
- return result,"DORMANT_PREVIEW_ONLY: native custom RGB route unverified; generated verified capacity remains 0"
+ return result,"DORMANT_PREVIEW_ONLY: GeneratedColorCreation=PROVEN; GeneratedColorApplicationViaCurrentNativePath=UNVERIFIED; no application assignments changed"
 end
 function palette.customReport()
  local lines={"NATIVE CUSTOM COLOR UI — "..palette.custom.state,palette.custom.result,
-  "Capability requires: native UI input -> intended PaintBucketColor -> matching province via normal bucket. No generated capacity until the complete path is verified.",
+  "GeneratedColorCreation=PROVEN (OG HSV/RGB algorithm). GeneratedColorApplicationViaCurrentNativePath=UNVERIFIED. Only additional native application capacity is gated on native UI -> intended PaintBucketColor -> matching province.",
   "User live evidence 2026-10-03: PaintSGui.Picker and ColorTitle.ColorPicker REJECTED as custom RGB routes (no new GUI or selected-color change). Manual recheck only with new evidence.",
   "Expanded scope: all current PlayerGui color/palette/RGB/HSV/hue/tint/paint/hex controls, including hidden controls outside learned roots.",
   "ObjectsInspected="..tostring(palette.custom.objectsInspected or 0).." CandidateControls="..#palette.custom.inventory,
@@ -3836,6 +4116,7 @@ palette.buttons[10].Activated:Connect(function()
 end)
 
 modeButton.Activated:Connect(function()
+	if benchmark.active then lastMessage="Benchmark owns mode; Cancel Benchmark before changing mode";updateUI();return end
 	if running or v82.resumeIntent then stop("Stopped before changing mode") end
 	mode = mode == "NORMAL" and "CIVIL WAR" or "NORMAL"
 	if mode=="NORMAL" then normalTarget=paletteColor() end
@@ -3912,6 +4193,7 @@ finishClose = function()
 	disconnectInput(toolConnections)
 	disconnectInput(equippedMouseConnections)
 	health.lastMethod,health.lastTool=nil,nil;table.clear(palette.roots)
+ benchmark.cohort={};benchmark.pending={};benchmark.saved=nil;benchmark.tool=nil;pacing.lastTool=nil
  for _,record in pairs(palette.rootRecords) do for _,c in ipairs(record.connections) do c:Disconnect() end end
  table.clear(palette.rootRecords);table.clear(palette.byKey)
  if palette.custom then table.clear(palette.custom.inventory);table.clear(palette.custom.trials) end
@@ -3933,7 +4215,7 @@ gui.Destroying:Connect(closeController)
 
 connectLifetime(player:GetAttributeChangedSignal("PaintBucketColor"), function()
 	palette.onColor()
-	if running and not palette.validating and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("NORMAL target color changed — restart required") end
+	if running and not benchmark.active and not palette.validating and mode=="NORMAL" and not colorsMatch(paletteColor(),normalTarget) then stop("NORMAL target color changed — restart required") end
 end)
 
 connectLifetime(playerGui.ChildAdded,palette.markRootChanged)
@@ -4002,21 +4284,25 @@ updateUI()
 
 benchmark.button.Activated:Connect(function() benchmark.start() end)
 benchmark.liveStart.Activated:Connect(function() benchmark.start() end)
+benchmark.resumeButton.Activated:Connect(benchmark.resume)
+benchmark.addButton.Activated:Connect(function() if benchmark.active and benchmark.paused then beginSelection("ADD") end end)
 benchmark.copyButton.Activated:Connect(function() palette.copy(benchmark.report(),"AutoPainterCooldownBenchmark.txt") end)
 benchmark.liveCopy.Activated:Connect(function() palette.copy(benchmark.report(),"AutoPainterCooldownBenchmark.txt") end)
 benchmark.cancelButton.Activated:Connect(benchmark.cancel)
 
 local api = {
- StartPaintCooldownBenchmark=benchmark.start,CancelPaintCooldownBenchmark=benchmark.cancel,
+ StartPaintCooldownBenchmark=benchmark.start,CancelPaintCooldownBenchmark=benchmark.cancel,ResumePaintCooldownBenchmark=benchmark.resume,
+ PausePaintCooldownBenchmark=function() if not benchmark.active then return false end;benchmark.pause("PAUSED - TARGET","Paused by user; evidence retained",true);return true end,
  GetPaintCooldownBenchmarkReport=benchmark.report,
  CopyPaintCooldownBenchmark=function() return palette.copy(benchmark.report(),"AutoPainterCooldownBenchmark.txt") end,
- GetPaintCooldownBenchmarkState=function() return {Active=benchmark.active,State=benchmark.state,Detail=benchmark.detail,RestoreStatus=benchmark.restoreStatus} end,
+ GetPaintCooldownBenchmarkState=function() return {Active=benchmark.active,State=benchmark.state,Detail=benchmark.detail,Paused=benchmark.paused,PauseReason=benchmark.pauseReason,RestoreStatus=benchmark.restoreStatus} end,
  ValidateNativePalette=palette.validateNative,
  InspectCustomColorUI=palette.inspectCustomUI,ProbeCustomColorUI=palette.probeCustom,GetCustomColorUIReport=palette.customReport,
  GetDormantGeneratedColorPreview=palette.generatedPreview,
  GetCapacityPreflight=palette.preflight,
  GetV82Diagnostics=v82.stats,
  SetCameraMode=function(value)
+  if benchmark.active and value~="LOCKED" and value~="SAFE" then return false end
   if value=="SAFE" then value="LOCKED" end
   if not table.find({"LOCKED","AGGRESSIVE","OFF"},value) then return false end
   if value=="AGGRESSIVE" and (running or workerActive) then return false end
@@ -4095,7 +4381,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
-			Version = 8.2, Build = "8.2-combat",
+			Version = 8.2, Build = "8.2-followup",
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

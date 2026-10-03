@@ -59,10 +59,10 @@ for _,deferred in ipairs({false,true}) do
   for _,r in ipairs(a.GetServiceRecords()) do assert(r.GlobalDwellBefore==120 and r.GlobalDwellAfter==120) end
   clean(w,a)
  end)
- test(pre.."fresh successful native services preserve120 dwell with zero added waits",function()
-  local w,a,p,t=setup(deferred,12);w.start(a,2)
+ test(pre.."fresh successful native services preserve120 dwell while cadence is paced",function()
+  local w,a,p,t=setup(deferred,12);w.start(a,3)
   local m=a.GetPerformanceStats();assert(m.SuccessfulPaints==12 and m.DirtyCount==0 and m.GlobalDwellMs==120)
-  assert(m.AverageAcquiredToColorMs<80 and m.CursorMovesToAlreadyCleanProvince==0 and m.ReleaseTimeouts==0)
+  assert(m.AveragePaintServiceMs<80 and m.CursorMovesToAlreadyCleanProvince==0 and m.ReleaseTimeouts==0)
   assert(w.networkAttempts==0);clean(w,a)
  end)
  test(pre.."LOCKED default survives over100 failed transactions with exactly zero camera writes",function()
@@ -131,7 +131,7 @@ for _,deferred in ipairs({false,true}) do
   w.start(a,1);zeroCamera(w,first);assert(w.cursorMoves==0 and next(w.downs)==nil);clean(w,a)
  end)
  test(pre.."overload recovery yields to healthy visible targets without camera",function()
-  local w,a,p,t=setup(deferred,20);a.SetCameraMode("AGGRESSIVE");w.cannotAcquire[p[1]]=true;w.start(a,3)
+  local w,a,p,t=setup(deferred,20);a.SetCameraMode("AGGRESSIVE");w.cannotAcquire[p[1]]=true;w.start(a,6)
   for i=2,20 do assert(a.ColorsMatch(p[i].Color,w.color)) end
   assert(a.GetPerformanceStats().CameraMovesApplied==0);clean(w,a)
  end)

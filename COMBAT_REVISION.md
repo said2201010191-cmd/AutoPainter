@@ -1,3 +1,5 @@
+> Historical build notes for `79a6de1`. The newer [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) supersedes the ADAPTIVE default, benchmark cancellation/reset behavior, calibration policy and generated-color wording below.
+
 # Hands Free v8.2 Combat
 
 Build `8.2-combat`, based on main `edcc47081643cf627a9d4e2eeba6eefaa3de577b`. Implements **AutoPainter_v8.2_Full_Live_Findings_For_Astra.md**, plus the subsequent isolated **Paint Cooldown Benchmark** request. This document supersedes older default/penalty descriptions in the historical guides.

@@ -25,7 +25,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."quantized NORMAL paint is recognized and not revisited",function()
   local w,a,p=setup(deferred,10,{color=function(w) return w.Color3.new(0.7132,0.2321,0.8897) end});w.quantize=true
-  w.start(a,2);local m=a.GetPerformanceStats()
+  w.start(a,3);local m=a.GetPerformanceStats()
   assert(m.SuccessfulPaints==10 and m.DirtyCount==0 and m.RawMismatchButNormalizedMatch>0,a.GetPerformanceReport())
   local moves=w.cursorMoves;w.step(1);assert(w.cursorMoves==moves and m.CursorMovesToAlreadyCleanProvince==0)
   a.Stop();w.assertClean()
@@ -197,7 +197,7 @@ for _,deferred in ipairs({false,true}) do
   a.Stop();w.assertClean()
  end)
  test(pre.."recognized fast successes shorten dwell without requiring continuous hold",function()
-  local w,a=setup(deferred,10);w.start(a,2);local m=a.GetPerformanceStats()
+  local w,a=setup(deferred,10);w.start(a,3);local m=a.GetPerformanceStats()
   assert(m.SuccessfulPaints==10 and m.AdaptiveDwellMs<250 and m.AdaptiveDwellMs>=120);a.Stop();w.assertClean()
  end)
  test(pre.."input failures do not inflate paint dwell or paint-stall counts",function()
@@ -266,7 +266,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."service records and diagnostic export stay bounded and generate no input",function()
   local w,a,p=setup(deferred,1);w.start(a,0.3)
-  for _=1,25 do p[1].Color=w.Color3.new(0,0,0);w.flush();w.step(0.10) end
+  for _=1,25 do p[1].Color=w.Color3.new(0,0,0);w.flush();w.step(0.30) end
   assert(#a.GetServiceRecords()==20);local moves=w.cursorMoves;local n=#w.activationEvents
   a.GetColorDiagnostics();a.GetPaletteInventory();a.GetPerformanceReport()
   assert(w.cursorMoves==moves and #w.activationEvents==n);a.Stop();w.assertClean()

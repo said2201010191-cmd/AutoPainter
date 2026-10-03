@@ -1,7 +1,7 @@
 local Mock=require("./V82Mock")
 local passed,failed=0,0
 SOURCE=SOURCE:gsub("local api = {",[[local api = {
- __test={v=v82,p=palette,h=health,policy=policy,cfg=CFG,entry=function(part) return lookup[part] end,
+ __test={v=v82,p=palette,h=health,policy=policy,cfg=CFG,pacing=pacing,entry=function(part) return lookup[part] end,
  dirty=dirty,metrics=metrics,sync=syncDirty,choose=chooseFast,beginSelection=beginSelection,finishSelection=finishSelection},]],1)
 local function test(name,fn) local ok,why=pcall(fn);if ok then passed+=1;print("PASS "..name) else failed+=1;print("FAIL "..name..": "..tostring(why)) end end
 local function setup(deferred,n,colors)
@@ -58,8 +58,8 @@ for _,deferred in ipairs({false,true}) do
   w.step(.07);local e=t.entry(p[1]);assert(e.dirtyEpisode>before)
   assert(e.episodeOrigin=="FRESH_ATTACK" and e.externalEventAt~=nil);w.step(.5);clean(w,a)
  end)
- test(pre.."default actually samples continuous and requires held multi-target correction proof",function()
-  local w,a,p,t=setup(deferred,20);assert(t.cfg.ActivationStrategy=="ADAPTIVE");w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,3)
+ test(pre.."explicit experimental ADAPTIVE samples continuous and requires held multi-target correction proof",function()
+  local w,a,p,t=setup(deferred,20);assert(t.cfg.ActivationStrategy=="PER_TARGET");assert(a.SetActivationStrategy("ADAPTIVE"));w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,3)
   local m=a.GetPerformanceStats()
   assert(m.Strategies.CONTINUOUS.Attempts>=4 and m.NativeHoldMultiTargetProof and m.NativeHoldTransferredSuccesses>=2,a.GetPerformanceReport())
   assert(m.NativeHoldExperimentState=="CONFIRMED" and m.DirtyCount==0)
@@ -67,19 +67,20 @@ for _,deferred in ipairs({false,true}) do
   assert(w.violations==0 and w.networkAttempts==0);clean(w,a)
  end)
  test(pre.."one-click-only native tool fails held transfers and safely caches PER_TARGET",function()
-  local w,a,p,t=setup(deferred,12);w.nativeRepeat=false;w.responses["VirtualInput.SendMouseButton"]={mouse=true,paint=true,paintDelay=.04};w.start(a,4)
+  local w,a,p,t=setup(deferred,12);a.SetActivationStrategy("ADAPTIVE");w.nativeRepeat=false;w.responses["VirtualInput.SendMouseButton"]={mouse=true,paint=true,paintDelay=.04};w.start(a,4)
   local m=a.GetPerformanceStats();assert(m.NativeHoldExperimentState=="FALLBACK" and m.Strategies.CONTINUOUS.Attempts>=2)
   assert(m.NativeHoldTransferredSuccesses==0 and m.ActivationStrategy=="PER_TARGET" and m.DirtyCount==0)
   assert(not w.button and m.ReleaseTimeouts==0 and w.networkAttempts==0);clean(w,a)
  end)
  test(pre.."continuous without a measured advantage falls back and exposes the actual chosen strategy",function()
-  local w,a,p,t=setup(deferred,25);a.SetActivationStrategy("CONTINUOUS");local slowHold=w.runService.Heartbeat:Connect(function() w.nativeInterval=t.policy.trial.State=="PROBING" and .14 or .04 end);w.start(a,6)
+  local w,a,p,t=setup(deferred,25);t.pacing.interval=0 -- Isolate experimental throughput comparison from the conservative production cadence.
+  a.SetActivationStrategy("CONTINUOUS");local slowHold=w.runService.Heartbeat:Connect(function() w.nativeInterval=t.policy.trial.State=="PROBING" and .14 or .04 end);w.start(a,6)
   local m=a.GetPerformanceStats();assert(m.NativeHoldMultiTargetProof and m.NativeHoldProbeAttempts==8,a.GetPerformanceReport())
   assert(m.NativeHoldExperimentState=="FALLBACK" and m.ActivationStrategy=="PER_TARGET" and m.ActivationStrategySetting=="CONTINUOUS",a.GetPerformanceReport())
   assert(m.DirtyCount==0 and not w.button,a.GetPerformanceReport());slowHold:Disconnect();clean(w,a)
  end)
  test(pre.."hold experiment evidence is bounded and winning decision survives STOP in same tool session",function()
-  local w,a,p,t=setup(deferred,35);w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,3)
+  local w,a,p,t=setup(deferred,35);a.SetActivationStrategy("ADAPTIVE");w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,3)
   local m=a.GetPerformanceStats();assert(m.NativeHoldExperimentState=="CONFIRMED" and m.NativeHoldProbeAttempts<=8)
   assert(m.NativeHoldObservedAttempts>m.NativeHoldProbeAttempts)
   local holds=0;for _ in pairs(t.policy.trial.HoldIds) do holds+=1 end;assert(holds<=8)
@@ -88,23 +89,23 @@ for _,deferred in ipairs({false,true}) do
   clean(w,a)
  end)
  test(pre.."no successful baseline cannot unlock an assumed continuous winner",function()
-  local w,a,p,t=setup(deferred,12);w.nativeRepeat=false;w.start(a,2)
+  local w,a,p,t=setup(deferred,12);a.SetActivationStrategy("ADAPTIVE");w.nativeRepeat=false;w.start(a,2)
   assert(a.GetPerformanceStats().Strategies.CONTINUOUS.Attempts==0 and not t.policy.trial.RetainedProof);clean(w,a)
  end)
  test(pre.."insufficient simultaneous dirty targets never force continuous",function()
-  local w,a,p,t=setup(deferred,1)
+  local w,a,p,t=setup(deferred,1);a.SetActivationStrategy("ADAPTIVE")
   for i=1,8 do wrong(w,p[1],i);w.start(a,.2) end
   local m=a.GetPerformanceStats();assert(m.Strategies.CONTINUOUS.Attempts==0 and m.ActivationStrategy=="PER_TARGET");clean(w,a)
  end)
  test(pre.."confirmed continuous reliability drop automatically releases and falls back",function()
-  local w,a,p,t=setup(deferred,20);w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,2);assert(t.policy.trial.State=="CONFIRMED")
+  local w,a,p,t=setup(deferred,20);a.SetActivationStrategy("ADAPTIVE");w.responses["VirtualInput.SendMouseButton"].upDelay=.02;w.start(a,2);assert(t.policy.trial.State=="CONFIRMED")
   w.stalled={};for i,part in ipairs(p) do w.stalled[part]=true;wrong(w,part,i) end
   w.step(1);assert(t.policy.trial.State=="FALLBACK" and t.policy.choice=="PER_TARGET")
   clean(w,a)
  end)
  for _,event in ipairs({"STOP","FOCUS","TOOL","MODE"}) do
   test(pre..event.." during held transfer resolves input before any next transaction",function()
-   local w,a,p,t=setup(deferred,35);w.start(a,.42)
+   local w,a,p,t=setup(deferred,35);a.SetActivationStrategy("ADAPTIVE");w.start(a,1.3)
    -- Wait for the real controlled probe rather than forcing a fake held state.
    for _=1,50 do if a.GetStats().Held and t.policy.choice=="CONTINUOUS" then break end;w.step(.01) end
    assert(a.GetStats().Held and t.policy.choice=="CONTINUOUS")

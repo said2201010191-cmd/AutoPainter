@@ -181,7 +181,7 @@ for _,deferred in ipairs({false,true}) do
  test(pre.."closed palette preserves semantic capacity while clearly reporting detached live controls",function()
   local w,a,p,t=setup(deferred,12,128);w.detachPalette();w.flush();local m=a.GetPerformanceStats();local pf=a.GetCapacityPreflight()
   assert(m.LivePaletteRoot=="CLOSED" and pf.VerifiedNativeCapacity==128 and pf.CurrentlyBoundLiveControls==0 and pf.Shortage==0)
-  assert(m.GeneratedColorsAssigned==0 and m.GeneratedColorSupport:find("UNVERIFIED",1,true));clean(w,a)
+  assert(m.GeneratedColorsAssigned==0 and m.GeneratedColorApplicationViaCurrentNativePath=="UNVERIFIED");clean(w,a)
  end)
  test(pre.."one failed ambiguous color does not corrupt remaining native mappings",function()
   local w,a,p,t=setup(deferred,0);w.makePalette(128);duplicatePalette(w,128);w.learn(a);local profile=a.GetPaletteProfile();for _,row in ipairs(profile.Controls) do row.NativeSignature=nil;row.SemanticVerified=false end
