@@ -98,7 +98,7 @@ function Mock.new(deferredSignals)
 		local object = setmetatable({ _props = { ClassName = class, Name = class },
 			_children = {}, _signals = {}, _changed = {}, _attributes = {}, _destroyed = false }, mt)
 		for _, name in ipairs({ "AncestryChanged", "Destroying", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving",
-			"Activated", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat",
+			"Activated", "MouseButton1Click", "Changed", "InputBegan", "InputChanged", "InputEnded", "TouchTapInWorld", "Heartbeat",
 			"Button1Down", "Button1Up", "Move", "WindowFocused", "WindowFocusReleased", "FocusLost" }) do
 			object._signals[name] = signal()
 		end
@@ -106,9 +106,17 @@ function Mock.new(deferredSignals)
 		return object
 	end
 	function methods:IsA(class)
-		return self.ClassName == class or (class == "BasePart" and self.ClassName == "Part")
+		return self.ClassName == class or (class == "BasePart" and table.find({"Part","MeshPart","UnionOperation","WedgePart"},self.ClassName)~=nil)
+			or (class == "DataModelMesh" and table.find({"SpecialMesh","BlockMesh","CylinderMesh"},self.ClassName)~=nil)
 			or (class == "ValueBase" and table.find({ "Color3Value", "StringValue", "NumberValue", "BoolValue", "IntValue", "ObjectValue" }, self.ClassName) ~= nil)
 	end
+	function methods:Clone()
+  if self.Archivable==false then return nil end
+  local clone=world.instance(self.ClassName)
+  for k,v in pairs(self._props) do if k~="Parent" then clone._props[k]=v end end
+  for _,child in ipairs(self._children) do local copy=child:Clone();if copy then copy.Parent=clone end end
+  return clone
+ end
 	function methods:IsDescendantOf(parent)
 		local current = self.Parent
 		while current do if current == parent then return true end; current = current.Parent end

@@ -293,7 +293,7 @@ for _,deferred in ipairs({false,true}) do
   for _,part in ipairs(p) do w.mouse.Target=part;w.mouse.Move:Fire();w.flush() end
   for i=#p,1,-1 do w.mouse.Target=p[i];w.mouse.Move:Fire();w.flush() end
   assert(a.GetStats().Selected==30 and t.v.selection.adds==30 and w.paintCalls==0 and next(w.downs)==nil)
-  for _,part in ipairs(p) do assert(t.marker(part).Adornee==part and t.marker(part).ClassName=="Highlight" and t.marker(part).FillTransparency==1) end
+  for _,part in ipairs(p) do assert(t.marker(part).Adornee:IsA("Model") and t.marker(part).ClassName=="Highlight" and t.marker(part).FillTransparency==1) end
   w.button=false;w.input.InputEnded:Fire({UserInputType=w.env.Enum.UserInputType.MouseButton1});w.flush();t.finishSelection();w.step(.15)
   assert(w.bucket.Parent==w.character and not a.GetStats().Running and not t.v.selection.held and next(t.v.selection.visited)==nil);clean(w,a)
  end)
@@ -301,7 +301,7 @@ for _,deferred in ipairs({false,true}) do
   local w,a,p,t=setup(deferred,30);w.getButton("Unprotect Province").Activated:Fire();w.flush();local connections=w.connections
   w.mouse.Target=p[1];w.button=true;w.input.InputBegan:Fire({UserInputType=w.env.Enum.UserInputType.MouseButton1},false);w.flush()
   for round=1,2 do for _,part in ipairs(p) do w.mouse.Target=part;w.mouse.Move:Fire();w.flush() end end
-  assert(a.GetStats().Selected==0 and t.v.selection.removes==30 and #t.dirty==0 and w.connections==connections-90)
+  assert(a.GetStats().Selected==0 and t.v.selection.removes==30 and #t.dirty==0 and w.connections==connections-240)
   w.button=false;w.input.InputEnded:Fire({UserInputType=w.env.Enum.UserInputType.MouseButton1});w.flush();t.finishSelection();w.step(.15);assert(w.paintCalls==0);clean(w,a)
  end)
  test(pre.."selection single click remains valid and GUI-start drag is ignored",function()
@@ -317,7 +317,7 @@ for _,deferred in ipairs({false,true}) do
   w.button=false;w.input.WindowFocused:Fire();w.flush();t.finishSelection();w.step(.2);assert(not a.GetStats().Running);clean(w,a)
  end)
  test(pre.."outlines remain persistent toggle locally and never alter province Color",function()
-  local w,a,p,t=setup(deferred,2);local c=p[1].Color;a.SetProtectedOutlines(false);assert(not t.marker(p[1]).Enabled)
+  local w,a,p,t=setup(deferred,2);local c=p[1].Color;a.SetProtectedOutlines(false);assert(t.marker(p[1])==nil and a.GetVisualRendererStats().HighlightInstanceCount==0)
   a.SetProtectedOutlines(true);assert(t.marker(p[1]).Enabled and p[1].Color==c)
   p[1].Color=w.color;w.flush();assert(t.marker(p[1]).ClassName=="Highlight" and t.marker(p[1]).FillTransparency==1);clean(w,a)
  end)

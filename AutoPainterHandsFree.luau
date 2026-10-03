@@ -1,4 +1,4 @@
--- AutoPainter Hands Free v8.2 Native RGB
+-- AutoPainter Hands Free v8.2 Native Lifecycle
 -- Fully automatic client-side controller using the normal PaintBucket input path.
 -- No direct PaintPart calls, no Mouse.Target/GetMouseData spoofing, and no hooks.
 -- NORMAL paints every protected province to one palette color.
@@ -21,7 +21,7 @@ if old then
 	local controller = old:FindFirstChild("ActivationController")
 	assert(controller and controller:IsA("BindableFunction"), "Close the older Hands Free panel before loading this revision")
 	local existing = controller:Invoke()
-	assert(existing.GetStats().Build=="8.2-native-rgb","Export your palette and close the older Hands Free panel before loading the Native RGB build")
+	assert(existing.GetStats().Build=="8.2-master-ab","Export your palette and close the older Hands Free panel before loading the Native Lifecycle build")
 	assert(not existing.GetStats().Closed, "Previous activation release is unresolved; this controller cannot overlap it")
 	return existing
 end
@@ -223,6 +223,7 @@ local toolConnections, equippedMouseConnections = {}, {}
 local ownedInput, inputBusy, pendingRelease = nil, false, false
 local workerActive, releaseBlocked, starting = false, false, false
 local benchmark: any = {active=false,state="SETUP",detail="Not started",rows={}}
+v82.normalAB = {active=false,production="A",state="NOT_RUN",phases={},index=1}
 local pacing: any = {interval=CFG.NormalDownSpacingDefault,source=CFG.NormalCadenceSource,normal={},civil={}}
 local finishClose, restorePending, restoringPalette = nil, false, false
 local focused = true
@@ -937,6 +938,69 @@ function palette.rng(seed)
  local state=seed%2147483647;if state<=0 then state=1 end
  return function(n) state=(state*16807)%2147483647;return state%n+1 end
 end
+-- Bounded farthest-point sampling in OKLab (Euclidean delta * 100).
+-- Conversion: Bjorn Ottosson, https://bottosson.github.io/posts/oklab/ .
+palette.perceptual = {PoolSize=1536,Metric="OKLab Euclidean x100",serial=0}
+function palette.perceptual.lab(c)
+ local function linear(x) return x<=0.04045 and x/12.92 or ((x+0.055)/1.055)^2.4 end
+ local r,g,b=linear(c.R),linear(c.G),linear(c.B)
+ local l=(.4122214708*r+.5363325363*g+.0514459929*b)^(1/3)
+ local m=(.2119034982*r+.6806995451*g+.1073969566*b)^(1/3)
+ local s=(.0883024619*r+.2817188376*g+.6299787005*b)^(1/3)
+ return {.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s}
+end
+function palette.perceptual.distance(a,b) return 100*math.sqrt((a[1]-b[1])^2+(a[2]-b[2])^2+(a[3]-b[3])^2) end
+function palette.perceptual.make(random,used,required)
+ local pool={};local labs={};for _,c in ipairs(used) do table.insert(labs,palette.perceptual.lab(c)) end
+ local size=math.max(palette.perceptual.PoolSize,required*2);size=math.min(size,16384)
+ local keys={}
+ for _=1,size*4 do
+  if #pool>=size then break end
+  local c=Color3.fromRGB(random(256)-1,random(256)-1,random(256)-1)
+  local key=colorKey(c);local lab=palette.perceptual.lab(c)
+  -- Keep useful lightness; crowding still has no impossible fixed delta threshold.
+  if not keys[key] and lab[1]>=.25 and lab[1]<=.91 then
+   keys[key]=true;local near=math.huge;local unique=true
+   for i,old in ipairs(used) do
+    if colorsMatch(old,c) then unique=false;break end
+    near=math.min(near,palette.perceptual.distance(lab,labs[i]))
+   end
+   if unique then table.insert(pool,{color=c,lab=lab,near=near}) end
+  end
+ end
+ return pool
+end
+function palette.perceptual.take(pool)
+ local at,best=nil,-1
+ for i,c in ipairs(pool) do if c.near>best then at,best=i,c.near end end
+ if not at then return nil end
+ local c=table.remove(pool,at)
+ for i=#pool,1,-1 do
+  local other=pool[i]
+  if colorsMatch(c.color,other.color) then table.remove(pool,i)
+  else other.near=math.min(other.near,palette.perceptual.distance(c.lab,other.lab)) end
+ end
+ return c.color
+end
+function palette.perceptual.report()
+ local generated,native={},{}
+ for _,item in ipairs(palette.controls) do if item.color then table.insert(native,{color=item.color,lab=palette.perceptual.lab(item.color)}) end end
+ for _,e in ipairs(entries) do if e.civilControl and e.civilControl.generated then table.insert(generated,e) end end
+ local labs={};for i,e in ipairs(generated) do labs[i]=palette.perceptual.lab(e.civilColor) end
+ local minNative,minGenerated=math.huge,math.huge
+ local lines={"GENERATED PERCEPTUAL COLORS", "GeneratedPerceptualMetric="..palette.perceptual.Metric,"GeneratedCandidatePoolSize="..tostring(palette.perceptual.lastPoolSize or palette.perceptual.PoolSize)}
+ for i,e in ipairs(generated) do
+  local lab=labs[i];local dn,dg=math.huge,math.huge;local cn,cg=nil,nil
+  for _,n in ipairs(native) do local d=palette.perceptual.distance(lab,n.lab);if d<dn then dn,cn=d,n.color end end
+  for j,o in ipairs(generated) do if i~=j then local d=palette.perceptual.distance(lab,labs[j]);if d<dg then dg,cg=d,o.civilColor end end end
+  minNative=math.min(minNative,dn);minGenerated=math.min(minGenerated,dg)
+  table.insert(lines,string.format("%s | %s | Source=GENERATED | NativePaletteIndex=NONE | GeneratedClosestNativeRGB=%s | DistanceToNative=%.6f | GeneratedClosestGeneratedRGB=%s | DistanceToGenerated=%s",entryLabel(e),e.civilControl.signature.Name,rgbText(cn),dn,rgbText(cg),dg<math.huge and string.format("%.6f",dg) or "N/A"))
+ end
+ table.insert(lines,"GeneratedMinPerceptualDistanceToNative="..(minNative<math.huge and string.format("%.6f",minNative) or "N/A"))
+ table.insert(lines,"GeneratedMinPerceptualDistanceToGenerated="..(minGenerated<math.huge and string.format("%.6f",minGenerated) or "N/A"))
+ return table.concat(lines,"\n")
+end
+
 function palette.assign(reroll)
  palette.prune()
  local capacity=palette.preflight();if capacity.Shortage>0 then return false,capacity.Message end
@@ -970,18 +1034,16 @@ function palette.assign(reroll)
  -- color and every retained/generated assignment under the shared RGB matcher.
  local generatedUsed={};for _,item in ipairs(palette.controls) do if item.color then table.insert(generatedUsed,item.color) end end
  for _,item in ipairs(chosen) do table.insert(generatedUsed,item.color) end
+ local candidatePool=overflow>0 and palette.perceptual.make(random,generatedUsed,overflow) or {}
+ if #candidatePool>0 then palette.perceptual.lastPoolSize=#candidatePool end
+ local ordinal=0;for _,item in ipairs(chosen) do if item.generated then ordinal=math.max(ordinal,item.ordinal or 0) end end
  for _,entry in ipairs(missing) do
   if #filtered==0 then
-   local picked=nil
-   for _=1,4096 do
-    local c=Color3.fromRGB(random(256)-1,random(256)-1,random(256)-1);local unique=true
-    for _,old in ipairs(generatedUsed) do if colorsMatch(old,c) then unique=false;break end end
-    if unique then picked=c;break end
-   end
-   if not picked then return false,"Bounded generated RGB search exhausted; assignments unchanged" end
-   table.insert(generatedUsed,picked)
-   assignments[entry]={generated=true,color=picked,key=colorKey(picked),index=0,
-    signature={Name="Generated RGB "..rgbText(picked)},path="PaintBucketColor -> native Tool.Equipped -> native Mouse.Button1Down"}
+   local picked=palette.perceptual.take(candidatePool)
+   if not picked then return false,"Bounded perceptual RGB candidate pool exhausted; assignments unchanged" end
+   ordinal+=1
+   assignments[entry]={generated=true,color=picked,key=colorKey(picked),index=0,ordinal=ordinal,
+    signature={Name=string.format("GEN #%03d — RGB %s",ordinal,rgbText(picked))},path="PaintBucketColor -> native Tool.Equipped -> native Mouse.Button1Down"}
    continue
   end
   local best,bestDistance=1,-1
@@ -1753,16 +1815,106 @@ end
 local function expireFresh(now)
 	while freshTail and (freshTail.recentUntil<=now or not freshTail.dirtyIndex) do unlinkFresh(freshTail) end
 end
-function v7.draw(entry)
- if not entry.box or not entry.active then return end
- entry.box.Enabled=v82.outlines~=false
- local r,g,b=normalizedRGB(entry.part.Color);local light=r and (r*0.2126+g*0.7152+b*0.0722)>145
- entry.box.FillTransparency=v82.fill and 0.90 or 1
- if v7.lock==entry then entry.box.OutlineColor=Color3.fromRGB(255,190,20)
- elseif CFG.ShowDirtyState and entry.dirtyIndex then entry.box.OutlineColor=light and Color3.fromRGB(155,0,55) or Color3.fromRGB(255,95,125)
- else entry.box.OutlineColor=light and Color3.fromRGB(15,55,145) or Color3.fromRGB(135,255,220) end
- entry.box.FillColor=entry.box.OutlineColor
+-- Local geometry only. At most 5 states x 8 spatial shards, never one Highlight per province.
+v7.visual = {groups={},count=0,generation=0,rebuilds=0,failures=0,migrations=0,released=0,shards=8}
+function v7.visual.state(entry)
+ if v7.lock==entry then return "ACTIVE",Color3.fromRGB(255,190,20) end
+ local c=entry.part.Color;local light=.2126*c.R+.7152*c.G+.0722*c.B>.5
+ if CFG.ShowDirtyState and entry.dirtyIndex then return light and "DIRTY_LIGHT" or "DIRTY_DARK",light and Color3.fromRGB(155,0,55) or Color3.fromRGB(255,95,125) end
+ return light and "CLEAN_LIGHT" or "CLEAN_DARK",light and Color3.fromRGB(15,55,145) or Color3.fromRGB(135,255,220)
 end
+function v7.visual.releaseEntry(entry)
+ if entry.visualConnections then for _,c in ipairs(entry.visualConnections) do c:Disconnect() end;entry.visualConnections=nil end
+ if entry.proxy then entry.proxy:Destroy();entry.proxy=nil;v7.visual.count-=1 end
+ local group=entry.visualGroup
+ if group then
+  group.count-=1
+  -- Empty groups stay within the fixed budget until OFF/clear; no hot Highlight allocation churn.
+ end
+ entry.visualGroup=nil;entry.box=nil
+ if v7.visual.count==0 and v7.visual.root then v7.visual.root:Destroy();v7.visual.root=nil;v7.visual.groups={} end
+end
+function v7.visual.shard(entry)
+ -- Greedy spatial coloring separates adjoining provinces into different models;
+ -- retained shard identity avoids work during hot clean/dirty migrations.
+ local counts={};for i=1,v7.visual.shards do counts[i]=0 end
+ local p,s=entry.part.Position,entry.part.Size
+ for _,other in ipairs(entries) do
+  if other~=entry and other.visualShard then
+   local q,t=other.part.Position,other.part.Size
+   if math.abs(p.X-q.X)<=(s.Magnitude+t.Magnitude)*.51 and math.abs(p.Z-q.Z)<=(s.Magnitude+t.Magnitude)*.51 then counts[other.visualShard]+=1 end
+  end
+ end
+ local best=entry.id%v7.visual.shards+1
+ for i=1,v7.visual.shards do if counts[i]<counts[best] then best=i end end
+ return best
+end
+function v7.visual.group(entry,state,color)
+ if not v7.visual.root then v7.visual.generation+=1;v7.visual.root=Instance.new("Folder");v7.visual.root.Name="AutoPainterLocalVisuals";v7.visual.root.Parent=Workspace end
+ entry.visualShard=entry.visualShard or v7.visual.shard(entry)
+ local key=state..":"..entry.visualShard;local group=v7.visual.groups[key]
+ if not group then
+  local model=Instance.new("Model");model.Name=key
+  local h=Instance.new("Highlight");h.Name="ProtectedState";h.Enabled=true;h.Adornee=model;h.OutlineTransparency=0
+  h.DepthMode=Enum.HighlightDepthMode.Occluded;h.OutlineColor=color;h.FillColor=color;h.FillTransparency=v82.fill and .90 or 1;h.Parent=model
+  model.Parent=v7.visual.root;group={key=key,model=model,highlight=h,count=0};v7.visual.groups[key]=group
+ end
+ group.highlight.FillTransparency=v82.fill and .90 or 1
+ return group
+end
+function v7.visual.draw(entry)
+ if not entry.active or v82.outlines==false then v7.visual.releaseEntry(entry);return end
+ local state,color=v7.visual.state(entry);local group=v7.visual.group(entry,state,color)
+ if not entry.proxy then
+  local proxy
+  local ok,why=pcall(function()
+   proxy=entry.part:Clone();assert(proxy,"Province is not cloneable (Archivable=false)")
+   -- Strip executable, physical and unrelated children BEFORE parenting into the world.
+   for _,child in ipairs(proxy:GetChildren()) do if not child:IsA("DataModelMesh") then child:Destroy() else for _,nested in ipairs(child:GetChildren()) do nested:Destroy() end end end
+   proxy.Name="ProtectedProxy_"..entry.id;proxy.Anchored=true
+   proxy.CanCollide=false;proxy.CanTouch=false;proxy.CanQuery=false;proxy.CastShadow=false
+   proxy.LocalTransparencyModifier=0;proxy.Transparency=.99;proxy.CFrame=entry.part.CFrame;proxy.Size=entry.part.Size
+   proxy.Color=entry.part.Color
+   proxy.Parent=group.model
+  end)
+  if not ok then if proxy then proxy:Destroy() end;if group.count==0 then group.model:Destroy();v7.visual.groups[group.key]=nil end;v7.visual.failures+=1;entry.visualError=tostring(why);return end
+  entry.proxy=proxy;entry.visualError=nil;v7.visual.count+=1
+  local function align() if entry.proxy and entry.active then entry.proxy.CFrame=entry.part.CFrame;entry.proxy.Size=entry.part.Size end end
+  entry.visualConnections={entry.part:GetPropertyChangedSignal("CFrame"):Connect(align),entry.part:GetPropertyChangedSignal("Size"):Connect(align)}
+  -- A changed mesh/shape is rebuilt locally; authoritative geometry is never written.
+  local function rebuild() v7.visual.releaseEntry(entry);v7.visual.draw(entry) end
+  for _,prop in ipairs(entry.part:IsA("Part") and {"Shape"} or entry.part:IsA("MeshPart") and {"MeshId"} or {}) do
+   local okSignal,signal=pcall(function() return entry.part:GetPropertyChangedSignal(prop) end)
+   if okSignal then table.insert(entry.visualConnections,signal:Connect(rebuild)) end
+  end
+  for _,child in ipairs(entry.part:GetChildren()) do if child:IsA("DataModelMesh") then table.insert(entry.visualConnections,child.Changed:Connect(rebuild)) end end
+  table.insert(entry.visualConnections,entry.part.ChildAdded:Connect(function(child) if child:IsA("DataModelMesh") then rebuild() end end))
+  table.insert(entry.visualConnections,entry.part.ChildRemoved:Connect(function(child) if child:IsA("DataModelMesh") then rebuild() end end))
+ end
+ if entry.visualGroup~=group then
+  local old=entry.visualGroup
+  entry.proxy.Parent=group.model
+  if old then old.count-=1;v7.visual.migrations+=1 end
+  group.count+=1;entry.visualGroup=group
+ end
+ entry.proxy.Color=entry.part.Color;entry.box=group.highlight
+end
+function v7.visual.toggle(enabled)
+ v82.outlines=enabled~=false
+ if not v82.outlines then
+  v7.visual.released=0;for _ in pairs(v7.visual.groups) do v7.visual.released+=1 end
+  for _,e in ipairs(entries) do v7.visual.releaseEntry(e) end
+ else v7.visual.rebuilds+=1;for _,e in ipairs(entries) do v7.visual.draw(e) end end
+end
+function v7.visual.stats()
+ local groups=0;for _ in pairs(v7.visual.groups) do groups+=1 end
+ return {SelectedProvinceCount=#entries,VisualizedProvinceCount=v7.visual.count,VisualMissingCount=#entries-v7.visual.count,
+  HighlightInstanceCount=groups,ProxyPartCount=v7.visual.count,VisualRendererGeneration=v7.visual.generation,VisualRebuilds=v7.visual.rebuilds,
+  VisualRebuildFailures=v7.visual.failures,VisualStateMigrations=v7.visual.migrations,VisualResourcesReleasedOnOff=v7.visual.released,
+  VisualRenderer="STATE_SHARDED_PROVINCE_GEOMETRY",RenderVisibilityProof="Requires live GPU observation; counts represent attached geometry"}
+end
+function v7.draw(entry) v7.visual.draw(entry) end
+
 local function removeDirty(entry)
 	if v82.account then v82.account(entry,os.clock()) end
 	local index = entry.dirtyIndex
@@ -2195,7 +2347,7 @@ function v7.record(service,stalled)
 		AcquisitionMs=service.acquiredAt and (e.lastAcquireSeconds or 0)*1000 or 0,QueueWaitMs=service.queueWaitMs or 0,
 		PalettePreparationMs=service.paletteMs or 0,ServiceMs=service.validAt and math.max(0,os.clock()-service.validAt)*1000 or 0,AcquiredToCorrectMs=service.latency and service.latency*1000 or "unobserved",
 		Result=result,ActualChanged=not colorsMatch(service.actualBefore,actual)}
- record.Civil=service.civil
+ record.Civil=service.civil;record.NormalVariant=service.normalVariant;record.NormalABDiagnostic=v82.normalAB.active
  record.PaintMs=service.validAt and math.max(0,(service.paintEndedAt or service.endedAt or os.clock())-service.validAt)*1000 or 0
  record.ReleaseMs=service.releaseStartedAt and math.max(0,(service.endedAt or os.clock())-service.releaseStartedAt)*1000 or 0
  record.TotalDefenseResponseMs=service.attackAt and math.max(0,(service.success and e.lastCorrectedTime or os.clock())-service.attackAt)*1000 or 0
@@ -2335,6 +2487,7 @@ function policy.finish(service,stalled)
 	if policy.current==service then policy.current=nil end
 	v82.endService(service)
 	v7.record(service,stalled)
+ if v82.normalAB.finish then v82.normalAB.finish(service) end
 	v7.unlockTarget(service.entry)
 	if v82.restoreAfterService then v82.restoreAfterService() end
 end
@@ -2795,7 +2948,8 @@ function pacing.wait(entry,token,service)
  if pacing.interval<CFG.NormalDownSpacingDefault then
   pacing.interval=CFG.NormalDownSpacingDefault;pacing.source=CFG.NormalCadenceSource
  end
- local started=os.clock();local deadline=pacing.lastTool==activationTool and (pacing.lastDown or -math.huge)+pacing.interval or -math.huge
+ local interval=v82.normalAB.active and v82.normalAB.variants[v82.normalAB.variant()].floor or pacing.interval
+ local started=os.clock();local deadline=pacing.lastTool==activationTool and (pacing.lastDown or -math.huge)+interval or -math.huge
  while os.clock()<deadline do
   if not liveToken(token) or not shouldTarget(entry) or mouse.Target~=entry.part or not activationTool or activationTool.Parent~=player.Character then return false end
   RunService.Heartbeat:Wait()
@@ -2804,7 +2958,7 @@ function pacing.wait(entry,token,service)
  return liveToken(token) and shouldTarget(entry) and mouse.Target==entry.part
 end
 function pacing.stats()
- local r={NormalMinimumDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,
+ local r={NormalActualDownFloorMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,NormalNativePath=v82.normalAB.production,NormalABState=v82.normalAB.state,NormalMinimumDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,
   NormalRequestedDownSpacingMs=math.max(CFG.NormalDownSpacingDefault,pacing.interval)*1000,
   NormalProductionFloorMs=CFG.NormalDownSpacingDefault*1000,NormalCadencePolicySource=CFG.NormalCadenceSource,
   NormalCadenceSource=pacing.source,NormalCadenceCalibratedContext=pacing.calibratedContext or "none",NormalCadenceToolGeneration=pacing.calibratedGeneration or "none"}
@@ -3002,6 +3156,11 @@ local function restorePalette()
 end
 
 local function stop(reason)
+ if v82.normalAB.active then
+  if v82.normalAB.phase then v82.normalAB.phase.ended=os.clock();v82.normalAB.phase.state="INTERRUPTED: "..tostring(reason) end
+  v82.normalAB.active=false;v82.normalAB.state="STOPPED: "..tostring(reason);v82.normalAB.reload=nil
+  CFG.ActivationStrategy=v82.normalAB.savedStrategy or "PER_TARGET"
+ end
  if benchmark.active and not benchmark.finishing then
   local state=not focused and "PAUSED - FOCUS" or (activationTool and activationTool.Parent~=player.Character) and "PAUSED - TOOL" or "PAUSED - USER"
   benchmark.pause(state,reason or "Paused by user; Resume Benchmark to continue",state=="PAUSED - USER");return
@@ -3052,8 +3211,164 @@ function palette.maintain(token)
   end
  end
 end
+-- Controlled NORMAL lifecycle comparison. Existing worker owns all input; no second painter.
+v82.normalAB.variants={A={name="CURRENT",floor=.150},B={name="EQUIP_REFRESH",floor=.150},C={name="SAME_SWATCH",floor=.150},D175={name="ACTUAL_FLOOR_175",floor=.175},D190={name="ACTUAL_FLOOR_190",floor=.190},D200={name="ACTUAL_FLOOR_200",floor=.200},D210={name="ACTUAL_FLOOR_210",floor=.210},D225={name="ACTUAL_FLOOR_225",floor=.225}}
+function v82.normalAB.variant() return v82.normalAB.active and v82.normalAB.order[v82.normalAB.index] or v82.normalAB.production end
+function v82.normalAB.ownsRemoval(object)
+ local r=v82.normalAB.reload
+ return r and object==r.tool and running and mode=="NORMAL" and workerToken==r.token and player.Character==r.character and v7.lock==r.entry
+end
+function v82.normalAB.echo(color,oldGui)
+ local native=playerGui:FindFirstChild("PaletteGui");local p=native and native:FindFirstChild("ColorPallet")
+ local t=p and p:FindFirstChild("ColorTitle");local picker=t and t:FindFirstChild("ColorPicker")
+ local box=playerGui:FindFirstChild("PaintBucketSelectionBox");local line=playerGui:FindFirstChild("PaintBucketLineHandle")
+ return native and (not oldGui or native~=oldGui) and picker and box and line and colorsMatch(paletteColor(),color)
+  and colorsMatch(picker.BackgroundColor3,color) and colorsMatch(box.Color3,color) and colorsMatch(line.Color3,color)
+end
+function v82.normalAB.prepare(entry,token,service)
+ local variant=v82.normalAB.variant();service.normalVariant=variant
+ if v82.normalAB.active then service.dwell=CFG.TargetDwellDefault;service.benchmark=false end
+ if variant=="A" or variant:sub(1,1)=="D" then
+  service.paletteValid=colorsMatch(paletteColor(),service.target);service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor();service.paletteMs=0
+  return service.paletteValid,"NORMAL palette changed"
+ end
+ local target=service.target;local tool=activationTool;local character=player.Character;local hum=humanoid()
+ local began=os.clock();local generation=equippedGeneration;local clickConnection
+ local function valid()
+  return alive and running and focused and mode=="NORMAL" and workerToken==token and v7.lock==entry and entry.active
+   and player.Character==character and tool and (tool.Parent==character or tool.Parent==backpack) and hum and hum.Health>0
+   and colorsMatch(paletteColor(),target)
+ end
+ local function waitFor(predicate)
+  local deadline=os.clock()+.6
+  repeat if not valid() then return false end;if predicate() then return true end;RunService.Heartbeat:Wait() until os.clock()>=deadline
+  return valid() and predicate()
+ end
+ local ok,why=pcall(function()
+  if not valid() or not shouldTarget(entry) then error("NORMAL preparation invalid/clean; no input") end
+  if variant=="B" then
+   if not settleRelease() or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then error("Unresolved UP before NORMAL refresh") end
+   local oldGui=playerGui:FindFirstChild("PaletteGui")
+   v82.normalAB.reload={tool=tool,entry=entry,character=character,token=token}
+   hum:UnequipTools()
+   if not waitFor(function() return tool.Parent==backpack end) then error("NORMAL refresh: tool did not unequip") end
+   RunService.Heartbeat:Wait()
+   if not valid() or tool.Parent~=backpack then error("NORMAL refresh interrupted") end
+   -- No attribute write: the same user-selected NORMAL color must persist.
+   hum:EquipTool(tool)
+   if not waitFor(function() return tool.Parent==character and equippedGeneration>generation and v82.normalAB.echo(target,oldGui) end) then error("NORMAL refresh: new native session/color echoes not confirmed") end
+   service.generation=equippedGeneration;palette.rebindAll("NORMAL A/B native equip")
+   service.paletteProof="B: genuine native equip + unchanged RGB + fresh native echoes; result required"
+  elseif variant=="C" then
+   local item=palette.find(target)
+   if not item or not palette.valid(item) then error("C requires a verified native swatch matching the NORMAL color") end
+   palette.current={PaletteStep="IDLE",Steps={}};palette.currentEntry=entry;palette.activeSnapshot=palette.snapshot(item)
+   if not palette.visible(item.button) then local opened,reason=palette.ensureOpen(item,token);if not opened then error(reason) end end
+   local clicked=false
+   clickConnection=item.button.MouseButton1Click:Connect(function() clicked=true end)
+   local selected,reason=palette.click(item,token,"NORMAL_SAME_SWATCH",function() return clicked and colorsMatch(paletteColor(),target) end,target)
+   if not selected then error("C same-swatch native click not observed: "..tostring(reason)) end
+   if palette.mapBlocked(entry,item) then
+    if not palette.verifiedOpener() or not palette.valid(palette.closer) then error("C palette blocks target; learn opener/closer") end
+    local closed,reasonClose=palette.click(palette.closer,token,"CLOSING",function() return not palette.mapBlocked(entry,item) end)
+    if not closed then error(reasonClose) end
+   end
+   service.paletteProof="C: real MouseButton1Click + unchanged native RGB; result required"
+  end
+  if not valid() then error("NORMAL color/tool/focus changed during preparation") end
+ end)
+ if clickConnection then clickConnection:Disconnect() end
+ v82.normalAB.reload=nil;palette.currentEntry=nil;palette.activeSnapshot=nil
+ service.paletteMs=(os.clock()-began)*1000;service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor()
+ service.paletteValid=ok and colorsMatch(paletteColor(),target)
+ return ok,why
+end
+function v82.normalAB.newPhase(key)
+ return {key=key,started=os.clock(),samples={},qualified=0,successes=0,attempts=0,noEffects=0,peakDirty=0,peakAttack=0,overloadSeconds=0}
+end
+function v82.normalAB.boundary()
+ if not v82.normalAB.active then return true end
+ if mode~="NORMAL" or not colorsMatch(paletteColor(),v82.normalAB.color) or activationTool~=v82.normalAB.tool or player.Character~=v82.normalAB.character or pacing.context()~=v82.normalAB.upgrade then
+  v82.normalAB.state="INVALIDATED: tool/character/color/upgrade changed";stop(v82.normalAB.state);return false
+ end
+ local phase=v82.normalAB.phase
+ if phase and (phase.qualified>=v82.normalAB.samples or phase.attempts>=v82.normalAB.samples*3 or os.clock()-phase.started>=v82.normalAB.seconds) then
+  phase.ended=os.clock();phase.state=phase.qualified>=v82.normalAB.samples and "COMPLETE" or "INSUFFICIENT_QUALIFIED_WORK"
+  v82.normalAB.index+=1;phase=nil;v82.normalAB.phase=nil
+ end
+ if not phase then
+  while v82.normalAB.order[v82.normalAB.index]=="C" and not palette.find(v82.normalAB.color) do
+   table.insert(v82.normalAB.phases,{key="C",state="UNSUPPORTED: no matching learned native swatch",samples={},attempts=0,qualified=0,successes=0,noEffects=0})
+   v82.normalAB.index+=1
+  end
+  local key=v82.normalAB.order[v82.normalAB.index]
+  if not key then
+   v82.normalAB.state="COMPLETE: compare paired phases; no production change applied";v82.normalAB.completed=true
+   v82.normalAB.active=false;stop(v82.normalAB.state);CFG.ActivationStrategy=v82.normalAB.savedStrategy;return false
+  end
+  if not settleRelease() then v82.normalAB.state="RELEASE_UNRESOLVED";stop(v82.normalAB.state);return false end
+  phase=v82.normalAB.newPhase(key);v82.normalAB.phase=phase;table.insert(v82.normalAB.phases,phase)
+  v82.normalAB.state="RUNNING "..key.." "..v82.normalAB.variants[key].name
+  -- Same initial dwell for every arm; no carryover learned by a different variant.
+  policy.normal.PER_TARGET.dwell=CFG.TargetDwellDefault;policy.normal.PER_TARGET.latencies={};policy.normal.PER_TARGET.training={}
+ end
+ return true
+end
+function v82.normalAB.finish(service)
+ if not v82.normalAB.active or not service.normal or not service.normalVariant then return end
+ local phase=v82.normalAB.phase;if not phase or phase.key~=service.normalVariant then return end
+ phase.attempts+=1;if service.qualified then phase.qualified+=1 end
+ if service.success and service.qualified then phase.successes+=1 end
+ if service.validNoEffect and service.qualified then phase.noEffects+=1 end
+ phase.peakDirty=math.max(phase.peakDirty,#dirty)
+ local duration=os.clock()-service.started
+ -- Bounded 3*samples per phase; no unbounded transaction history.
+ local r=table.clone(service.record or {});r.Qualified=service.qualified;r.Success=service.success and service.qualified
+ r.WorkMs=duration*1000;r.DownToColorMs=service.correctedAt and service.nativeDownObservedAt and (service.correctedAt-service.nativeDownObservedAt)*1000 or nil
+ r.FreshResponseMs=service.success and service.externalEventAt and (service.correctedAt-service.externalEventAt)*1000 or nil
+ if service.nativeDownObservedAt then
+  r.NativeDownSpacingMs=phase.lastDown and (service.nativeDownObservedAt-phase.lastDown)*1000 or nil
+  phase.lastDown=service.nativeDownObservedAt
+ end
+ r.PathologicalGroup=service.entry.groupId~=nil;r.DirtyCount=#dirty
+ table.insert(phase.samples,r)
+end
+function v82.normalAB.report()
+ local lines={"NORMAL NATIVE LIFECYCLE A/B", "State="..v82.normalAB.state,"ProductionVariant="..v82.normalAB.production,
+  "ProductionPolicy=PER_TARGET; observed native DOWN floor 150ms for A/B/C. No winner auto-applied.",
+  "TargetRGB="..rgbText(v82.normalAB.color).." | Camera=LOCKED | AutoPainterRPCs=0",
+  "Same selected cohort; combat/external recolor provides work. No automatic reset paints; cooldown benchmark is separate.",
+  "A/B/C order: A B C C B A; actual matched timing and attack pressure must be compared, not only aggregate CPS.",
+  "Source hypothesis: native last-paint clock updates AFTER remote return and is scoped to Equipped; server acceptance remains unobserved."}
+ local function summary(values)
+  local total=0;for _,v in ipairs(values) do total+=v end
+  return string.format("n=%d min=%.3f mean=%.3f P50=%.3f P90=%.3f P99=%.3f max=%.3f",#values,#values>0 and v82.percentile(table.clone(values),0) or 0,#values>0 and total/#values or 0,v82.percentile(table.clone(values),.5),v82.percentile(table.clone(values),.9),v82.percentile(table.clone(values),.99),v82.percentile(table.clone(values),1))
+ end
+ for i,p in ipairs(v82.normalAB.phases) do
+  local elapsed=math.max(.001,(p.ended or os.clock())-(p.started or os.clock()))
+  local recent,recentCount=0,0;for j=#p.samples,1,-1 do if p.samples[j].Qualified then recentCount+=1;if p.samples[j].Success then recent+=1 end;if recentCount==16 then break end end end
+  local targetLoss,retries,groups=0,0,0
+  table.insert(lines,string.format("PHASE %d %s %s | Attempts=%d Qualified=%d SuccessfulPaints=%d VALID_NO_EFFECT=%d SuccessPercent=%.2f NoEffectPercent=%.2f RollingSuccessPercent=%.2f CorrectionsPerSecond=%.4f | DirtyCount=%d PeakDirty=%d PeakAttackRate=%.3f OverloadSeconds=%.3f",i,p.key,p.state or "RUNNING",p.attempts,p.qualified,p.successes,p.noEffects,100*p.successes/math.max(1,p.qualified),100*p.noEffects/math.max(1,p.qualified),100*recent/math.max(1,recentCount),p.successes/elapsed,#dirty,p.peakDirty or 0,p.peakAttack or 0,p.overloadSeconds or 0))
+  local values={ActualDownSpacing={},DownToColor={},Acquisition={},Preparation={},Service={},FreshResponse={},QueueAll={},QueueFresh={},QueueRetry={}}
+  for _,r in ipairs(p.samples) do
+   for key,field in pairs({ActualDownSpacing="NativeDownSpacingMs",DownToColor="DownToColorMs",Acquisition="AcquisitionMs",Preparation="PalettePreparationMs",Service="ServiceMs",FreshResponse="FreshResponseMs",QueueAll="QueueWaitMs"}) do
+    if type(r[field])=="number" then table.insert(values[key],r[field]) end
+   end
+   if r.QueueOrigin=="FRESH_ATTACK" then table.insert(values.QueueFresh,r.QueueWaitMs or 0)
+   elseif r.QueueOrigin=="RETRY" or r.QueueOrigin=="DEFERRED_RETRY" or r.QueueOrigin=="TARGET_RECOVERY" then retries+=1;table.insert(values.QueueRetry,r.QueueWaitMs or 0) end
+   if r.Result=="TARGET_LOST" then targetLoss+=1 end;if r.PathologicalGroup then groups+=1 end
+  end
+  for _,key in ipairs({"ActualDownSpacing","DownToColor","Acquisition","Preparation","Service","FreshResponse","QueueAll","QueueFresh","QueueRetry"}) do table.insert(lines,key.."Ms "..summary(values[key])) end
+  table.insert(lines,string.format("TargetLoss=%d Retries=%d PathologicalGroupAttempts=%d",targetLoss,retries,groups))
+  for _,r in ipairs(p.samples) do table.insert(lines,string.format("Entry=%s Result=%s Qualified=%s IntendedRGB=%s ActualRGB=%s NativeDownAt=%s ActualSpacingMs=%s DownToColorMs=%s PreparationMs=%s QueueMs=%s",tostring(r.EntryId),tostring(r.Result),tostring(r.Qualified),tostring(r.IntendedRGB),tostring(r.ActualRGBAfter),tostring(r.NativeDownObservedAt),tostring(r.NativeDownSpacingMs),tostring(r.DownToColorMs),tostring(r.PalettePreparationMs),tostring(r.QueueWaitMs))) end
+ end
+ table.insert(lines,"Decision=PENDING_LIVE_COMPARISON. Preparation echoes alone are never success; results are local observations, not server acknowledgments.")
+ return table.concat(lines,"\n")
+end
+
 local function worker(token)
 	while liveToken(token) do
+  if v82.normalAB.active and not v82.normalAB.boundary() then break end
 		if policy.current then policy.finish(policy.current,false) end
 		if releaseBlocked then running=false;break end
 		if transitionCount>=CFG.MaxTransitionsPerFrame then waitWork();continue end
@@ -3124,8 +3439,15 @@ local function worker(token)
    if budget then waitWork();if not liveToken(token) then break end;projected=visiblePoint(entry) end
    candidate=projected or {entry=entry,tier=entry.lastCamera and 2 or 3}
 		else
-			service.paletteValid=colorsMatch(paletteColor(),target)
-			service.attributeAfter=paletteColor();service.attributeAfterEquip=paletteColor();service.paletteMs=0
+   local prepared,why=v82.normalAB.prepare(entry,token,service)
+   if not prepared then
+    if not shouldTarget(entry) then service.result="CLEAN_BEFORE_DOWN";syncDirty(entry,"check");policy.finish(service,false);continue end
+    service.result="PALETTE_UNAVAILABLE";lastMessage=tostring(why)
+    policy.finish(service,false);stop("NORMAL refresh failed: "..tostring(why));break
+   end
+   if service.normalVariant=="B" or service.normalVariant=="C" then
+    candidate=visiblePoint(entry) or {entry=entry,tier=entry.lastCamera and 2 or 3}
+   end
 		end
 		if not liveToken(token) or not entry.active then break end
 		if not entry.dirtyIndex or colorsMatch(entry.part.Color,target) then service.result="CLEAN_BEFORE_DOWN";syncDirty(entry,"check");policy.finish(service,false);continue end
@@ -3225,6 +3547,7 @@ local function worker(token)
 end
 
 local function addProvince(part)
+	if v82.normalAB.active then return false end
 	if not validProvince(part) or lookup[part] then return false end
 	nextId += 1
 	local entry = {
@@ -3239,15 +3562,6 @@ local function addProvince(part)
 	entries[entry.index] = entry
 	lookup[part] = entry;v82.ids[entry.id]=entry;v82.camera.ceilingAt=nil
 
-	local box = Instance.new("Highlight")
-	box.Name = "HandsFreeProtected"
-	box.Adornee = part
-	box.FillTransparency = 1
- box.OutlineTransparency = 0
- box.DepthMode = Enum.HighlightDepthMode.Occluded
- box.OutlineColor = targetColor(entry) or paletteColor()
-	box.Parent = playerGui:FindFirstChild(GUI_NAME)
-	entry.box = box
 
 	entry.colorConn = part:GetPropertyChangedSignal("Color"):Connect(function() syncDirty(entry,"color") end)
 	entry.ancestryConn = part.AncestryChanged:Connect(function() if not validProvince(part) then removeProvince(part) end end)
@@ -3257,6 +3571,7 @@ local function addProvince(part)
 end
 
 removeProvince = function(part)
+ if v82.normalAB.active and lookup[part] then stop("NORMAL A/B cohort changed; evidence retained") end
 	local entry = lookup[part]
 	if not entry then return end
 	entry.active = false;v82.groupSuccess(entry);v82.ids[entry.id]=nil;v82.camera.ceilingAt=nil
@@ -3272,7 +3587,7 @@ removeProvince = function(part)
 	if entry.colorConn then entry.colorConn:Disconnect() end
 	if entry.destroyConn then entry.destroyConn:Disconnect() end
 	entry.service=nil;entry.lastValidService=nil
-	if entry.box then entry.box:Destroy() end
+	v7.visual.releaseEntry(entry)
 end
 
 local function clearAll()
@@ -3345,7 +3660,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,0,0,34)
 title.BackgroundColor3 = Color3.fromRGB(49,49,64)
 title.BorderSizePixel = 0
-title.Text = "AutoPainter · HANDS FREE v8.2 Native RGB"
+title.Text = "AutoPainter · HANDS FREE v8.2 Native Lifecycle"
 title.TextColor3 = Color3.new(1,1,1)
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 19
@@ -3432,10 +3747,10 @@ end
 for i,label in ipairs({"Validate Native Palette","Camera movement: LOCKED","Protected outlines: ON"}) do
  local b=button(label,365+(i-1)*32);b.Parent=palettePanel;b.Size=UDim2.new(1,-20,0,28);palette.buttons[7+i]=b
 end
-palette.inspectButton=button("Inspect custom UI",579);palette.inspectButton.Parent=palettePanel;palette.inspectButton.Size=UDim2.new(1,-20,0,28)
-palette.probe1=button("Test native Picker (UI only)",611);palette.probe1.Parent=palettePanel;palette.probe1.Size=UDim2.new(1,-20,0,28)
-palette.probe2=button("Test ColorPicker (UI only)",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)
-palette.copyCustom=button("Copy Custom UI Report",675);palette.copyCustom.Parent=palettePanel;palette.copyCustom.Size=UDim2.new(1,-20,0,28)
+palette.inspectButton=button("NORMAL A/B: Start A B C",579);palette.inspectButton.Parent=palettePanel;palette.inspectButton.Size=UDim2.new(1,-20,0,28)
+palette.probe1=button("NORMAL D: actual spacing",611);palette.probe1.Parent=palettePanel;palette.probe1.Size=UDim2.new(1,-20,0,28)
+palette.probe2=button("NORMAL production path: A",643);palette.probe2.Parent=palettePanel;palette.probe2.Size=UDim2.new(1,-20,0,28)
+palette.copyCustom=button("Copy NORMAL A/B Report",675);palette.copyCustom.Parent=palettePanel;palette.copyCustom.Size=UDim2.new(1,-20,0,28)
 palettePanel.Size=UDim2.fromOffset(245,783)
 benchmark.button=button("Paint Cooldown Benchmark",711);benchmark.button.Parent=palettePanel;benchmark.button.Size=UDim2.new(1,-20,0,28)
 benchmark.copyButton=button("Copy Cooldown Benchmark",743);benchmark.copyButton.Parent=palettePanel;benchmark.copyButton.Size=UDim2.new(1,-20,0,28)
@@ -3475,6 +3790,10 @@ local function performanceReport()
 	table.insert(lines,dirtyEventReport())
 	table.insert(lines,v7.report())
 	table.insert(lines,palette.baseline())
+ table.insert(lines,v82.normalAB.report())
+ local renderer=v7.visual.stats();local rk={};for k in pairs(renderer) do table.insert(rk,k) end;table.sort(rk)
+ for _,k in ipairs(rk) do table.insert(lines,k.."="..tostring(renderer[k])) end
+ table.insert(lines,palette.perceptual.report())
 	local pm=palette.performance();local pk={};for k in pairs(pm) do table.insert(pk,k) end;table.sort(pk)
 	for _,key in ipairs(pk) do table.insert(lines,key.."="..tostring(pm[key])) end
 	table.insert(lines,"V8.2 OVERLOAD / QUEUE / CAMERA / EFFICIENCY")
@@ -3528,7 +3847,7 @@ local function updateUI()
 		.. " · Activation observed: " .. activation.Observation
 		.. "\nColor changed: " .. tostring(activation.ColorChanged) .. " · Target color: " .. tostring(activation.TargetColorObserved)
 		.. (mode == "NORMAL" and ("\nNormal target: " .. tostring(c))
-			or "\nCivil War: unique target color per province")
+			or "\nCivil War: unique target color per province · I inspects hovered selection")
 
 	local perf=reportPerformance()
 	liveStatus.Text=string.format("AUTO v8.2 · Q / Escape to stop · %s\n%s · %s\nDirty %d · Attempts %d · Success %d (%.0f%%) · Corrections/s %.2f\nDwell %.0f / limit %.0f ms · Acquire %.1f ms · To color %.1f ms · Switch %.1f ms\nAcq/s %.1f · Cursor %.0f%% · Camera fallback %.0f%%\nCursor cache %d · Camera cache %d · Full search %d\nDeferred %d · Stalls %d · Hold %s · Down/Up %d/%d\nColor events %d · Away from cursor %d · Queue avg/max %.2f/%.2f ms\nFresh queue %d · Attack corrections %d · Response %.1f ms\nTarget: %s",
@@ -3548,6 +3867,8 @@ local function updateUI()
   liveStatus.Size=UDim2.fromOffset(365,150)
   liveStatus.Text=string.format("%s · Q/Escape STOP · OVERLOAD %s\nDirty %d · CPS %.2f · Success %.0f%%\nEligible queue P50/P90 %.0f/%.0f ms\nOldest %.0f ms · Cooling %d · Camera %d\nNative %d/%d · Gen %d\n%s",mode,tostring(perf.Overload),perf.DirtyCount,perf.CorrectionsPerSecond,recent.SuccessRate*100,perf.EligibleQueueP50Ms or 0,perf.EligibleQueueP90Ms or 0,perf.MaxDirtyAgeMs,perf.Quarantined or 0,perf.CameraFallbackAttempts,perf.BoundNativeColors,perf.SemanticKnownCapacity,perf.CurrentPaletteGeneration,perf.ActiveTarget)
  else liveStatus.Size=UDim2.fromOffset(470,250) end
+ if currentEntry and currentEntry.civilControl and currentEntry.civilControl.generated and mode=="CIVIL WAR" then liveStatus.Text..="\n"..currentEntry.civilControl.signature.Name end
+ if v82.normalAB.active then liveStatus.Text..="\nNORMAL A/B: "..v82.normalAB.state.." | "..tostring(v82.normalAB.phase and v82.normalAB.phase.qualified or 0).."/"..tostring(v82.normalAB.samples).." qualified" end
  if benchmark.active then liveStatus.Size=UDim2.fromOffset(470,250);liveStatus.Text="PAINT COOLDOWN BENCHMARK\n"..benchmark.state.."\n"..benchmark.detail.."\nNormal worker paused · one unchanged color · AutoPainterRPCs=0\nColor results observed asynchronously. Escape PAUSES · RESUME continues · Cancel ends this run." end
  if selecting=="PALETTE" then
 		liveStatus.Text="NATIVE PALETTE SETUP · "..tostring(palette.learning or "Captured").."\n"..palette.status.."\nClick only the normal game's palette controls, then DONE / FINISH SETUP."
@@ -3699,7 +4020,7 @@ local function startAutoImpl()
 	task.spawn(function()
 		local ok, problem = pcall(worker, token)
 		if not ok then
-   palette.currentEntry=nil;palette.activeSnapshot=nil;palette.generated.reload=nil
+   palette.currentEntry=nil;palette.activeSnapshot=nil;palette.generated.reload=nil;v82.normalAB.reload=nil
 			inputErrors += 1
 			stop("Activation/controller error: " .. tostring(problem))
 			settleRelease()
@@ -3724,6 +4045,36 @@ local function startAuto()
 	if not ok then stop("Activation start error: " .. tostring(value)); updateUI(); return false end
 	if value then palette.resumeNeeded=false end
 	return value
+end
+
+function v82.normalAB.start(options)
+ options=options or {};if type(options)~="table" then return false,"Expected A/B options table" end
+ if running or workerActive or starting or ownedInput or selecting or benchmark.active then return false,"STOP and finish selection/release before NORMAL A/B" end
+ if mode~="NORMAL" or #entries<2 then return false,"Use NORMAL with at least two protected provinces and ongoing external recolors" end
+ if not focused or v82.camera.mode~="LOCKED" then return false,"Focus Roblox and keep camera LOCKED" end
+ if options.SpacingControls and not v82.normalAB.completed then return false,"Run A/B/C first; spacing controls are a separate follow-up if needed" end
+ local tool=ensureBucket();if not tool then return false,"Equip the normal PaintBucket first" end
+ local color=paletteColor();local key=palette.find(color)
+ if key then palette.rebindAll("NORMAL A/B preflight") end
+ local b=playerGui:FindFirstChild("PaintBucketSelectionBox");local l=playerGui:FindFirstChild("PaintBucketLineHandle")
+ if not b or not l then return false,"Native working-color indicators missing; equip the tool and choose the NORMAL color first" end
+ v82.normalAB.active=true;v82.normalAB.completed=false;v82.normalAB.index=1;if not options.SpacingControls then v82.normalAB.phases={} end;v82.normalAB.phase=nil
+ v82.normalAB.order=options.SpacingControls and {"D175","D190","D200","D210","D225"} or {"A","B","C","C","B","A"}
+ v82.normalAB.samples=math.clamp(math.floor(tonumber(options.Samples) or 40),10,100)
+ v82.normalAB.seconds=math.clamp(tonumber(options.SecondsPerPhase) or 60,5,120)
+ v82.normalAB.savedStrategy=CFG.ActivationStrategy;CFG.ActivationStrategy="PER_TARGET"
+ v82.normalAB.color=color;v82.normalAB.tool=tool;v82.normalAB.character=player.Character;v82.normalAB.upgrade=pacing.context()
+ v82.normalAB.state="STARTING";v82.normalAB.cohort={};for _,e in ipairs(entries) do v82.normalAB.cohort[e.id]=true end
+ local ok=startAuto();if not ok then v82.normalAB.active=false;CFG.ActivationStrategy=v82.normalAB.savedStrategy;v82.normalAB.state="PREFLIGHT_FAILED" end
+ return ok,ok and "A/B running; keep the same cohort/color and comparable combat pressure" or lastMessage
+end
+function v82.normalAB.setProduction(key)
+ if running or workerActive or starting or ownedInput or v82.normalAB.active or benchmark.active then return false,"Stop before changing NORMAL path" end
+ if key~="A" and key~="B" and key~="C" then return false,"Production choices are A, B or C; timing floors are diagnostic only" end
+ if key=="C" and not palette.find(paletteColor()) then return false,"C requires a learned matching native swatch" end
+ v82.normalAB.production=key
+ palette.probe2.Text="NORMAL production path: "..key
+ return true,"Explicit user choice; no claim that this path wins without comparable live results"
 end
 
 -- Isolated resumable diagnostic. Completed rows are immutable evidence; reset
@@ -4236,6 +4587,7 @@ function benchmark.showNotReady(message)
  benchmark.notReadyPanel=panel
 end
 function benchmark.start(options)
+ if v82.normalAB.active then return false,"Finish/cancel NORMAL A/B first" end
  options=options or {};if type(options)~="table" then return false,"Expected options table" end
  local count=options.SamplesPerInterval or 40
  if type(count)~="number" or count%1~=0 or count<30 or count>50 then return false,"SamplesPerInterval must be 30–50" end
@@ -4446,10 +4798,10 @@ local function toggleAuto()
 	updateUI()
 end
 
-palette.inspectButton.Activated:Connect(function() palette.inspectCustomUI();palette.custom.result="Read-only inventory ready; test each visible candidate explicitly";lastMessage=palette.custom.result;updateUI() end)
-palette.probe1.Activated:Connect(function() palette.probeCustom(1) end)
-palette.probe2.Activated:Connect(function() palette.probeCustom(2) end)
-palette.copyCustom.Activated:Connect(function() palette.copy(palette.customReport(),"AutoPainterCustomUIReport.txt") end)
+palette.inspectButton.Activated:Connect(function() local ok,why=v82.normalAB.start();lastMessage=tostring(why);updateUI() end)
+palette.probe1.Activated:Connect(function() local ok,why=v82.normalAB.start({SpacingControls=true});lastMessage=tostring(why);updateUI() end)
+palette.probe2.Activated:Connect(function() local order={A="B",B="C",C="A"};local ok,why=v82.normalAB.setProduction(order[v82.normalAB.production]);lastMessage=tostring(why);updateUI() end)
+palette.copyCustom.Activated:Connect(function() palette.copy(v82.normalAB.report(),"AutoPainterNormalABReport.txt") end)
 palette.buttons[8].Activated:Connect(function() palette.validateNative() end)
 palette.buttons[9].Activated:Connect(function()
  if running or workerActive then return end
@@ -4457,7 +4809,7 @@ palette.buttons[9].Activated:Connect(function()
  palette.buttons[9].Text="Camera movement: "..v82.camera.mode;updateUI()
 end)
 palette.buttons[10].Activated:Connect(function()
- v82.outlines=v82.outlines==false;for _,entry in ipairs(entries) do v7.draw(entry) end
+ v7.visual.toggle(v82.outlines==false)
  palette.buttons[10].Text="Protected outlines: "..(v82.outlines and "ON" or "OFF")
 end)
 
@@ -4489,6 +4841,17 @@ connectLifetime(UserInputService.InputBegan, function(input, processed)
 	end
 	if processed or UserInputService:GetFocusedTextBox() then return end
  if table.find({Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right},input.KeyCode) then v82.camera.manualUntil=os.clock()+CFG.CameraManualQuiet;if cameraSnapshot then forceRelease();restoreView() end end
+ if input.KeyCode==Enum.KeyCode.I and not running then
+  local entry=lookup[mouse.Target]
+  if entry then
+   local item=mode=="CIVIL WAR" and entry.civilControl or nil
+   lastMessage=entryLabel(entry).." | Source: "..(item and item.generated and "GENERATED" or item and "NATIVE" or "NORMAL")
+    .." | Exact RGB: "..rgbText(targetColor(entry)).." | Generated ordinal: "..tostring(item and item.ordinal or "NONE")
+    .." | Native palette index: "..tostring(item and not item.generated and item.index or "NONE")
+   updateUI()
+  end
+  return
+ end
 	if input.KeyCode == Enum.KeyCode.Q then
 		toggleAuto()
 		return
@@ -4577,7 +4940,7 @@ connectLifetime(mouse.Move,function()
 end)
 connectLifetime(RunService.RenderStepped,function() v82.observeSelection() end)
 connectLifetime(UserInputService.WindowFocusReleased,function()
- local resume=(running or workerActive) and not palette.validating and not benchmark.active
+ local resume=(running or workerActive) and not palette.validating and not benchmark.active and not v82.normalAB.active
  focused=false;v82.selectionStopStroke();palette.resumeNeeded=resume
  stop("Client lost focus; waiting for stable focus/tool before resume")
  if resume then v82.resumeIntent={mode=mode,target=normalTarget,at=math.huge} end
@@ -4590,15 +4953,15 @@ end)
 connectLifetime(player:GetPropertyChangedSignal("Character"),function()
  palette.invalidateBindings("Character changed")
  if running and not palette.validating and not benchmark.active then
-  local intent={mode=mode,target=normalTarget,at=os.clock()+CFG.FocusStable}
+  local intent=not v82.normalAB.active and {mode=mode,target=normalTarget,at=os.clock()+CFG.FocusStable} or nil
   stop("Character changed; waiting for native tool");palette.resumeNeeded=true;v82.resumeIntent=intent
  end
 end)
 
 connectLifetime(Workspace.DescendantRemoving, function(object)
 	if lookup[object] then removeProvince(object) end
-	if running and not palette.validating and not benchmark.active and not palette.generatedOwnsRemoval(object) and (object==activationTool or object==player.Character) then
-  local intent={mode=mode,target=normalTarget,at=os.clock()+CFG.FocusStable};stop("Tool lost; released native hold");v82.resumeIntent=intent
+	if running and not palette.validating and not benchmark.active and not palette.generatedOwnsRemoval(object) and not v82.normalAB.ownsRemoval(object) and (object==activationTool or object==player.Character) then
+  local intent=not v82.normalAB.active and {mode=mode,target=normalTarget,at=os.clock()+CFG.FocusStable} or nil;stop("Tool lost; released native hold");v82.resumeIntent=intent
  end
 end)
 
@@ -4617,6 +4980,15 @@ connectLifetime(RunService.Heartbeat, function()
    if intent.mode=="NORMAL" and not colorsMatch(paletteColor(),intent.target) then v82.resumeIntent=nil;lastMessage="NORMAL target color changed — restart required"
    else v82.resumeIntent=nil;v82.resuming=true;local resumed=startAuto();v82.resuming=false;if not resumed then v82.resumeIntent=intent end end
   end
+ end
+ if v82.normalAB.active and v82.normalAB.phase then
+  local phase=v82.normalAB.phase
+  phase.peakDirty=math.max(phase.peakDirty,#dirty)
+  local attacks=0;for _,at in ipairs(v82.attacks) do if now-at<=2 then attacks+=1 end end
+  phase.peakAttack=math.max(phase.peakAttack,attacks/2)
+  if v82.overload then phase.overloadSeconds+=math.max(0,now-(phase.lastTick or now)) end
+  phase.lastTick=now
+  if now-phase.started>=v82.normalAB.seconds then wakeWork() end
  end
 	if alive and now>=nextReconcileAt then nextReconcileAt=now+v82.reconcileInterval;reconcile() end
 	if workerActive and (ownedInput or (#dirty>0 and (not nextWorkerAt or now>=nextWorkerAt))) then wakeWork() end
@@ -4637,6 +5009,9 @@ benchmark.liveCopy.Activated:Connect(function() palette.copy(benchmark.report(),
 benchmark.cancelButton.Activated:Connect(benchmark.cancel)
 
 local api = {
+ StartNormalAB=v82.normalAB.start,GetNormalABReport=v82.normalAB.report,SetNormalProductionPath=v82.normalAB.setProduction,
+ CancelNormalAB=function() if v82.normalAB.active then stop("NORMAL A/B canceled") end end,
+ GetNormalABState=function() return {Active=v82.normalAB.active,State=v82.normalAB.state,Production=v82.normalAB.production,Phase=v82.normalAB.index} end,
  StartPaintCooldownBenchmark=benchmark.start,CancelPaintCooldownBenchmark=benchmark.cancel,ResumePaintCooldownBenchmark=benchmark.resume,
  PausePaintCooldownBenchmark=function() if not benchmark.active then return false end;benchmark.pause("PAUSED - USER","Paused by user; evidence retained. Resume Benchmark to continue.",true);return true end,
  GetPaintCooldownBenchmarkReport=benchmark.report,
@@ -4656,7 +5031,10 @@ local api = {
   if cameraSnapshot then forceRelease();restoreView() end
   v82.camera.mode=value;v82.camera.circuit="CLOSED";v82.camera.failures=0;v82.camera.window={};v82.camera.paintWindow={};return true
  end,
- SetProtectedOutlines=function(value) v82.outlines=value~=false;for _,e in ipairs(entries) do v7.draw(e) end end,
+ SetProtectedOutlines=v7.visual.toggle,
+ SetProtectedFill=function(value) v82.fill=value==true;for _,e in ipairs(entries) do v7.draw(e) end end,
+ GetVisualRendererStats=v7.visual.stats,
+ GetGeneratedDistanceReport=palette.perceptual.report,
 
  GetLearnedPaletteReport=function() return palette.database(false) end,
  CopyLearnedPalette=function() return palette.copy(palette.database(true),"AutoPainterLearnedPalette.txt") end,
@@ -4686,6 +5064,7 @@ local api = {
 			ActualRGB=rgbText(e.part.Color),TargetRGB=rgbText(targetColor(e)),DeltaRGB=colorDelta(e.part.Color,targetColor(e)),
 			LocalColorEventReceivedAt=e.lastColorEventTime,LocalDirtyQueuedAt=e.dirtyQueueInsertTime,LocalColorEventToQueueMs=e.localQueueLatencyMs,
 			LastWrongColorChange=e.lastWrongColorChange,FreshAttackAt=e.freshAttackAt,
+			ColorSource=mode=="NORMAL" and "NORMAL" or e.civilControl and (e.civilControl.generated and "GENERATED" or "NATIVE") or "UNASSIGNED",GeneratedOrdinal=e.civilControl and e.civilControl.ordinal,
 			AssignedColorName=e.civilControl and e.civilControl.signature.Name,LearnedPaletteIndex=e.civilControl and e.civilControl.index,PaletteControlPath=e.civilControl and e.civilControl.path,
 			MarkerType="PROVINCE_SILHOUETTE",MarkerColor=e.box and e.box.OutlineColor,
    AcquisitionState=e.AcquisitionState,CursorOnlyFailuresSinceSuccess=e.CursorOnlyFailuresSinceSuccess or 0,CameraFallbackAttemptsThisDirtyEpisode=e.CameraFallbackAttemptsThisDirtyEpisode or 0,
@@ -4728,7 +5107,7 @@ local api = {
 	Clear = clearAll,
 	GetStats = function()
 		return {
-			Version = 8.2, Build = "8.2-native-rgb",
+			Version = 8.2, Build = "8.2-master-ab",
 			Running = running,
 			Mode = mode,
 			Selected = activeCount(),

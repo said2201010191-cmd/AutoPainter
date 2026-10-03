@@ -13,6 +13,13 @@ click=source[source.index('function palette.click('):source.index('function pale
 click=re.sub(r'^.*palette.currentEntry and not shouldTarget.*\n','',click,flags=re.M)
 assert hashlib.sha256(click.encode()).hexdigest()=="15b6443094e923565cb8455c1289b59aab2e56a0684a6ac4376fea79e4268f31", 'Native palette click/settle/hold changed'
 print('Native palette click sequence/timings unchanged; clean gate added',flush=True)
+for start,end,digest in [
+    ('function palette.prepareGenerated(', 'function palette.generatedResult(', '9fd9fb1241685a83144514b38a6c23fc4d6c4d3c7fe91387aa65b0704b09ce01'),
+    ('local function acquireFast(', 'local function startOrRetainHold(', 'cc16f47ed51d9e6e82d50c12bfdf63de41b79b0a4d4cd26b9e41db78125b3ef1')]:
+    block=source[source.index(start):source.index(end,source.index(start))]
+    assert hashlib.sha256(block.encode()).hexdigest()==digest, 'Live-proven component changed: '+start
+print('Generated native transport and acquireFast remain byte-identical to native-RGB main',flush=True)
+
 for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|hookmetamethod|firesignal|getconnections|require|decompile)\s*\(',r'\bmouse\.Target\s*=(?!=)',r'\.OnClientInvoke\s*=']:
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
@@ -25,6 +32,14 @@ assert source.index('function palette.prepareGenerated(')<write<source.index('fu
 # Reverse that exact allowlist and compare the ENTIRE controller to main 9900a73.
 # Civil, input, target/dwell/scheduler and benchmark algorithms cannot drift silently.
 prior=source
+master=json.loads((root/'tests/master_scope.json').read_text())
+lines=prior.splitlines(True)
+for change in reversed(master['allowedChanges']):
+    assert ''.join(lines[change['start']:change['end']])==change['after'], 'Master scope changed after review'
+    lines[change['start']:change['end']]=change['before'].splitlines(True)
+prior=''.join(lines)
+assert hashlib.sha256(prior.encode()).hexdigest()==master['baseSourceSHA256'], 'Unreviewed master changes'
+print('Master edits reverse exactly to native-RGB baseline; historical freezes retained',flush=True)
 native_scope=json.loads((root/'tests/native_rgb_scope.json').read_text())
 for change in reversed(native_scope['allowedChanges']):
     assert prior.count(change['after'])==change['count'], 'Native RGB scope count changed'
@@ -49,7 +64,7 @@ frozen=re.sub(r'^ PausePaintCooldownBenchmark=.*\n','',frozen,flags=re.M)
 freeze=json.loads((root/'tests/benchmark_production_freeze.json').read_text())
 assert hashlib.sha256(frozen.encode()).hexdigest()==freeze['sha256'], 'Benchmark-only scope: production source changed'
 print('Entire production source matches e67a01b; benchmark-only implementation/bridges excepted',flush=True)
-for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau', 'native_rgb.spec.luau']:
+for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau', 'public150.spec.luau', 'native_rgb.spec.luau', 'master_revision.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)
         f.write('local SOURCE = [======[\n'+source+'\n]======]\n'+(root/'tests'/suite).read_text())

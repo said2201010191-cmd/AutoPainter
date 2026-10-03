@@ -43,6 +43,7 @@ function Mock.new(deferred)
    if not w.stalePalette then w.nativePaletteColor=c end
    w.player:SetAttribute("PaintBucketColor",c);w.internalWrites+=1
   end
+  if not w.noPaletteClicked then b.MouseButton1Click:Fire() end
   if not w.noPaletteActivated then b.Activated:Fire() end
   if w.afterPaletteSelect then w.afterPaletteSelect(b) end
  end

@@ -177,7 +177,7 @@ for _,deferred in ipairs({false,true}) do
   for i=1,15 do local part=w.province(-200+i*20,0);w.mouse.Target=part;w.mouse.Move:Fire();w.flush();w.mouse.Move:Fire();w.flush() end
   w.button=false;w.input.InputEnded:Fire({UserInputType=w.env.Enum.UserInputType.MouseButton1},false);w.flush();t.finishSelection()
   assert(a.GetStats().Selected==15 and next(w.downs)==nil)
-  for _,e in ipairs(t.dirty) do assert(e.box.ClassName=="Highlight" and e.box.Adornee==e.part) end
+  for _,e in ipairs(t.dirty) do assert(e.box.ClassName=="Highlight" and e.box.Adornee==e.proxy.Parent and e.proxy.CFrame==e.part.CFrame) end
   clean(w,a)
  end)
 end

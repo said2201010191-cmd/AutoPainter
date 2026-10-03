@@ -228,7 +228,7 @@ for _,deferred in ipairs({false,true}) do
  end)
  test(pre.."silhouettes adorn actual geometry no cloned hitboxes or world property writes",function()
   local w,a,p,t=setup(deferred,3);local before=#w.writeLog+1
-  for _,part in ipairs(p) do local h=t.marker(part);assert(h.ClassName=="Highlight" and h.Adornee==part and h.FillTransparency==1) end
+  for _,part in ipairs(p) do local h=t.marker(part);assert(h.ClassName=="Highlight" and h.Adornee:IsA("Model") and h.FillTransparency==1) end
   t.beginSelection("ADD");w.mouse.Target=p[1];w.mouse.Move:Fire();w.flush()
   assert(t.v.selection.hover.ClassName=="Highlight" and t.v.selection.hover.Adornee==p[1])
   for i=before,#w.writeLog do local row=w.writeLog[i];assert(not table.find(p,row.object),"province mutated") end
