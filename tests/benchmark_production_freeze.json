@@ -1,0 +1,10 @@
+{
+  "baseCommit": "e67a01b500adce0ad3bca25dc0176a807bd4809b",
+  "sha256": "4f272a52e9cddf612ef354013c2d7a23abcff2de75d4526a7308c57d2ed37480",
+  "exclusions": [
+    "isolated benchmark implementation",
+    "stop() diagnostic-only pause bridge",
+    "benchmark resume/add button visibility",
+    "benchmark API pause label"
+  ]
+}

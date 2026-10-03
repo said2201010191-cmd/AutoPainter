@@ -17,6 +17,18 @@ for forbidden in [r'[:.]\s*(InvokeServer|FireServer)\s*\(', r'\b(?:hookfunction|
     assert not re.search(forbidden,source),forbidden
 assert not re.search(r'\.Color\s*(?:==|~=)',source), 'Raw part Color equality'
 assert 'SetAttribute("PaintBucketColor"' not in source, 'Unverified palette attribute write'
+# Benchmark-only scope freeze: all production source, including pacing, Civil,
+# generated-color diagnostics, camera/targeting and scheduler is byte-identical.
+frozen=source
+start=frozen.index('-- Isolated resumable diagnostic.')
+end=frozen.index('-- Explicit, bounded native-UI investigation.',start)
+frozen=frozen[:start]+frozen[end:]
+frozen=re.sub(r' if benchmark.active and not benchmark.finishing then\n.*?\n end\n', '',frozen,flags=re.S,count=1)
+frozen=re.sub(r'^ benchmark.resumeButton.Visible=.*\n','',frozen,flags=re.M)
+frozen=re.sub(r'^ PausePaintCooldownBenchmark=.*\n','',frozen,flags=re.M)
+freeze=json.loads((root/'tests/benchmark_production_freeze.json').read_text())
+assert hashlib.sha256(frozen.encode()).hexdigest()==freeze['sha256'], 'Benchmark-only scope: production source changed'
+print('Entire production source matches e67a01b; benchmark-only implementation/bridges excepted',flush=True)
 for suite in ['handsfree_activation.spec.luau', 'v82_regression.spec.luau', 'v82_livefix.spec.luau', 'combat.spec.luau', 'cooldown_benchmark.spec.luau', 'followup.spec.luau']:
     with tempfile.NamedTemporaryFile('w',suffix='.luau',dir=root/'tests',delete=False) as f:
         path=Path(f.name)

@@ -2844,8 +2844,8 @@ end
 
 local function stop(reason)
  if benchmark.active and not benchmark.finishing then
-  local state=not focused and "PAUSED - FOCUS" or (activationTool and activationTool.Parent~=player.Character) and "PAUSED - TOOL" or "PAUSED - TARGET"
-  benchmark.pause(state,reason or "Paused",state=="PAUSED - TARGET");return
+  local state=not focused and "PAUSED - FOCUS" or (activationTool and activationTool.Parent~=player.Character) and "PAUSED - TOOL" or "PAUSED - USER"
+  benchmark.pause(state,reason or "Paused by user; Resume Benchmark to continue",state=="PAUSED - USER");return
  end
  palette.activeSnapshot=nil
 	v82.resumeIntent=nil
@@ -3350,7 +3350,7 @@ local function dirtyCount() return #dirty end
 
 local function updateUI()
 	if not alive then return end
- benchmark.resumeButton.Visible=benchmark.active and benchmark.paused and not selecting;benchmark.addButton.Visible=benchmark.active and benchmark.paused and not selecting
+ benchmark.resumeButton.Visible=benchmark.active and benchmark.paused and not selecting;benchmark.addButton.Visible=benchmark.active and benchmark.paused and benchmark.state=="PAUSED - COHORT" and not selecting
  benchmark.cancelButton.Visible=benchmark.active;benchmark.liveCopy.Visible=benchmark.active;benchmark.liveStart.Visible=running and not benchmark.active
 	v82.cameraLockButton.Visible=running;v82.cameraLockButton.Text="Camera movement: "..v82.camera.mode
  frame.Visible = not running and not selecting and not benchmark.active
@@ -3578,49 +3578,58 @@ function benchmark.pause(state,reason,manual,delay)
  local changed=not benchmark.paused or benchmark.state~=state or benchmark.pauseReason~=reason
  benchmark.paused=true;benchmark.manual=benchmark.manual or manual==true
  benchmark.state=state;benchmark.pauseReason=reason;benchmark.detail=reason
- benchmark.retryReadyAt=os.clock()+(delay or 0);benchmark.stableAt=nil
+ if changed then benchmark.retryReadyAt=os.clock()+(delay or 0);benchmark.stableAt=nil end
  if running then running=false;workerToken+=1 end
  v82.resumeIntent=nil;forceRelease();palette.activeSnapshot=nil
  if changed then benchmark.log("PAUSE",reason) end
 end
+function benchmark.paletteReady()
+ for _,color in ipairs({benchmark.color,benchmark.resetColor}) do
+  local item=palette.find(color)
+  if not item or not item.semanticVerified or item.pendingVerification or not palette.valid(item) then return false end
+ end
+ return true
+end
 function benchmark.valid()
  if not benchmark.open() or benchmark.paused then return false end
- if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Return focus to Roblox / close chat; evidence retained",false);return false end
+ if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Your results are safe. Click Roblox / close chat and menus. Benchmark resumes automatically when stable.",false);return false end
  if not benchmark.tool or not benchmark.tool.Enabled or benchmark.tool.Parent~=player.Character or activationTool~=benchmark.tool or benchmark.generation~=equippedGeneration then
-  benchmark.pause("PAUSED - TOOL","Equip the native PaintBucket; evidence retained",false);return false
+  benchmark.pause("PAUSED - TOOL","Your results are safe. Equip and enable PaintBucket. Benchmark resumes automatically when stable.",false);return false
+ end
+ if not ownedInput and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+  benchmark.pause("PAUSED - RELEASE","Mouse1 is held outside benchmark ownership. Release it; automatic resume after a stable unpressed state.",false);return false
  end
  if benchmark.state=="RUNNING TEST" and not colorsMatch(paletteColor(),benchmark.color) then
-  benchmark.pause("PAUSED - TARGET","Benchmark color changed. Restore "..rgbText(benchmark.color).." through the native palette, then Resume.",true);return false
+  benchmark.pause("PAUSED - PALETTE","Selected paint color changed. The verified benchmark color will be restored through the native palette after recovery.",false);return false
  end
  return running and workerToken==benchmark.token
 end
 function benchmark.ready(phase)
  while benchmark.open() do
   local tool=findBucket()
-  if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Return focus to Roblox / close chat; evidence retained",false)
-  elseif selecting then benchmark.pause("PAUSED - TARGET","Finish selection, then RESUME BENCHMARK",true)
-  elseif not tool or not tool.Enabled or tool.Parent~=player.Character then benchmark.pause("PAUSED - TOOL","Equip the native PaintBucket; evidence retained",false)
-  elseif not benchmark.paused and benchmark.tool and (tool~=benchmark.tool or equippedGeneration~=benchmark.generation) then benchmark.pause("PAUSED - TOOL","Tool session changed; rebinding at a released boundary",false)
+  if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then benchmark.pause("PAUSED - FOCUS","Your results are safe. Click Roblox / close chat and menus. Benchmark resumes automatically when stable.",false)
+  elseif selecting then benchmark.pause("PAUSED - USER","Finish selection, then Resume Benchmark. Results are safe.",true)
+  elseif not tool or not tool.Enabled or tool.Parent~=player.Character then benchmark.pause("PAUSED - TOOL","Equip and enable PaintBucket. Results are safe; automatic resume when stable.",false)
+  elseif not benchmark.paletteReady() then benchmark.pause("PAUSED - PALETTE","Native target/reset swatches are detached or unverified. Restore/validate the native palette; automatic resume when bindings return.",false)
+  elseif not benchmark.paused and benchmark.tool and (tool~=benchmark.tool or equippedGeneration~=benchmark.generation) then benchmark.pause("PAUSED - TOOL","Tool session changed; resuming automatically at a released boundary.",false)
   else
    if benchmark.paused then
-    if ownedInput or releaseBlocked then
-     if not settleRelease() then benchmark.manual=true;benchmark.pauseReason="Release still unresolved — release Mouse1, then Resume" end
-    end
+    if ownedInput or releaseBlocked then settleRelease() end
     if not benchmark.manual and not ownedInput and not releaseBlocked and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
      benchmark.stableAt=benchmark.stableAt or os.clock()
-     if os.clock()>=benchmark.retryReadyAt and os.clock()-benchmark.stableAt>=CFG.FocusStable then
+     if os.clock()>=(benchmark.retryReadyAt or 0) and os.clock()-benchmark.stableAt>=CFG.FocusStable then
       discoverActivation(tool)
       if primaryMethod and primaryMethod.Name=="VirtualInput.SendMouseButton" then
-       primaryFailures=0 -- Bounded unqualified-sample count still stops repeated failures until explicit Resume.
-       benchmark.paused=false;benchmark.segment+=1;benchmark.tool=tool;benchmark.generation=equippedGeneration
+       primaryFailures=0;benchmark.paused=false;benchmark.segment+=1;benchmark.lastNativeDown=nil
+       benchmark.tool=tool;benchmark.generation=equippedGeneration
        workerToken+=1;benchmark.token=workerToken;running=true;benchmark.state=phase
        benchmark.log("RESUME",benchmark.pauseReason);benchmark.pauseReason=nil
-      else benchmark.manual=true;benchmark.pauseReason="VirtualInput unavailable; restore support and Resume" end
+      else benchmark.manual=true;benchmark.pauseReason="Native VirtualInput is unavailable. Restore client input support, then Resume Benchmark." end
      end
-    end
+    else benchmark.stableAt=nil end
    else
     if not benchmark.tool then discoverActivation(tool);benchmark.tool=tool;benchmark.generation=equippedGeneration end
-    if not primaryMethod then benchmark.pause("PAUSED - TOOL","VirtualInput unavailable; restore support then Resume",true)
+    if not primaryMethod or primaryFailures>=CFG.ConfirmedNoEffectLimit then benchmark.pause("PAUSED - TOOL","Native VirtualInput repeatedly failed. Restore client input support, then Resume Benchmark.",true)
     else benchmark.state=phase;return true end
    end
   end
@@ -3646,24 +3655,30 @@ function benchmark.mean(values)
  local sum=0;for _,value in ipairs(values) do sum+=value end;return #values>0 and sum/#values or 0
 end
 function benchmark.summarize(row,final)
- row.Attempts,row.Successes,row.ValidNoEffect,row.Unqualified,row.Pending=0,0,0,0,0
- row.Latencies,row.Spacings={},{}
+ row.RawAttempts=#row.Records
+ row.Attempts,row.QualifiedAttempts,row.Successes,row.ValidNoEffect,row.Unqualified,row.Pending=0,0,0,0,0,0
+ row.AcquireFailures,row.CleanSkipped=0,0;row.Latencies,row.Spacings={},{}
  for _,record in ipairs(row.Records) do
   if record.DownSent then row.Attempts+=1 end
+  if record.AcquireFailed then row.AcquireFailures+=1 end
+  if record.Result=="CLEAN_SKIPPED" then row.CleanSkipped+=1 end
   if record.SpacingMs then table.insert(row.Spacings,record.SpacingMs) end
-  if record.Qualified and record.ColorAt then
-   record.Result="OBSERVED_SUCCESS";row.Successes+=1;table.insert(row.Latencies,math.max(0,record.ColorAt-record.DownObservedAt)*1000)
-  elseif record.ObservationInterrupted then record.Result="UNQUALIFIED_OBSERVATION_INTERRUPTED";row.Unqualified+=1
-  elseif not record.Qualified then record.Result=record.Result or "UNQUALIFIED";row.Unqualified+=1
-  elseif final or os.clock()>=(record.ObserveUntil or math.huge) then record.Result="VALID_NO_EFFECT";row.ValidNoEffect+=1
-  else record.Result="PENDING_COLOR";row.Pending+=1 end
+  if record.ObservationInterrupted and not record.ColorAt then record.Qualified=false;record.Result="UNQUALIFIED_OBSERVATION_INTERRUPTED" end
+  if record.Qualified then
+   row.QualifiedAttempts+=1
+   if record.ColorAt then
+    record.Result="OBSERVED_SUCCESS";row.Successes+=1;table.insert(row.Latencies,math.max(0,record.ColorAt-record.DownObservedAt)*1000)
+   elseif final or os.clock()>=(record.ObserveUntil or math.huge) then record.Result="VALID_NO_EFFECT";row.ValidNoEffect+=1
+   else record.Result="PENDING_COLOR";row.Pending+=1 end
+  else record.Result=record.Result or "UNQUALIFIED";row.Unqualified+=1 end
  end
- row.SuccessPercent=row.Attempts>0 and row.Successes/row.Attempts*100 or 0
+ row.SuccessPercentQualified=row.QualifiedAttempts>0 and row.Successes/row.QualifiedAttempts*100 or 0
+ row.SuccessPercent=row.SuccessPercentQualified -- compatibility for report consumers
 end
 function benchmark.progress(row)
  benchmark.summarize(row,false)
  if benchmark.paused then benchmark.detail=benchmark.pauseReason;return end
- benchmark.detail=string.format("Interval %d/13 — %d ms\nSamples %d/%d · Successes %d · No-effect %d · Unqualified %d\nDo not touch mouse/color/tool",benchmark.index,row.IntervalMs,row.Attempts,benchmark.samples,row.Successes,row.ValidNoEffect,row.Unqualified)
+ benchmark.detail=string.format("Interval %d/13 — %d ms\nQualified samples: %d/%d · Successes: %d\nNo-effect: %d · Unqualified skipped: %d\nDo not touch mouse/color/tool. Next interval starts automatically.",benchmark.index,row.IntervalMs,row.QualifiedAttempts,benchmark.samples,row.Successes,row.ValidNoEffect,row.Unqualified)
 end
 function benchmark.shot(entry,interval,phase)
  if not benchmark.ready(phase) then return nil end
@@ -3675,13 +3690,13 @@ function benchmark.shot(entry,interval,phase)
  local candidate,budget=visiblePoint(entry)
  if budget then RunService.Heartbeat:Wait();if benchmark.valid() then candidate=visiblePoint(entry) end end
  local acquired=benchmark.valid() and acquireFast(candidate or {entry=entry,tier=3},benchmark.token)
- if not benchmark.valid() then settleRelease();v7.unlockTarget(entry);currentEntry=nil;return nil end
+ if not benchmark.valid() then record.Result="UNQUALIFIED_GLOBAL_INTERRUPTION";record.GlobalInterrupted=true;settleRelease();v7.unlockTarget(entry);currentEntry=nil;return record end
  if not acquired or mouse.Target~=entry.part then
   record.Result="UNQUALIFIED_ACQUIRE";record.AcquireFailed=true
  elseif colorsMatch(entry.part.Color,normalTarget) then record.Result="CLEAN_SKIPPED"
  else
   if benchmark.lastNativeDown then benchmark.waitUntil(benchmark.lastNativeDown+interval) end
-  if not benchmark.valid() then settleRelease();v7.unlockTarget(entry);currentEntry=nil;return nil end
+  if not benchmark.valid() then record.Result="UNQUALIFIED_GLOBAL_INTERRUPTION";record.GlobalInterrupted=true;settleRelease();v7.unlockTarget(entry);currentEntry=nil;return record end
   if mouse.Target~=entry.part or not colorsMatch(paletteColor(),normalTarget) then record.Result="UNQUALIFIED_TARGET_OR_PALETTE"
   elseif colorsMatch(entry.part.Color,normalTarget) then record.Result="CLEAN_SKIPPED"
   else
@@ -3701,17 +3716,14 @@ function benchmark.shot(entry,interval,phase)
     if record.ColorAt and record.DownObservedAt and record.ColorAt<record.DownObservedAt then
      record.Qualified=false;record.Result="UNQUALIFIED_COLOR_BEFORE_DOWN"
     end
-    if record.DownObservedAt then benchmark.lastNativeDown=record.DownObservedAt end
+    if record.DownObservedAt then record.ObserveUntil=record.DownObservedAt+benchmark.settle;benchmark.lastNativeDown=record.DownObservedAt end
    end
    if not record.Qualified then record.Result=record.Result or "UNQUALIFIED_INPUT_OR_TARGET" end
   end
  end
  local released=settleRelease();v7.unlockTarget(entry);currentEntry=nil
- if not released then benchmark.pause("PAUSED - TARGET","Release unresolved; release Mouse1, then Resume",true)
- elseif record.Result and record.Result~="CLEAN_SKIPPED" and not record.Qualified then
-  benchmark.badSamples+=1
-  benchmark.pause("PAUSED - TARGET","Unqualified sample saved; safely moving to another target",benchmark.badSamples>=3,.15)
- else benchmark.badSamples=0 end
+ if not released then benchmark.pause("PAUSED - RELEASE","Mouse1 release is not confirmed. Release Mouse1; benchmark resumes only after a stable unpressed state.",false) end
+ if benchmark.paused then record.GlobalInterrupted=true end
  return record
 end
 function benchmark.safeShot(entry,interval,phase)
@@ -3719,40 +3731,127 @@ function benchmark.safeShot(entry,interval,phase)
  local before=pressAttempts;local ok,value=pcall(benchmark.shot,entry,interval,phase)
  local partial=benchmark.inProgress;benchmark.inProgress=nil
  if ok then return value end
- -- A diagnostic exception is another recoverable, unqualified sample, not a new worker.
- if partial then
-  partial.DownSent=pressAttempts>before;partial.Qualified=false;partial.Result="UNQUALIFIED_EXCEPTION"
-  if ownedInput then inputEvidence(ownedInput);partial.DownObservedAt=ownedInput.MouseObservedAt;partial.DownAt=ownedInput.Started end
- end
- settleRelease();if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
- benchmark.pause("PAUSED - TARGET","Inspection/input error retained: "..tostring(value)..". Restore target/tool and Resume.",true)
+ partial=partial or {EntryId=entry.id,Position=tostring(entry.part.Position),Target=normalTarget,Segment=benchmark.segment}
+ partial.DownSent=pressAttempts>before;partial.Qualified=false;partial.Result="UNQUALIFIED_EXCEPTION";partial.Error=tostring(value)
+ if ownedInput then inputEvidence(ownedInput);partial.DownObservedAt=ownedInput.MouseObservedAt;partial.DownAt=ownedInput.Started end
+ local released=settleRelease();if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
+ if not released then benchmark.pause("PAUSED - RELEASE","Mouse1 release unresolved after sample error; waiting for a stable unpressed state.",false) end
+ benchmark.log("SAMPLE_ERROR","Entry "..entry.id..": "..tostring(value))
  return partial
 end
-function benchmark.chooseResetColor()
- local target=palette.find(benchmark.color)
- if not target or not target.semanticVerified then return nil,"Benchmark target has no verified native swatch for returning to its color" end
+function benchmark.chooseResetColor(color)
+ local target=palette.find(color or benchmark.color)
+ if not target or not target.semanticVerified or target.pendingVerification or not palette.valid(target) then return nil,"Target color is not a live verified native palette swatch" end
  for _,item in ipairs(palette.available()) do
-  if item.semanticVerified and not colorsMatch(item.color,benchmark.color) then return item.color end
+  if item.semanticVerified and not colorsMatch(item.color,color or benchmark.color) then return item.color end
  end
- return nil,"No second verified native palette color is available"
+ return nil,"A second live verified native palette color is needed for automatic reset"
+end
+function benchmark.reachable(entry)
+ -- Preflight is read-only: no cursor/camera/input. Projection + real raycast is
+ -- an estimate, never a claim that PlayerMouse acquired this province.
+ if not entry.active or not validProvince(entry.part) or not Workspace.CurrentCamera then return false end
+ local camera=Workspace.CurrentCamera;local params=RaycastParams.new()
+ params.FilterType=Enum.RaycastFilterType.Exclude;params.FilterDescendantsInstances=player.Character and {player.Character} or {}
+ for _,world in ipairs(targetPoints(entry.part)) do
+  local point,visible=camera:WorldToViewportPoint(world)
+  if visible and point.Z>0 then
+   local ray=camera:ViewportPointToRay(point.X,point.Y)
+   local hit=Workspace:Raycast(ray.Origin,ray.Direction*10000,params)
+   if hit and hit.Instance==entry.part then
+    local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X,point.Y) end)
+    local clear=ok
+    if ok then for _,object in ipairs(objects) do
+     if not object:IsDescendantOf(gui) and object.Visible and (object.Active or object:IsA("TextButton") or object:IsA("ImageButton") or object:IsA("TextBox")) then
+      clear=false
+      -- A verified native closer can remove its own overlay before service.
+      local native=palette.find(paletteColor());local root=native and native.button
+      while root and root.Parent and root.Parent~=playerGui do root=root.Parent end
+      if root and object:IsDescendantOf(root) and palette.verifiedOpener() and palette.valid(palette.closer) then clear=true end
+      if not clear then break end
+     end
+    end end
+    if clear then return true end
+   end
+  end
+ end
+ return false
+end
+function benchmark.preflight(count,options)
+ local missing={};local tool=findBucket();local color=paletteColor();local reset,why=benchmark.chooseResetColor(color)
+ if not tool then table.insert(missing,"PaintBucket is missing — obtain your normal bucket")
+ elseif tool.Parent~=player.Character or not tool.Enabled then table.insert(missing,"PaintBucket is not equipped/enabled — equip the normal bucket") end
+ if not focused or GuiService.MenuIsOpen or UserInputService:GetFocusedTextBox() then table.insert(missing,"Roblox is not ready for input — focus Roblox and close chat/menus") end
+ if ownedInput or held or releaseBlocked or inputBusy or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then table.insert(missing,"Mouse1 is held or unresolved — stop AutoPainter and release Mouse1") end
+ if v82.camera.mode~="LOCKED" then table.insert(missing,"Camera is not LOCKED — select LOCKED camera mode") end
+ if selecting or starting or palette.validating then table.insert(missing,"Selection/palette setup is unfinished — finish setup first") end
+ if options.AutoReset==false then table.insert(missing,"Automatic reset is required — remove AutoReset=false") end
+ if not reset then table.insert(missing,why) end
+ for _,c in ipairs(reset and {color,reset} or {color}) do
+  local item=palette.find(c)
+  if item and item.semanticVerified and palette.valid(item) then
+   if palette.visible(item.button) then
+    local point,reason=palette.center(item)
+    if not point then table.insert(missing,"Native swatch "..rgbText(c).." is not clickable — "..tostring(reason)) end
+   else
+    local opener=palette.verifiedOpener()
+    if not opener or not palette.center(opener) then table.insert(missing,"Native swatches are hidden — reveal them or learn/validate a clickable opener") end
+   end
+  end
+ end
+ if palette.closeRequired and (not palette.verifiedOpener() or not palette.valid(palette.closer)) then table.insert(missing,"Palette covers the map — learn/validate its opener and closer, or move the native palette off the targets") end
+ local pool={}
+ for _,entry in ipairs(entries) do
+  if benchmark.reachable(entry) then table.insert(pool,entry);if #pool>=count*2 then break end end
+ end
+ if #pool<count then table.insert(missing,string.format("Only %d visible/reachable protected provinces for %d samples — protect %d more visible tiles or reposition the camera before starting",#pool,count,count-#pool)) end
+ if #missing==0 then
+  local ok=pcall(discoverActivation,tool)
+  if not ok or not virtualInput or not primaryMethod or primaryMethod.Name~="VirtualInput.SendMouseButton" then table.insert(missing,"Native VirtualInput is unavailable — restore client input support before starting") end
+ end
+ if #missing>0 then return nil,"BENCHMARK NOT READY\nMissing / Fix:\n- "..table.concat(missing,"\n- ").."\nLearn/import and Validate Native Palette; select a verified target swatch, then press Paint Cooldown Benchmark again." end
+ return {tool=tool,color=color,reset=reset,pool=pool}
+end
+function benchmark.quarantine(entry,reason)
+ if benchmark.quarantined[entry] then return end
+ benchmark.quarantined[entry]=reason
+ benchmark.log("QUARANTINE","Entry "..entry.id..": "..reason.."; replacing with another protected target")
+ table.insert(benchmark.quarantineEvidence,{EntryId=entry.id,Position=tostring(entry.part.Position),Reason=reason,Interval=benchmark.index})
+end
+function benchmark.usable(entry)
+ return entry.active and validProvince(entry.part) and not benchmark.quarantined[entry]
 end
 function benchmark.prepareColor(color,entry,phase)
  normalTarget=color;rebuildDirty()
  while benchmark.open() do
   if not benchmark.ready(phase) then return false end
-  if colorsMatch(paletteColor(),color) then return true end
   local item=palette.find(color)
-  if not item or not item.semanticVerified then
-   benchmark.pause("WAITING FOR DIRTY","Select native target color "..rgbText(color)..", then Resume; no verified swatch writer",true)
+  local aimEntry=entry
+  for _,candidate in ipairs(benchmark.pool) do if benchmark.usable(candidate) and not colorsMatch(candidate.part.Color,color) then aimEntry=candidate;break end end
+  -- Palette selection itself is not paint work and has no province eligibility
+  -- gate. Reuse the proven native GUI click primitive, not Civil assignments.
+  palette.current={PaletteStep="IDLE",Steps={}};palette.currentEntry=nil;palette.activeSnapshot=palette.snapshot(item)
+  local started=os.clock()
+  local ok,selected,reason=pcall(function()
+   if not colorsMatch(paletteColor(),color) then
+    local opened,reason=palette.ensureOpen(item,benchmark.token);if not opened then return false,reason end
+    local selected,problem=palette.click(item,benchmark.token,"SELECTING",function() return colorsMatch(paletteColor(),color) end,color)
+    if not selected then return false,problem end
+   end
+   if aimEntry and benchmark.usable(aimEntry) and palette.mapBlocked(aimEntry,item) and palette.verifiedOpener() and palette.valid(palette.closer) then
+    local closed,problem=palette.click(palette.closer,benchmark.token,"CLOSING",function() return not palette.mapBlocked(aimEntry,item) end)
+    if not closed then return false,problem end
+   end
+   return colorsMatch(paletteColor(),color)
+  end)
+  palette.activeSnapshot=nil;benchmark.reset.PaletteMs+=(os.clock()-started)*1000
+  if ok and selected==true then return true end
+  if not benchmark.open() then return false end
+  if not benchmark.valid() then -- genuine global interruption already classified
+  elseif ownedInput or releaseBlocked then benchmark.pause("PAUSED - RELEASE","Native palette release unresolved. Release Mouse1; automatic recovery when stable.",false)
   else
-   -- Proxy keeps the real entry's Civil assignment/control entirely unchanged.
-   local aimEntry=entry
-   for _,candidate in ipairs(benchmark.cohort) do if candidate.active and not colorsMatch(candidate.part.Color,color) then aimEntry=candidate;break end end
-   local proxy={id=aimEntry.id,part=aimEntry.part,active=aimEntry.active,civilColor=color,civilControl=item,lastWorld=aimEntry.lastWorld}
-   local started=os.clock();local service={};local ok,why=palette.prepare(proxy,benchmark.token,service)
-   benchmark.reset.PaletteMs+=(os.clock()-started)*1000
-   if ok then return true end
-   if not benchmark.paused then benchmark.pause("PAUSED - TARGET","Open/restore the native palette, then Resume: "..tostring(why),true) end
+   benchmark.paletteFailure=tostring(ok and reason or selected)
+   benchmark.pause("PAUSED - PALETTE","Native palette could not select "..rgbText(color)..". Reveal/restore its controls; automatically retrying at a released boundary. "..benchmark.paletteFailure,false,1)
   end
  end
  return false
@@ -3760,149 +3859,237 @@ end
 function benchmark.ensureCohort()
  while benchmark.open() do
   local valid,seen={},{}
-  for _,entry in ipairs(benchmark.cohort) do if entry.active and validProvince(entry.part) then table.insert(valid,entry);seen[entry]=true end end
-  for _,entry in ipairs(entries) do if #valid>=benchmark.samples then break end;if not seen[entry] and validProvince(entry.part) then table.insert(valid,entry);seen[entry]=true end end
+  for _,entry in ipairs(benchmark.cohort) do if benchmark.usable(entry) then table.insert(valid,entry);seen[entry]=true end end
+  for _,entry in ipairs(benchmark.pool) do if #valid>=benchmark.samples then break end;if benchmark.usable(entry) and not seen[entry] then table.insert(valid,entry);seen[entry]=true end end
   benchmark.cohort=valid
   if #valid>=benchmark.samples then return true end
-  benchmark.pause("WAITING FOR DIRTY",string.format("Need %d more protected provinces. Nothing is broken. Add them, then Resume.",benchmark.samples-#valid),true)
+  -- Add only already-protected, reachable replacements. Quarantined entries
+  -- never return during this run. No task/request backlog is created.
+  local pooled={};for _,entry in ipairs(benchmark.pool) do pooled[entry]=true end
+  for _,entry in ipairs(entries) do
+   if not pooled[entry] and benchmark.usable(entry) and benchmark.reachable(entry) then table.insert(benchmark.pool,entry);table.insert(valid,entry);seen[entry]=true end
+   if #valid>=benchmark.samples then break end
+  end
+  if #valid>=benchmark.samples then return true end
+  benchmark.pause("PAUSED - COHORT",string.format("Only %d usable benchmark provinces remain; %d required. Protect %d more visible tiles, finish selection, then Resume. Bad targets and all results are retained.",#valid,benchmark.samples,benchmark.samples-#valid),true)
   if not benchmark.ready("SETUP") then return false end
  end
  return false
 end
-function benchmark.resetCohort()
- local color,why=benchmark.chooseResetColor();benchmark.resetColor=color
- if not benchmark.autoReset or not color then benchmark.manualResetReason=why or "Solo reset disabled";return false end
+function benchmark.resetCohort(excluded)
  benchmark.reset.Phases+=1;local started=os.clock()
- local needsReset=false
- for _,entry in ipairs(benchmark.cohort) do if not colorsMatch(entry.part.Color,color) then needsReset=true;break end end
- if needsReset and not benchmark.prepareColor(color,benchmark.cohort[1],"RESETTING") then return false end
- for i,entry in ipairs(benchmark.cohort) do
-  local failures=0
-  while benchmark.open() and entry.active and not colorsMatch(entry.part.Color,color) do
-   benchmark.detail=string.format("Resetting provinces... %d/%d\nDo not touch mouse/color/tool\nNext %d ms test starts automatically",i-1,benchmark.samples,benchmark.current.IntervalMs)
-   local record=benchmark.safeShot(entry,math.max(CFG.NormalDownSpacingDefault,pacing.interval),"RESETTING")
-   if record then
-    benchmark.reset.Attempts+=record.DownSent and 1 or 0
+ if not benchmark.ensureCohort() then return false end
+ -- Prepare reserves as well, outside measurement. This lets bad measured
+ -- targets be replaced without palette switching in a measured segment.
+ local i=1
+ while benchmark.open() do
+  if not benchmark.ensureCohort() then return false end
+  local entry=benchmark.pool[i];if not entry then break end;i+=1
+  if benchmark.usable(entry) and not (excluded and excluded[entry]) then
+   if not colorsMatch(entry.part.Color,benchmark.resetColor) then
+    if not benchmark.prepareColor(benchmark.resetColor,entry,"RESETTING") then return false end
+   end
+   local failures=0
+   while benchmark.open() and benchmark.usable(entry) and not colorsMatch(entry.part.Color,benchmark.resetColor) do
+    benchmark.detail=string.format("Resetting same provinces and replacement reserves: %d/%d\nNext interval: %d ms. No action required.",i-2,#benchmark.pool,benchmark.current.IntervalMs)
+    local record=benchmark.safeShot(entry,math.max(CFG.NormalDownSpacingDefault,pacing.interval),"RESETTING")
+    if not record then break end
+    benchmark.reset.Attempts+=1
     if record.Qualified then
      while benchmark.valid() and not record.ColorAt and os.clock()<record.ObserveUntil do RunService.Heartbeat:Wait() end
-    end
-    if colorsMatch(entry.part.Color,color) then benchmark.reset.Successes+=1;failures=0
-    else benchmark.reset.Failures+=1;failures+=1 end
-    benchmark.pending[entry]=nil
-    v82.push(benchmark.reset.Records,record,60)
-    if failures>=3 then benchmark.pause("PAUSED - TARGET","Reset target not confirmed: Entry "..entry.id..". Reposition/open palette and Resume",true);failures=0 end
+    else benchmark.reset.Unqualified+=1 end
+    if record.AcquireFailed then benchmark.reset.AcquireFailures+=1 end
+    local success=colorsMatch(entry.part.Color,benchmark.resetColor)
+    if success then benchmark.reset.Successes+=1;record.Result="RESET_CONFIRMED"
+    elseif not record.GlobalInterrupted and not benchmark.paused then benchmark.reset.Failures+=1;failures+=1 end
+    benchmark.pending[entry]=nil;v82.push(benchmark.reset.Records,record,120)
+    if failures>=2 then benchmark.quarantine(entry,"RESET_TARGET_NOT_CONFIRMED after two released attempts");break end
+    if not benchmark.ready("RESETTING") then return false end
+    if not colorsMatch(paletteColor(),benchmark.resetColor) and not benchmark.prepareColor(benchmark.resetColor,entry,"RESETTING") then return false end
    end
-   if not benchmark.ready("RESETTING") then return false end
   end
-  if not entry.active then benchmark.pause("PAUSED - TARGET","Reset province removed; add a replacement and Resume",true);return false end
  end
  benchmark.reset.TotalMs+=(os.clock()-started)*1000
+ benchmark.segment+=1;benchmark.lastNativeDown=nil
  return benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP")
 end
-function benchmark.prepareInterval()
+function benchmark.prepareInterval(excluded)
  if not benchmark.ensureCohort() then return false end
- local dirtyCount=0;for _,e in ipairs(benchmark.cohort) do if not colorsMatch(e.part.Color,benchmark.color) then dirtyCount+=1 end end
- if benchmark.autoReset and (benchmark.index>1 or dirtyCount<benchmark.samples) then benchmark.resetCohort() end
- while benchmark.open() do
-  if not benchmark.ready("SETUP") or not benchmark.ensureCohort() then return false end
-  dirtyCount=0;for _,e in ipairs(benchmark.cohort) do if not colorsMatch(e.part.Color,benchmark.color) then dirtyCount+=1 end end
-  if dirtyCount>=benchmark.samples then return benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP") end
-  benchmark.pause("WAITING FOR DIRTY",string.format("PAUSED — need %d more wrong-color protected provinces. Nothing is broken.\n%s\nRecolor/add them, select target %s, then Resume.",benchmark.samples-dirtyCount,benchmark.manualResetReason or "Native reset is not ready",rgbText(benchmark.color)),true)
- end
- return false
+ local needsReset=benchmark.index>1 or excluded~=nil
+ for _,entry in ipairs(benchmark.pool) do if benchmark.usable(entry) and not (excluded and excluded[entry]) and colorsMatch(entry.part.Color,benchmark.color) then needsReset=true;break end end
+ if needsReset then return benchmark.resetCohort(excluded) end
+ return benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP")
 end
-function benchmark.safePrepareInterval()
+function benchmark.safePrepareInterval(excluded)
  while benchmark.open() do
-  local ok,value=pcall(benchmark.prepareInterval)
+  local ok,value=pcall(benchmark.prepareInterval,excluded)
   if ok then return value end
   settleRelease();if v7.lock then v7.unlockTarget(v7.lock) end;currentEntry=nil
   palette.currentEntry=nil;palette.activeSnapshot=nil
-  benchmark.pause("PAUSED - TARGET","Reset/setup error retained: "..tostring(value)..". Restore the palette/tool and Resume.",true)
+  benchmark.pause("PAUSED - PALETTE","Native reset/setup could not inspect its controls: "..tostring(value)..". Restore the native palette; automatic retry when stable.",false,1)
   if not benchmark.ready("SETUP") then return false end
  end
  return false
 end
-function benchmark.recommend()
- local best=nil
- for _,row in ipairs(benchmark.rows) do
-  if row.Status=="COMPLETE" and not row.ContextChanged and row.ToolGeneration==equippedGeneration and row.Attempts>=30 and row.Unqualified==0 and row.SuccessPercent>=98 and row.CleanSkipped==0 and #row.Spacings>=row.Attempts-2 and row.Upgrade==pacing.context() then
+function benchmark.recommend(threshold)
+ local best=nil;threshold=threshold or 99
+ for _,row in ipairs(benchmark.rows or {}) do
+  if row.Status=="COMPLETE" and not row.ContextChanged and row.QualifiedAttempts>=30 and row.SuccessPercentQualified>=threshold and #row.Spacings>=row.QualifiedAttempts-2 then
    local actual=math.ceil(v82.percentile(table.clone(row.Spacings),.9))/1000
-   if not best or actual<best.Seconds then best={Seconds=actual,RequestedMs=row.IntervalMs,SuccessPercent=row.SuccessPercent,Attempts=row.Attempts} end
+   if not best or actual<best.Seconds or (actual==best.Seconds and row.IntervalMs<best.RequestedMs) then best={Seconds=actual,RequestedMs=row.IntervalMs,SuccessPercent=row.SuccessPercentQualified,Attempts=row.QualifiedAttempts} end
   end
  end
  return best
+end
+function benchmark.settleRow(row)
+ local deadline=os.clock()
+ for _,record in ipairs(row.Records) do if record.DownSent then deadline=math.max(deadline,record.ObserveUntil or 0) end end
+ while benchmark.open() and os.clock()<deadline do
+  if not benchmark.ready("OBSERVING RESULTS") then return false end
+  benchmark.detail=string.format("%d ms: observing delayed colors; no new input. Next interval starts automatically.",row.IntervalMs)
+  RunService.Heartbeat:Wait()
+ end
+ return benchmark.open()
+end
+function benchmark.record(row,record,last)
+ if row.Upgrade~=pacing.context() or row.ToolGeneration~=equippedGeneration then row.ContextChanged=true end
+ if record.DownObservedAt and last.segment==record.Segment then record.SpacingMs=last.observed and (record.DownObservedAt-last.observed)*1000 or nil end
+ if record.DownSent and last.segment==record.Segment then record.DispatchSpacingMs=last.dispatch and (record.DownAt-last.dispatch)*1000 or nil end
+ if record.DownObservedAt then last.observed=record.DownObservedAt;last.segment=record.Segment end
+ if record.DownSent then last.dispatch=record.DownAt end
+ table.insert(row.Records,record);benchmark.progress(row)
 end
 function benchmark.run()
  for index,row in ipairs(benchmark.rows) do
   if not benchmark.open() then break end
   benchmark.index=index;benchmark.current=row;benchmark.pending={};row.Status="SETUP"
   if not benchmark.safePrepareInterval() then break end
-  row.Status="RUNNING TEST";row.Upgrade=pacing.context();row.ToolGeneration=equippedGeneration;local lastObserved,lastDispatch,lastSegment=nil,nil,nil
-  for _,entry in ipairs(benchmark.cohort) do
-   local record=nil
-   repeat
-    if not benchmark.ready("RUNNING TEST") then break end
-    benchmark.progress(row);record=benchmark.safeShot(entry,row.IntervalMs/1000,"RUNNING TEST")
-   until record or not benchmark.open()
-   if not record then break end
-   if row.Upgrade~=pacing.context() or row.ToolGeneration~=equippedGeneration then row.ContextChanged=true end
-   if record.Result=="CLEAN_SKIPPED" then row.CleanSkipped+=1 end
-   if record.AcquireFailed then row.AcquireFailures+=1 end
-   if record.DownObservedAt and lastSegment==record.Segment then record.SpacingMs=lastObserved and (record.DownObservedAt-lastObserved)*1000 or nil end
-   if record.DownSent and lastSegment==record.Segment then record.DispatchSpacingMs=lastDispatch and (record.DownAt-lastDispatch)*1000 or nil end
-   if record.DownObservedAt then lastObserved=record.DownObservedAt;lastSegment=record.Segment end
-   if record.DownSent then lastDispatch=record.DownAt end
-   table.insert(row.Records,record);benchmark.progress(row)
-  end
-  if not benchmark.open() then benchmark.summarize(row,false);break end
-  local deadline=os.clock()+benchmark.settle
-  while benchmark.open() and os.clock()<deadline do
+  row.Status="RUNNING TEST";row.Upgrade=pacing.context();row.ToolGeneration=equippedGeneration
+  local used,last,cleanRetries={},{},{};benchmark.lastNativeDown=nil
+  while benchmark.open() and (row.QualifiedAttempts or 0)<benchmark.samples do
    if not benchmark.ready("RUNNING TEST") then break end
-   benchmark.detail=string.format("%d ms: observing delayed colors; no new input",row.IntervalMs);RunService.Heartbeat:Wait()
+   if not colorsMatch(paletteColor(),benchmark.color) then
+    if not benchmark.settleRow(row) or not benchmark.prepareColor(benchmark.color,benchmark.cohort[1],"SETUP") then break end
+    benchmark.segment+=1;benchmark.lastNativeDown=nil
+   end
+   local entry=nil
+   for _,candidate in ipairs(benchmark.cohort) do if benchmark.usable(candidate) and not used[candidate] then entry=candidate;break end end
+   if not entry then
+    for _,candidate in ipairs(benchmark.pool) do if benchmark.usable(candidate) and not used[candidate] then entry=candidate;break end end
+   end
+   if not entry then
+    if not benchmark.ensureCohort() then break end
+    for _,candidate in ipairs(benchmark.pool) do if benchmark.usable(candidate) and not used[candidate] then entry=candidate;break end end
+    if not entry then
+     benchmark.pause("PAUSED - COHORT","Not enough unused, usable protected provinces to finish this interval. Protect additional visible tiles and Resume; existing evidence is safe.",true)
+     if not benchmark.ready("SETUP") then break end
+     -- Force a pool refresh without reusing already measured targets.
+     local pooled={};for _,candidate in ipairs(benchmark.pool) do pooled[candidate]=true end
+     for _,candidate in ipairs(entries) do if not pooled[candidate] and benchmark.usable(candidate) and benchmark.reachable(candidate) then table.insert(benchmark.pool,candidate) end end
+    end
+    if not benchmark.settleRow(row) or not benchmark.safePrepareInterval(used) then break end
+   else
+    benchmark.progress(row)
+    local record=benchmark.safeShot(entry,row.IntervalMs/1000,"RUNNING TEST")
+    if record then
+     benchmark.record(row,record,last)
+     if record.GlobalInterrupted and not record.Qualified then
+      -- A global interruption is not an entry fault. Drain its observation
+      -- window before retrying/resetting this still-unqualified entry.
+      if not benchmark.settleRow(row) then break end
+     elseif record.Result=="CLEAN_SKIPPED" then
+      cleanRetries[entry]=(cleanRetries[entry] or 0)+1
+      if cleanRetries[entry]>=2 then
+       used[entry]=true;benchmark.quarantine(entry,"Repeated external recolor before DOWN")
+      elseif not benchmark.settleRow(row) or not benchmark.safePrepareInterval(used) then break end
+     else
+      used[entry]=true
+      if not record.Qualified and not record.GlobalInterrupted then benchmark.quarantine(entry,record.Result) end
+     end
+    end
+   end
   end
   if not benchmark.open() then benchmark.summarize(row,false);break end
+  if not benchmark.settleRow(row) then break end
   benchmark.summarize(row,true);row.Status="COMPLETE";benchmark.pending={}
-  benchmark.detail=string.format("%d ms TEST COMPLETE — %d/%d\nPreparing next test automatically",row.IntervalMs,row.Successes,row.Attempts)
+  benchmark.detail=string.format("%d ms TEST COMPLETE — %d/%d qualified successes. Preparing next test automatically.",row.IntervalMs,row.Successes,row.QualifiedAttempts)
   benchmark.log("INTERVAL_COMPLETE",benchmark.detail)
  end
 end
 function benchmark.report()
- local lines={"PAINT COOLDOWN BENCHMARK — resumable native input, AutoPainterRPCs=0",
+ local lines={"PAINT COOLDOWN BENCHMARK — autonomous native input, AutoPainterRPCs=0",
   "State="..tostring(benchmark.state).." | "..tostring(benchmark.detail),"PauseReason="..tostring(benchmark.pauseReason).." | ResumeRequiresClick="..tostring(benchmark.manual),
   "TargetRGB="..rgbText(benchmark.color).." | SamplesPerInterval="..tostring(benchmark.samples).." | EquippedPaintCooldown="..tostring(benchmark.upgrade),
   "Set +100% Paint Speed in-game before testing. Raw upgrade is recorded, not interpreted. Native local color evidence is not server acceptance/causality proof.",
-  "Colors observed asynchronously; measured attempts do not wait for color. Spacing is observed native DOWN-to-DOWN within uninterrupted segments; pauses and reset clicks excluded.",
-  "ObserveSeconds="..tostring(benchmark.settle).." | SoloReset="..tostring(benchmark.autoReset).." | ManualResetReason="..tostring(benchmark.manualResetReason),
-  "RequestedMs | Status | Attempts | Successes | VALID_NO_EFFECT | Unqualified | Pending | Success% | DOWN-color mean/P90 ms | Actual DOWN-DOWN min/mean/P90/max ms | LateSpacings | AcquireFailures | CleanSkipped"}
+  "Colors observed asynchronously; measured attempts do not wait for color. Actual DOWN-DOWN spacing uses observed native events within uninterrupted segments; reset clicks and pause boundaries excluded.",
+  "ObserveSeconds="..tostring(benchmark.settle).." | Automatic native reset required. Same cohort reused; bad targets replaced from protected reserves.",
+  "RequestedMs | Status | RawAttempts | QualifiedAttempts | Successes | VALID_NO_EFFECT | Unqualified | AcquireFailures | SuccessPercentQualified | DOWN-color mean/P90 ms | Actual DOWN-DOWN min/mean/P90/max ms | LateSpacings | CleanSkipped"}
  for _,row in ipairs(benchmark.rows or {}) do
   if row.Status~="COMPLETE" then benchmark.summarize(row,false) end
   local l,s=row.Latencies or {},row.Spacings or {};local sorted=table.clone(s);table.sort(sorted);local late=0
   for _,value in ipairs(s) do if value>row.IntervalMs+10 then late+=1 end end
-  table.insert(lines,string.format("%d | %s | %d | %d | %d | %d | %d | %.2f | %.2f/%.2f | %.2f/%.2f/%.2f/%.2f | %d | %d | %d",row.IntervalMs,row.Status,row.Attempts or 0,row.Successes or 0,row.ValidNoEffect or 0,row.Unqualified or 0,row.Pending or 0,row.SuccessPercent or 0,benchmark.mean(l),v82.percentile(table.clone(l),.9),sorted[1] or 0,benchmark.mean(s),v82.percentile(table.clone(s),.9),sorted[#sorted] or 0,late,row.AcquireFailures,row.CleanSkipped))
+  table.insert(lines,string.format("%d | %s | %d | %d | %d | %d | %d | %d | %.2f | %.2f/%.2f | %.2f/%.2f/%.2f/%.2f | %d | %d",row.IntervalMs,row.Status,row.RawAttempts or 0,row.QualifiedAttempts or 0,row.Successes or 0,row.ValidNoEffect or 0,row.Unqualified or 0,row.AcquireFailures or 0,row.SuccessPercentQualified or 0,benchmark.mean(l),v82.percentile(table.clone(l),.9),sorted[1] or 0,benchmark.mean(s),v82.percentile(table.clone(s),.9),sorted[#sorted] or 0,late,row.CleanSkipped or 0))
   if row.ContextChanged then table.insert(lines,"  ContextChanged=true — tool/upgrade changed; excluded from cadence recommendation") end
  end
- local recommendation=benchmark.recommend();table.insert(lines,"MeasuredCadenceCandidateMs="..tostring(recommendation and recommendation.Seconds*1000 or "none").." (P90 actual spacing of a completed >=98% row; not an absolute minimum)")
+ local complete=#(benchmark.rows or {})==13 and benchmark.rows[13].Status=="COMPLETE"
+ table.insert(lines,"RELIABILITY CURVE — observed local results, finite sample; not a proven minimum")
+ for _,threshold in ipairs({100,99,97.5,95}) do
+  local best=complete and benchmark.recommend(threshold)
+  table.insert(lines,string.format("Fastest >=%s%% qualified success: %s",tostring(threshold),best and string.format("requested %d ms; actual P90 %.1f ms; %.2f%% of %d",best.RequestedMs,best.Seconds*1000,best.SuccessPercent,best.Attempts) or "none / full sweep incomplete"))
+ end
+ local knee=nil;local previous=nil
+ for _,row in ipairs(benchmark.rows or {}) do
+  if row.Status=="COMPLETE" and not row.ContextChanged then
+   if previous and previous.SuccessPercentQualified>=95 and row.SuccessPercentQualified<95 and not knee then knee=string.format("between requested %d and %d ms (crossed below 95%% qualified success)",previous.IntervalMs,row.IntervalMs) end
+   previous=row
+  end
+ end
+ table.insert(lines,"ObservedReliabilityKnee="..(knee or "not observed in available rows"))
+ local best=complete and benchmark.recommend(99)
+ table.insert(lines,"SuggestedProductionCadenceMs="..tostring(best and best.Seconds*1000 or "none").." (actual P90 of fastest >=99% qualified row; SUGGESTION ONLY, never applied)")
+ table.insert(lines,"Production NORMAL cadence unchanged. 226 ms is the provisional baseline, NOT a proven minimum.")
  table.insert(lines,"RESET PHASE ONLY — excluded from measured rows, production dwell and strategy")
  table.insert(lines,"ResetRGB="..rgbText(benchmark.resetColor).." | CurrentNativePaletteRGB="..rgbText(paletteColor()))
- for k,v in pairs(benchmark.reset or {}) do if k~="Records" then table.insert(lines,k.."="..tostring(v)) end end
+ for _,key in ipairs({"Phases","Attempts","Successes","Failures","Unqualified","AcquireFailures","PaletteMs","TotalMs"}) do table.insert(lines,"Reset"..key.."="..tostring(benchmark.reset and benchmark.reset[key] or 0)) end
+ table.insert(lines,"QUARANTINED TARGETS / REPLACEMENTS")
+ for _,e in ipairs(benchmark.quarantineEvidence or {}) do table.insert(lines,string.format("Entry %d @ %s | interval %s | %s",e.EntryId,e.Position,tostring(e.Interval),e.Reason)) end
  table.insert(lines,"PAUSE / RECOVERY HISTORY")
  for _,e in ipairs(benchmark.events or {}) do table.insert(lines,string.format("%.3f | %s | %s | %s",e.At,e.State,e.Action,e.Reason or "")) end
  table.insert(lines,"PER-ATTEMPT LOCAL EVIDENCE")
- for _,row in ipairs(benchmark.rows or {}) do for _,r in ipairs(row.Records) do table.insert(lines,string.format("%d ms | Entry %d @ %s | Segment=%s | DispatchAt=%s | NativeDownObservedAt=%s | ColorAt=%s | ActualSpacingMs=%s | Qualified=%s | %s",row.IntervalMs,r.EntryId,r.Position,tostring(r.Segment),tostring(r.DownAt),tostring(r.DownObservedAt),tostring(r.ColorAt),tostring(r.SpacingMs),tostring(r.Qualified),tostring(r.Result))) end end
+ for _,row in ipairs(benchmark.rows or {}) do for _,r in ipairs(row.Records) do table.insert(lines,string.format("%d ms | Entry %d @ %s | Segment=%s | DispatchAt=%s | NativeDownObservedAt=%s | ColorAt=%s | ActualSpacingMs=%s | Qualified=%s | %s | Error=%s",row.IntervalMs,r.EntryId,r.Position,tostring(r.Segment),tostring(r.DownAt),tostring(r.DownObservedAt),tostring(r.ColorAt),tostring(r.SpacingMs),tostring(r.Qualified),tostring(r.Result),tostring(r.Error))) end end
+ table.insert(lines,"RESET EVIDENCE (last 120; aggregate totals above)")
+ for _,r in ipairs(benchmark.reset and benchmark.reset.Records or {}) do table.insert(lines,string.format("Entry %d | DOWN=%s | color=%s | Qualified=%s | %s",r.EntryId,tostring(r.DownObservedAt),tostring(r.ColorAt),tostring(r.Qualified),tostring(r.Result))) end
  return table.concat(lines,"\n")
+end
+
+function benchmark.showNotReady(message)
+ if benchmark.notReadyPanel then benchmark.notReadyPanel:Destroy() end
+ local panel=Instance.new("Frame");panel.Name="BenchmarkPreflightMessage";panel.Size=UDim2.fromOffset(510,350)
+ panel.Position=UDim2.new(.5,-255,.5,-175);panel.BackgroundColor3=Color3.fromRGB(30,30,40);panel.Active=true;panel.ZIndex=20;panel.Parent=gui
+ local scroll=Instance.new("ScrollingFrame");scroll.Size=UDim2.new(1,-20,1,-55);scroll.Position=UDim2.fromOffset(10,10)
+ scroll.BackgroundTransparency=1;scroll.Active=true;scroll.ZIndex=21;scroll.Parent=panel
+ local lines=0;for line in message:gmatch("[^\n]+") do lines+=math.max(1,math.ceil(#line/58)) end
+ local height=math.max(285,lines*22);scroll.CanvasSize=UDim2.fromOffset(0,height)
+ local label=Instance.new("TextLabel");label.Text=message;label.Size=UDim2.new(1,-16,0,height);label.BackgroundTransparency=1
+ label.TextWrapped=true;label.TextSize=17;label.TextColor3=Color3.new(1,1,1);label.TextXAlignment=Enum.TextXAlignment.Left;label.TextYAlignment=Enum.TextYAlignment.Top;label.ZIndex=22;label.Parent=scroll
+ local dismiss=Instance.new("TextButton");dismiss.Text="OK — fix setup and try again";dismiss.Size=UDim2.new(1,-20,0,32);dismiss.Position=UDim2.new(0,10,1,-40);dismiss.ZIndex=22;dismiss.Parent=panel
+ dismiss.Activated:Connect(function() panel:Destroy();if benchmark.notReadyPanel==panel then benchmark.notReadyPanel=nil end end)
+ benchmark.notReadyPanel=panel
 end
 function benchmark.start(options)
  options=options or {};if type(options)~="table" then return false,"Expected options table" end
  local count=options.SamplesPerInterval or 40
  if type(count)~="number" or count%1~=0 or count<30 or count>50 then return false,"SamplesPerInterval must be 30–50" end
- if benchmark.active or not alive or not focused or selecting or starting or palette.validating or releaseBlocked or inputBusy then return false,"Finish selection/recovery and focus Roblox first" end
- if not running and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return false,"Release Mouse1 first" end
+ if benchmark.active or not alive then return false,"Benchmark already running or controller closed" end
+ local preflight,why=benchmark.preflight(count,options)
+ if not preflight then benchmark.state="BENCHMARK NOT READY";benchmark.detail=why;lastMessage=why;palette.status=why;benchmark.showNotReady(why);updateUI();return false,why end
+ if benchmark.notReadyPanel then benchmark.notReadyPanel:Destroy();benchmark.notReadyPanel=nil end
  benchmark.saved={mode=mode,target=normalTarget,running=running,camera=v82.camera.mode,paletteMetrics=table.clone(palette.metrics),transactions=palette.transactions,current=palette.current,previousIntended=v7.previousIntended}
  stop("Paint cooldown benchmark requested")
  benchmark.active=true;benchmark.ownsWorker=false;benchmark.cancelled=false;benchmark.paused=false;benchmark.manual=false;benchmark.pauseReason=nil
- benchmark.tool=nil;benchmark.token=nil;benchmark.generation=nil;benchmark.color=nil;benchmark.upgrade=nil;benchmark.resetColor=nil;benchmark.segment=1;benchmark.badSamples=0;benchmark.pending={};benchmark.cohort={};benchmark.events={}
- benchmark.current=nil;benchmark.index=nil;benchmark.samples=count;benchmark.settle=.60;benchmark.clickHold=.02;benchmark.autoReset=options.AutoReset~=false
- benchmark.reset={Phases=0,Attempts=0,Successes=0,Failures=0,PaletteMs=0,TotalMs=0,Records={}};benchmark.manualResetReason=nil;benchmark.lastNativeDown=nil
+ benchmark.tool=nil;benchmark.token=nil;benchmark.generation=nil;benchmark.color=preflight.color;benchmark.upgrade=nil;benchmark.resetColor=preflight.reset;benchmark.segment=1;benchmark.pending={};benchmark.cohort={};benchmark.pool=preflight.pool;benchmark.quarantined={};benchmark.quarantineEvidence={};benchmark.events={};benchmark.stableAt=nil;benchmark.retryReadyAt=0;benchmark.paletteFailure=nil
+ benchmark.current=nil;benchmark.index=nil;benchmark.samples=count;benchmark.settle=.60;benchmark.clickHold=.02;benchmark.autoReset=true
+ benchmark.reset={Phases=0,Attempts=0,Successes=0,Failures=0,Unqualified=0,AcquireFailures=0,PaletteMs=0,TotalMs=0,Records={}};benchmark.manualResetReason=nil;benchmark.lastNativeDown=nil
  benchmark.restoreStatus="pending";benchmark.state="SETUP";benchmark.detail="Pausing normal worker; evidence is preserved through recoverable interruptions"
  benchmark.rows={};for _,ms in ipairs({200,175,150,140,130,120,110,100,90,80,70,60,50}) do table.insert(benchmark.rows,{IntervalMs=ms,Status="NOT_RUN",Attempts=0,AcquireFailures=0,CleanSkipped=0,Records={}}) end
  updateUI()
@@ -3911,9 +4098,9 @@ function benchmark.start(options)
    while workerActive and benchmark.open() do RunService.Heartbeat:Wait() end
    if not benchmark.open() then return end
    benchmark.saved.paletteMetrics=table.clone(palette.metrics)
-   if not settleRelease() then benchmark.pause("PAUSED - TARGET","Release unresolved; release Mouse1 then Resume",true) end
-   local tool=ensureBucket();if tool then discoverActivation(tool) end
-   benchmark.color=paletteColor();benchmark.upgrade=pacing.context();benchmark.tool=tool;benchmark.generation=equippedGeneration
+   if not settleRelease() then benchmark.pause("PAUSED - RELEASE","Mouse1 release unresolved; waiting for a stable unpressed state.",false) end
+   local tool=preflight.tool;if tool then discoverActivation(tool) end
+   benchmark.upgrade=pacing.context();benchmark.tool=tool;benchmark.generation=equippedGeneration
    mode="NORMAL";normalTarget=benchmark.color;v82.camera.mode="LOCKED";policy.setCharge(nil)
    palette.validating=true;palette.transactions={};palette.current={};v7.previousIntended=nil
    for _,entry in ipairs(entries) do entry.lastValidService=nil end
@@ -3929,11 +4116,11 @@ function benchmark.start(options)
    end
    benchmark.summarize(row,false)
   end end
-  benchmark.pending={};benchmark.cohort={}
+  benchmark.pending={};benchmark.cohort={};benchmark.pool={};benchmark.quarantined={}
   local complete=benchmark.rows[#benchmark.rows].Status=="COMPLETE"
-  benchmark.state=complete and "COMPLETE" or benchmark.cancelled and "CANCELLED BY USER" or "PAUSED - TARGET"
-  benchmark.detail=complete and "Full sweep complete — copy report; production cadence uses the fastest qualifying observed row" or benchmark.cancelled and "Cancelled by user; all evidence retained" or "Controller closed / diagnostic exception: "..tostring(problem)
-  if complete then local best=benchmark.recommend();if best then pacing.interval=best.Seconds;pacing.calibratedContext=pacing.context();pacing.calibratedGeneration=equippedGeneration;pacing.source="COMPLETED_NATIVE_SWEEP_P90: requested "..best.RequestedMs.." ms" end end
+  benchmark.state=complete and "COMPLETE" or benchmark.cancelled and "CANCELLED BY USER" or "STOPPED - DIAGNOSTIC ERROR"
+  benchmark.detail=complete and "Full 13-interval sweep complete — Copy Cooldown Benchmark. Production cadence was not changed." or benchmark.cancelled and "Cancelled by user; all evidence retained" or "Controller closed / diagnostic exception: "..tostring(problem)
+
   mode=benchmark.saved.mode;normalTarget=benchmark.saved.target;v82.camera.mode=benchmark.saved.camera
   palette.metrics=benchmark.saved.paletteMetrics;palette.transactions=benchmark.saved.transactions;palette.current=benchmark.saved.current;palette.validating=false;v7.previousIntended=benchmark.saved.previousIntended
   if benchmark.ownsWorker then workerActive=false end;benchmark.active=false;benchmark.finishing=false;rebuildDirty()
@@ -4292,7 +4479,7 @@ benchmark.cancelButton.Activated:Connect(benchmark.cancel)
 
 local api = {
  StartPaintCooldownBenchmark=benchmark.start,CancelPaintCooldownBenchmark=benchmark.cancel,ResumePaintCooldownBenchmark=benchmark.resume,
- PausePaintCooldownBenchmark=function() if not benchmark.active then return false end;benchmark.pause("PAUSED - TARGET","Paused by user; evidence retained",true);return true end,
+ PausePaintCooldownBenchmark=function() if not benchmark.active then return false end;benchmark.pause("PAUSED - USER","Paused by user; evidence retained. Resume Benchmark to continue.",true);return true end,
  GetPaintCooldownBenchmarkReport=benchmark.report,
  CopyPaintCooldownBenchmark=function() return palette.copy(benchmark.report(),"AutoPainterCooldownBenchmark.txt") end,
  GetPaintCooldownBenchmarkState=function() return {Active=benchmark.active,State=benchmark.state,Detail=benchmark.detail,Paused=benchmark.paused,PauseReason=benchmark.pauseReason,RestoreStatus=benchmark.restoreStatus} end,

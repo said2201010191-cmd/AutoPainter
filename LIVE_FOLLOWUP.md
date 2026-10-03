@@ -1,3 +1,5 @@
+> Benchmark instructions below describe the prior build. See [COOLDOWN_BENCHMARK_REVISION.md](COOLDOWN_BENCHMARK_REVISION.md) for strict preflight, autonomous replacements/reset and suggestion-only results; no production cadence is auto-applied. See [GENERATED_COLOR_APPLICATION_BLOCKER.md](GENERATED_COLOR_APPLICATION_BLOCKER.md) for the mandatory application feature still blocked.
+
 # Hands Free v8.2 — Cadence Follow-up (2026-10-03)
 
 Build `8.2-followup`, based on `main` commit `79a6de16a29ac1fecce8b90910b7962a66ab9474`. Implements the authoritative **AutoPainter_Astra_COMPLETE_LIVE_FOLLOWUP_v2_2026-10-03.md**. This guide supersedes earlier defaults, benchmark interruption/reset instructions, and generated-color wording.
